@@ -1,22 +1,35 @@
+use crate::error::{AxiomError, OmInferenceFailureKind};
 use crate::uri::Scope;
 
-pub(crate) fn should_retry_event(event_type: &str, attempt: u32) -> bool {
+pub fn should_retry_event(event_type: &str, attempt: u32) -> bool {
     let max_attempts = match event_type {
         "semantic_scan" => 5,
-        "qdrant_ensure_collection_failed" => 12,
-        "qdrant_upsert_failed" | "qdrant_delete_failed" => 12,
+        "om_reflect_requested" | "om_reflect_buffer_requested" | "om_observe_buffer_requested" => 6,
         _ => 3,
     };
     attempt < max_attempts
 }
 
-pub(crate) fn retry_backoff_seconds(event_type: &str, attempt: u32, event_id: i64) -> i64 {
+pub fn should_retry_event_error(event_type: &str, attempt: u32, err: &AxiomError) -> bool {
+    if matches!(
+        event_type,
+        "om_reflect_requested" | "om_reflect_buffer_requested" | "om_observe_buffer_requested"
+    ) && let AxiomError::OmInference { kind, .. } = err
+    {
+        return matches!(kind, OmInferenceFailureKind::Transient)
+            && should_retry_event(event_type, attempt);
+    }
+    should_retry_event(event_type, attempt)
+}
+
+pub fn retry_backoff_seconds(event_type: &str, attempt: u32, event_id: i64) -> i64 {
     let capped_exp = attempt.saturating_sub(1).min(6);
     let base = 1_i64 << capped_exp;
     let max = match event_type {
         "semantic_scan" => 60,
-        "qdrant_ensure_collection_failed" => 300,
-        "qdrant_upsert_failed" | "qdrant_delete_failed" => 300,
+        "om_reflect_requested" | "om_reflect_buffer_requested" | "om_observe_buffer_requested" => {
+            120
+        }
         _ => 30,
     };
     let baseline = base.min(max);
@@ -24,12 +37,12 @@ pub(crate) fn retry_backoff_seconds(event_type: &str, attempt: u32, event_id: i6
     let jitter_seed = format!("{event_type}:{attempt}:{event_id}");
     let hash = blake3::hash(jitter_seed.as_bytes());
     let bytes = hash.as_bytes();
-    let rand = u16::from_be_bytes([bytes[0], bytes[1]]) as i64;
+    let rand = i64::from(u16::from_be_bytes([bytes[0], bytes[1]]));
     let jitter = rand % (jitter_bound + 1);
     (baseline + jitter).min(max)
 }
 
-pub(crate) fn default_scope_set() -> Vec<Scope> {
+pub fn default_scope_set() -> Vec<Scope> {
     vec![
         Scope::Resources,
         Scope::User,
@@ -40,7 +53,7 @@ pub(crate) fn default_scope_set() -> Vec<Scope> {
     ]
 }
 
-pub(crate) fn push_drift_sample(sample: &mut Vec<String>, uri: &str, max: usize) {
+pub fn push_drift_sample(sample: &mut Vec<String>, uri: &str, max: usize) {
     if sample.len() < max {
         sample.push(uri.to_string());
     }
@@ -56,8 +69,12 @@ mod tests {
         assert!(should_retry_event("semantic_scan", 4));
         assert!(!should_retry_event("semantic_scan", 5));
 
-        assert!(should_retry_event("qdrant_upsert_failed", 11));
-        assert!(!should_retry_event("qdrant_upsert_failed", 12));
+        assert!(should_retry_event("om_reflect_requested", 5));
+        assert!(!should_retry_event("om_reflect_requested", 6));
+        assert!(should_retry_event("om_reflect_buffer_requested", 5));
+        assert!(!should_retry_event("om_reflect_buffer_requested", 6));
+        assert!(should_retry_event("om_observe_buffer_requested", 5));
+        assert!(!should_retry_event("om_observe_buffer_requested", 6));
 
         assert!(should_retry_event("unknown", 2));
         assert!(!should_retry_event("unknown", 3));
@@ -70,6 +87,42 @@ mod tests {
         assert_eq!(a, b);
         assert!(a >= 4);
         assert!(a <= 60);
+    }
+
+    #[test]
+    fn should_retry_event_error_uses_om_inference_taxonomy() {
+        let transient = AxiomError::OmInference {
+            inference_source: crate::error::OmInferenceSource::Reflector,
+            kind: OmInferenceFailureKind::Transient,
+            message: "timeout".to_string(),
+        };
+        let fatal = AxiomError::OmInference {
+            inference_source: crate::error::OmInferenceSource::Reflector,
+            kind: OmInferenceFailureKind::Fatal,
+            message: "invalid endpoint".to_string(),
+        };
+        let schema = AxiomError::OmInference {
+            inference_source: crate::error::OmInferenceSource::Reflector,
+            kind: OmInferenceFailureKind::Schema,
+            message: "bad json".to_string(),
+        };
+
+        assert!(should_retry_event_error(
+            "om_reflect_requested",
+            1,
+            &transient
+        ));
+        assert!(!should_retry_event_error("om_reflect_requested", 1, &fatal));
+        assert!(!should_retry_event_error(
+            "om_reflect_buffer_requested",
+            1,
+            &schema
+        ));
+        assert!(should_retry_event_error(
+            "om_observe_buffer_requested",
+            1,
+            &transient
+        ));
     }
 
     #[test]

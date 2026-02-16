@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{AxiomError, Result};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Scope {
     Resources,
@@ -17,19 +17,21 @@ pub enum Scope {
 }
 
 impl Scope {
-    pub fn as_str(&self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
         match self {
-            Scope::Resources => "resources",
-            Scope::User => "user",
-            Scope::Agent => "agent",
-            Scope::Session => "session",
-            Scope::Temp => "temp",
-            Scope::Queue => "queue",
+            Self::Resources => "resources",
+            Self::User => "user",
+            Self::Agent => "agent",
+            Self::Session => "session",
+            Self::Temp => "temp",
+            Self::Queue => "queue",
         }
     }
 
-    pub fn is_internal(&self) -> bool {
-        matches!(self, Scope::Temp | Scope::Queue)
+    #[must_use]
+    pub const fn is_internal(&self) -> bool {
+        matches!(self, Self::Temp | Self::Queue)
     }
 }
 
@@ -44,12 +46,12 @@ impl FromStr for Scope {
 
     fn from_str(s: &str) -> Result<Self> {
         match s {
-            "resources" => Ok(Scope::Resources),
-            "user" => Ok(Scope::User),
-            "agent" => Ok(Scope::Agent),
-            "session" => Ok(Scope::Session),
-            "temp" => Ok(Scope::Temp),
-            "queue" => Ok(Scope::Queue),
+            "resources" => Ok(Self::Resources),
+            "user" => Ok(Self::User),
+            "agent" => Ok(Self::Agent),
+            "session" => Ok(Self::Session),
+            "temp" => Ok(Self::Temp),
+            "queue" => Ok(Self::Queue),
             _ => Err(AxiomError::InvalidScope(s.to_string())),
         }
     }
@@ -62,7 +64,8 @@ pub struct AxiomUri {
 }
 
 impl AxiomUri {
-    pub fn root(scope: Scope) -> Self {
+    #[must_use]
+    pub const fn root(scope: Scope) -> Self {
         Self {
             scope,
             segments: Vec::new(),
@@ -93,15 +96,18 @@ impl AxiomUri {
         Ok(Self { scope, segments })
     }
 
-    pub fn scope(&self) -> Scope {
-        self.scope.clone()
+    #[must_use]
+    pub const fn scope(&self) -> Scope {
+        self.scope
     }
 
+    #[must_use]
     pub fn segments(&self) -> &[String] {
         &self.segments
     }
 
-    pub fn is_root(&self) -> bool {
+    #[must_use]
+    pub const fn is_root(&self) -> bool {
         self.segments.is_empty()
     }
 
@@ -110,7 +116,7 @@ impl AxiomUri {
         let mut segments = self.segments.clone();
         segments.extend(child_segments);
         Ok(Self {
-            scope: self.scope.clone(),
+            scope: self.scope,
             segments,
         })
     }
@@ -119,21 +125,24 @@ impl AxiomUri {
         self.join(&child.into())
     }
 
+    #[must_use]
     pub fn parent(&self) -> Option<Self> {
         if self.segments.is_empty() {
             None
         } else {
             Some(Self {
-                scope: self.scope.clone(),
+                scope: self.scope,
                 segments: self.segments[..self.segments.len() - 1].to_vec(),
             })
         }
     }
 
+    #[must_use]
     pub fn last_segment(&self) -> Option<&str> {
         self.segments.last().map(String::as_str)
     }
 
+    #[must_use]
     pub fn starts_with(&self, other: &Self) -> bool {
         self.scope == other.scope
             && self.segments.len() >= other.segments.len()
@@ -144,6 +153,7 @@ impl AxiomUri {
                 .all(|(a, b)| a == b)
     }
 
+    #[must_use]
     pub fn to_string_uri(&self) -> String {
         if self.segments.is_empty() {
             format!("axiom://{}", self.scope)
@@ -152,6 +162,7 @@ impl AxiomUri {
         }
     }
 
+    #[must_use]
     pub fn path(&self) -> String {
         self.segments.join("/")
     }
@@ -169,6 +180,36 @@ impl FromStr for AxiomUri {
     fn from_str(s: &str) -> Result<Self> {
         Self::parse(s)
     }
+}
+
+pub(crate) fn uri_equivalent(expected: &str, actual: &str) -> bool {
+    if expected == actual {
+        return true;
+    }
+
+    let Ok(expected_uri) = AxiomUri::parse(expected) else {
+        return false;
+    };
+    let Ok(actual_uri) = AxiomUri::parse(actual) else {
+        return false;
+    };
+    if expected_uri.scope != actual_uri.scope {
+        return false;
+    }
+
+    normalize_duplicate_leaf_segments(expected_uri.segments)
+        == normalize_duplicate_leaf_segments(actual_uri.segments)
+}
+
+fn normalize_duplicate_leaf_segments(mut segments: Vec<String>) -> Vec<String> {
+    while segments.len() >= 2 {
+        let last_index = segments.len() - 1;
+        if segments[last_index] != segments[last_index - 1] {
+            break;
+        }
+        segments.pop();
+    }
+    segments
 }
 
 fn normalize_segments(raw_path: &str) -> Result<Vec<String>> {
@@ -232,5 +273,29 @@ mod tests {
         assert_eq!(child.to_string(), "axiom://user/memories/profile");
         let parent = child.parent().expect("missing parent");
         assert_eq!(parent.to_string(), "axiom://user/memories");
+    }
+
+    #[test]
+    fn uri_equivalent_treats_duplicate_leaf_path_as_same_resource() {
+        assert!(uri_equivalent(
+            "axiom://resources/docs/guide.md",
+            "axiom://resources/docs/guide.md/guide.md"
+        ));
+        assert!(uri_equivalent(
+            "axiom://resources/docs/guide.md/guide.md",
+            "axiom://resources/docs/guide.md"
+        ));
+    }
+
+    #[test]
+    fn uri_equivalent_rejects_different_scope_or_path() {
+        assert!(!uri_equivalent(
+            "axiom://resources/docs/guide.md",
+            "axiom://queue/docs/guide.md/guide.md"
+        ));
+        assert!(!uri_equivalent(
+            "axiom://resources/docs/guide.md",
+            "axiom://resources/docs/other.md"
+        ));
     }
 }

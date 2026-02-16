@@ -1,12 +1,15 @@
 use std::fs;
+use std::path::Path;
+use std::time::UNIX_EPOCH;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::catalog::request_log_uri;
 use crate::error::{AxiomError, Result};
+use crate::jsonl::{jsonl_all_lines_invalid, parse_jsonl_tolerant};
 use crate::models::{
-    BackendStatus, EmbeddingBackendStatus, QdrantBackendStatus, QueueDiagnostics, RequestLogEntry,
-    SessionInfo,
+    BackendStatus, EmbeddingBackendStatus, QueueDiagnostics, QueueOverview, RequestLogEntry,
+    SessionInfo, SessionMeta,
 };
 use crate::queue_policy::default_scope_set;
 use crate::session::Session;
@@ -19,46 +22,22 @@ const SEARCH_STACK_VERSION: &str = "sqlite-fts5-bm25-v3";
 
 impl AxiomMe {
     pub fn session(&self, session_id: Option<&str>) -> Session {
-        let id = session_id
-            .map(ToString::to_string)
-            .unwrap_or_else(|| format!("s-{}", uuid::Uuid::new_v4().simple()));
-        Session::new(
-            id,
-            self.fs.clone(),
-            self.state.clone(),
-            self.index.clone(),
-            self.qdrant.clone(),
-        )
+        let id = session_id.map_or_else(
+            || format!("s-{}", uuid::Uuid::new_v4().simple()),
+            ToString::to_string,
+        );
+        Session::new(id, self.fs.clone(), self.state.clone(), self.index.clone())
+            .with_config(self.config.clone())
     }
 
     pub fn backend_status(&self) -> Result<BackendStatus> {
         let local_records = self
             .index
             .read()
-            .map_err(|_| AxiomError::Internal("index lock poisoned".to_string()))?
+            .map_err(|_| AxiomError::lock_poisoned("index"))?
             .all_records()
             .len();
 
-        let qdrant = if let Some(mirror) = &self.qdrant {
-            match mirror.health() {
-                Ok(healthy) => Some(QdrantBackendStatus {
-                    enabled: true,
-                    base_url: mirror.config().base_url.clone(),
-                    collection: mirror.config().collection.clone(),
-                    healthy,
-                    last_error: None,
-                }),
-                Err(err) => Some(QdrantBackendStatus {
-                    enabled: true,
-                    base_url: mirror.config().base_url.clone(),
-                    collection: mirror.config().collection.clone(),
-                    healthy: false,
-                    last_error: Some(err.to_string()),
-                }),
-            }
-        } else {
-            None
-        };
         let embed = crate::embedding::embedding_profile();
 
         Ok(BackendStatus {
@@ -68,14 +47,40 @@ impl AxiomMe {
                 vector_version: embed.vector_version,
                 dim: embed.dim,
             },
-            qdrant,
         })
     }
 
     pub fn queue_diagnostics(&self) -> Result<QueueDiagnostics> {
+        let queue_dead_letter_rate = self
+            .state
+            .queue_dead_letter_rates_by_event_type()?
+            .into_iter()
+            .filter(is_om_event_type)
+            .collect::<Vec<_>>();
         Ok(QueueDiagnostics {
             counts: self.state.queue_counts()?,
             checkpoints: self.state.list_checkpoints()?,
+            queue_dead_letter_rate,
+            om_status: self.state.om_status_snapshot()?,
+            om_reflection_apply_metrics: self.state.om_reflection_apply_metrics_snapshot()?,
+        })
+    }
+
+    pub fn queue_overview(&self) -> Result<QueueOverview> {
+        let (counts, lanes) = self.state.queue_snapshot()?;
+        let queue_dead_letter_rate = self
+            .state
+            .queue_dead_letter_rates_by_event_type()?
+            .into_iter()
+            .filter(is_om_event_type)
+            .collect::<Vec<_>>();
+        Ok(QueueOverview {
+            counts,
+            checkpoints: self.state.list_checkpoints()?,
+            lanes,
+            queue_dead_letter_rate,
+            om_status: self.state.om_status_snapshot()?,
+            om_reflection_apply_metrics: self.state.om_reflection_apply_metrics_snapshot()?,
         })
     }
 
@@ -97,34 +102,35 @@ impl AxiomMe {
         let operation = operation
             .map(str::trim)
             .filter(|x| !x.is_empty())
-            .map(|x| x.to_ascii_lowercase());
+            .map(str::to_ascii_lowercase);
         let status = status
             .map(str::trim)
             .filter(|x| !x.is_empty())
-            .map(|x| x.to_ascii_lowercase());
-        let mut entries = raw
-            .lines()
-            .filter_map(|line| {
-                if line.trim().is_empty() {
-                    None
-                } else {
-                    serde_json::from_str::<RequestLogEntry>(line).ok()
-                }
-            })
-            .filter(|entry| {
-                if let Some(op) = operation.as_deref()
-                    && !entry.operation.eq_ignore_ascii_case(op)
-                {
-                    return false;
-                }
-                if let Some(st) = status.as_deref()
-                    && !entry.status.eq_ignore_ascii_case(st)
-                {
-                    return false;
-                }
-                true
-            })
-            .collect::<Vec<_>>();
+            .map(str::to_ascii_lowercase);
+        let parsed = parse_jsonl_tolerant::<RequestLogEntry>(&raw);
+        if parsed.items.is_empty() && parsed.skipped_lines > 0 {
+            return Err(jsonl_all_lines_invalid(
+                "request log",
+                None,
+                parsed.skipped_lines,
+                parsed.first_error.as_ref(),
+            ));
+        }
+
+        let mut entries = Vec::new();
+        for entry in parsed.items {
+            if let Some(op) = operation.as_deref()
+                && !entry.operation.eq_ignore_ascii_case(op)
+            {
+                continue;
+            }
+            if let Some(st) = status.as_deref()
+                && !entry.status.eq_ignore_ascii_case(st)
+            {
+                continue;
+            }
+            entries.push(entry);
+        }
         entries.reverse();
         entries.truncate(limit.max(1));
         Ok(entries)
@@ -137,10 +143,11 @@ impl AxiomMe {
             if !entry.is_dir {
                 continue;
             }
+            let session_uri = AxiomUri::parse(&entry.uri)?;
             out.push(SessionInfo {
                 session_id: entry.name.clone(),
                 uri: entry.uri,
-                updated_at: Utc::now(),
+                updated_at: self.session_updated_at(&session_uri),
             });
         }
         out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
@@ -153,16 +160,22 @@ impl AxiomMe {
             return Ok(false);
         }
         self.fs.rm(&uri, true, true)?;
+        self.prune_index_prefix_from_memory(&uri)?;
+        self.state
+            .remove_search_documents_with_prefix(&uri.to_string())?;
+        self.state
+            .remove_index_state_with_prefix(&uri.to_string())?;
         Ok(true)
     }
 
     pub fn reindex_all(&self) -> Result<()> {
         self.state.clear_search_index()?;
+        self.state.clear_index_state()?;
         {
             let mut index = self
                 .index
                 .write()
-                .map_err(|_| AxiomError::Internal("index lock poisoned".to_string()))?;
+                .map_err(|_| AxiomError::lock_poisoned("index"))?;
             index.clear();
         }
         self.reindex_scopes(&default_scope_set())?;
@@ -198,54 +211,68 @@ impl AxiomMe {
         let mut index = self
             .index
             .write()
-            .map_err(|_| AxiomError::Internal("index lock poisoned".to_string()))?;
+            .map_err(|_| AxiomError::lock_poisoned("index"))?;
         index.clear();
         for record in records {
             index.upsert(record);
         }
+        drop(index);
         Ok(count)
     }
 
     fn current_index_profile_stamp(&self) -> String {
         let embed = crate::embedding::embedding_profile();
-        let qdrant = self
-            .qdrant
-            .as_ref()
-            .map(|mirror| {
-                format!(
-                    "{}|{}",
-                    mirror.config().base_url,
-                    mirror.config().collection
-                )
-            })
-            .unwrap_or_else(|| "disabled".to_string());
         format!(
-            "stack:{};embed:{}@{}:{};qdrant:{}",
-            SEARCH_STACK_VERSION, embed.provider, embed.vector_version, embed.dim, qdrant
+            "stack:{};embed:{}@{}:{}",
+            SEARCH_STACK_VERSION, embed.provider, embed.vector_version, embed.dim
         )
     }
 
     fn has_index_state_drift(&self) -> Result<bool> {
         for (uri, stored_mtime) in self.state.list_index_state_entries()? {
-            let parsed = match AxiomUri::parse(&uri) {
-                Ok(value) => value,
-                Err(_) => return Ok(true),
+            let Ok(parsed) = AxiomUri::parse(&uri) else {
+                return Ok(true);
             };
             let path = self.fs.resolve_uri(&parsed);
             if !path.exists() {
                 return Ok(true);
             }
 
-            let mtime = fs::metadata(path)
-                .and_then(|m| m.modified())
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_nanos() as i64)
-                .unwrap_or(0);
+            let mtime = metadata_mtime_nanos(&path);
             if mtime != stored_mtime {
                 return Ok(true);
             }
         }
         Ok(false)
     }
+
+    fn session_updated_at(&self, session_uri: &AxiomUri) -> DateTime<Utc> {
+        let session_path = self.fs.resolve_uri(session_uri);
+        let meta_path = session_path.join(".meta.json");
+        if let Ok(raw_meta) = fs::read_to_string(&meta_path)
+            && let Ok(meta) = serde_json::from_str::<SessionMeta>(&raw_meta)
+        {
+            return meta.updated_at;
+        }
+
+        fs::metadata(&session_path)
+            .and_then(|m| m.modified())
+            .map_or_else(|_| Utc::now(), DateTime::<Utc>::from)
+    }
+}
+
+fn saturating_duration_nanos_to_i64(duration: std::time::Duration) -> i64 {
+    i64::try_from(duration.as_nanos()).unwrap_or(i64::MAX)
+}
+
+fn metadata_mtime_nanos(path: &Path) -> i64 {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, saturating_duration_nanos_to_i64)
+}
+
+fn is_om_event_type(rate: &crate::models::QueueDeadLetterRate) -> bool {
+    rate.event_type.starts_with("om_")
 }

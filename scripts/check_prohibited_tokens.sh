@@ -4,10 +4,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-legacy_word="$(printf '%b' '\x76\x69\x6b\x69\x6e\x67')"
-legacy_prefix="$(printf '%b' '\x6f\x70\x65\x6e')${legacy_word}"
-legacy_scheme="${legacy_word}://"
-pattern="(${legacy_prefix}|${legacy_scheme}|\\b${legacy_word}\\b)"
+blocked_word="$(printf '%b' '\x76\x69\x6b\x69\x6e\x67')"
+blocked_prefix="$(printf '%b' '\x6f\x70\x65\x6e')${blocked_word}"
+blocked_scheme="${blocked_word}://"
+pattern="(${blocked_prefix}|${blocked_scheme}|\\b${blocked_word}\\b)"
 
 if rg -n -i \
     --hidden \
@@ -19,7 +19,7 @@ if rg -n -i \
     "$pattern" \
     .
 then
-    echo "prohibited legacy token detected"
+    echo "prohibited token detected"
     exit 1
 fi
 

@@ -19,7 +19,13 @@ pub fn export_ovpack(
     if !source_path.exists() {
         return Err(AxiomError::NotFound(source.to_string()));
     }
-    if !source_path.is_dir() {
+    let source_meta = fs::symlink_metadata(&source_path)?;
+    if source_meta.file_type().is_symlink() {
+        return Err(AxiomError::SecurityViolation(format!(
+            "ovpack export source must not be a symlink: {source}"
+        )));
+    }
+    if !source_meta.file_type().is_dir() {
         return Err(AxiomError::Validation(
             "ovpack export source must be a directory".to_string(),
         ));
@@ -41,18 +47,17 @@ pub fn export_ovpack(
 
     let base_name = source
         .last_segment()
-        .map(ToString::to_string)
-        .unwrap_or_else(|| source.scope().as_str().to_string());
+        .map_or_else(|| source.scope().as_str().to_string(), ToString::to_string);
     let transformed_root = transform_component(&base_name);
 
-    zip.add_directory(format!("{}/", transformed_root), options)?;
+    zip.add_directory(format!("{transformed_root}/"), options)?;
 
-    for entry in WalkDir::new(&source_path)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(std::result::Result::ok)
-    {
+    for entry in WalkDir::new(&source_path).follow_links(false) {
+        let entry = entry.map_err(|e| AxiomError::Validation(e.to_string()))?;
         if entry.path() == source_path {
+            continue;
+        }
+        if entry.file_type().is_symlink() {
             continue;
         }
         let rel = entry
@@ -66,9 +71,9 @@ pub fn export_ovpack(
             .collect::<Vec<_>>()
             .join("/");
 
-        let zip_path = format!("{}/{}", transformed_root, transformed_rel);
-        if entry.path().is_dir() {
-            zip.add_directory(format!("{}/", zip_path), options)?;
+        let zip_path = format!("{transformed_root}/{transformed_rel}");
+        if entry.file_type().is_dir() {
+            zip.add_directory(format!("{zip_path}/"), options)?;
         } else {
             zip.start_file(zip_path, options)?;
             let bytes = fs::read(entry.path())?;
@@ -111,8 +116,7 @@ pub fn import_ovpack(
     if fs.exists(&target_root) {
         if !force {
             return Err(AxiomError::Conflict(format!(
-                "target exists: {}",
-                target_root
+                "target exists: {target_root}"
             )));
         }
         fs.rm(&target_root, true, true)?;
@@ -127,15 +131,13 @@ pub fn import_ovpack(
 
         if name.contains('\\') {
             return Err(AxiomError::SecurityViolation(format!(
-                "backslash archive entry: {}",
-                name
+                "backslash archive entry: {name}"
             )));
         }
 
         if name.starts_with('/') || looks_like_windows_abs(&name) {
             return Err(AxiomError::SecurityViolation(format!(
-                "absolute archive entry: {}",
-                name
+                "absolute archive entry: {name}"
             )));
         }
 
@@ -158,8 +160,7 @@ pub fn import_ovpack(
             let reversed = reverse_component(raw);
             if reversed == "." || reversed == ".." {
                 return Err(AxiomError::SecurityViolation(format!(
-                    "traversal archive entry: {}",
-                    name
+                    "traversal archive entry: {name}"
                 )));
             }
             parts.push(reversed);
@@ -174,8 +175,7 @@ pub fn import_ovpack(
         for part in parts.iter().skip(1) {
             if part.contains(std::path::MAIN_SEPARATOR) {
                 return Err(AxiomError::SecurityViolation(format!(
-                    "invalid path separator in entry: {}",
-                    name
+                    "invalid path separator in entry: {name}"
                 )));
             }
             dest.push(part);
@@ -183,8 +183,7 @@ pub fn import_ovpack(
 
         if !dest.starts_with(&target_root_path) {
             return Err(AxiomError::SecurityViolation(format!(
-                "zip-slip attempt detected: {}",
-                name
+                "zip-slip attempt detected: {name}"
             )));
         }
 
@@ -211,19 +210,16 @@ fn looks_like_windows_abs(path: &str) -> bool {
 }
 
 fn transform_component(component: &str) -> String {
-    if let Some(stripped) = component.strip_prefix('.') {
-        format!("_._{}", stripped)
-    } else {
-        component.to_string()
-    }
+    component.strip_prefix('.').map_or_else(
+        || component.to_string(),
+        |stripped| format!("_._{stripped}"),
+    )
 }
 
 fn reverse_component(component: &str) -> String {
-    if let Some(stripped) = component.strip_prefix("_._") {
-        format!(".{}", stripped)
-    } else {
-        component.to_string()
-    }
+    component
+        .strip_prefix("_._")
+        .map_or_else(|| component.to_string(), |stripped| format!(".{stripped}"))
 }
 
 #[cfg(test)]
@@ -234,6 +230,9 @@ mod tests {
 
     use super::*;
     use crate::uri::Scope;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::symlink;
 
     #[test]
     fn ovpack_roundtrip_preserves_dotfiles() {
@@ -332,5 +331,52 @@ mod tests {
             ),
             "unexpected error: {err:?}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ovpack_export_skips_symlink_entries() {
+        let temp = tempdir().expect("tempdir");
+        let outside = tempdir().expect("outside");
+        let fsys = LocalContextFs::new(temp.path());
+        fsys.initialize().expect("init failed");
+
+        let src = AxiomUri::root(Scope::Resources).join("demo").expect("join");
+        fsys.create_dir_all(&src, true).expect("mkdir");
+        fs::write(fsys.resolve_uri(&src).join("note.txt"), "world").expect("write note");
+
+        let outside_file = outside.path().join("secret.txt");
+        fs::write(&outside_file, "outside").expect("write outside");
+        symlink(&outside_file, fsys.resolve_uri(&src).join("linked.txt")).expect("symlink file");
+
+        let pack_path = export_ovpack(&fsys, &src, &temp.path().join("demo")).expect("export");
+        let imported = import_ovpack(&fsys, &pack_path, &AxiomUri::root(Scope::Resources), true)
+            .expect("import");
+
+        let imported_path = fsys.resolve_uri(&imported);
+        assert!(imported_path.join("note.txt").exists());
+        assert!(!imported_path.join("linked.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ovpack_export_rejects_symlink_source_root() {
+        let temp = tempdir().expect("tempdir");
+        let fsys = LocalContextFs::new(temp.path());
+        fsys.initialize().expect("init failed");
+
+        let real = AxiomUri::root(Scope::Resources).join("real").expect("real");
+        fsys.create_dir_all(&real, true).expect("mkdir real");
+        fs::write(fsys.resolve_uri(&real).join("note.txt"), "real").expect("write real");
+
+        let alias_path = temp.path().join("resources").join("alias");
+        symlink(fsys.resolve_uri(&real), &alias_path).expect("symlink dir");
+
+        let alias = AxiomUri::root(Scope::Resources)
+            .join("alias")
+            .expect("alias");
+        let err = export_ovpack(&fsys, &alias, &temp.path().join("alias"))
+            .expect_err("symlink source must be rejected");
+        assert!(matches!(err, AxiomError::SecurityViolation(_)));
     }
 }

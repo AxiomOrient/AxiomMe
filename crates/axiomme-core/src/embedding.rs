@@ -1,30 +1,66 @@
 use std::collections::HashSet;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
+
+use reqwest::Url;
+use reqwest::blocking::Client;
+use serde_json::Value;
+
+use crate::error::{AxiomError, Result};
+use crate::llm_io::parse_local_loopback_endpoint;
 
 pub const EMBED_DIM: usize = 64;
 pub const EMBEDDER_ENV: &str = "AXIOMME_EMBEDDER";
+pub const EMBEDDER_MODEL_ENDPOINT_ENV: &str = "AXIOMME_EMBEDDER_MODEL_ENDPOINT";
+pub const EMBEDDER_MODEL_NAME_ENV: &str = "AXIOMME_EMBEDDER_MODEL_NAME";
+pub const EMBEDDER_MODEL_TIMEOUT_MS_ENV: &str = "AXIOMME_EMBEDDER_MODEL_TIMEOUT_MS";
+pub const EMBEDDER_STRICT_ENV: &str = "AXIOMME_EMBEDDER_STRICT";
+
+const DEFAULT_MODEL_ENDPOINT: &str = "http://127.0.0.1:11434/api/embeddings";
+const DEFAULT_MODEL_NAME: &str = "nomic-embed-text";
+const MAX_MODEL_INPUT_CHARS: usize = 16 * 1024;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EmbedderRuntimeConfig {
+    pub(crate) kind: Option<String>,
+    pub(crate) model_endpoint: Option<String>,
+    pub(crate) model_name: Option<String>,
+    pub(crate) model_timeout_ms: Option<u64>,
+    pub(crate) strict: bool,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmbedderKind {
     SemanticLite,
     Hash,
+    SemanticModelHttp,
 }
 
 impl EmbedderKind {
-    pub fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::SemanticLite => "semantic-lite",
             Self::Hash => "hash",
+            Self::SemanticModelHttp => "semantic-model-http",
         }
     }
 }
 
+#[must_use]
 pub fn resolve_embedder_kind(raw: Option<&str>) -> EmbedderKind {
     match raw.map(|value| value.trim().to_ascii_lowercase()) {
         Some(value) if value == "semantic" || value == "semantic-lite" => {
             EmbedderKind::SemanticLite
         }
         Some(value) if value == "hash" || value == "deterministic" => EmbedderKind::Hash,
+        Some(value)
+            if value == "semantic-model"
+                || value == "semantic-model-http"
+                || value == "model-http"
+                || value == "ollama" =>
+        {
+            EmbedderKind::SemanticModelHttp
+        }
         _ => EmbedderKind::SemanticLite,
     }
 }
@@ -38,7 +74,7 @@ pub struct EmbeddingProfile {
 
 pub trait Embedder: Send + Sync {
     fn provider(&self) -> &'static str;
-    fn vector_version(&self) -> &'static str;
+    fn vector_version(&self) -> &str;
     fn embed(&self, text: &str) -> Vec<f32>;
 }
 
@@ -50,7 +86,11 @@ impl Embedder for HashEmbedder {
         "hash"
     }
 
-    fn vector_version(&self) -> &'static str {
+    #[allow(
+        clippy::unnecessary_literal_bound,
+        reason = "trait contract is `&str` to allow dynamic providers; static implementations still return literals"
+    )]
+    fn vector_version(&self) -> &str {
         "hash-v1"
     }
 
@@ -72,7 +112,11 @@ impl Embedder for SemanticLiteEmbedder {
         "semantic-lite"
     }
 
-    fn vector_version(&self) -> &'static str {
+    #[allow(
+        clippy::unnecessary_literal_bound,
+        reason = "trait contract is `&str` to allow dynamic providers; static implementations still return literals"
+    )]
+    fn vector_version(&self) -> &str {
         "semantic-lite-v1"
     }
 
@@ -100,12 +144,151 @@ impl Embedder for SemanticLiteEmbedder {
     }
 }
 
-static ACTIVE_EMBEDDER: OnceLock<Box<dyn Embedder>> = OnceLock::new();
+#[derive(Debug)]
+pub struct SemanticModelHttpEmbedder {
+    client: Client,
+    endpoint: Url,
+    model: String,
+    version: String,
+    strict: bool,
+    fallback: SemanticLiteEmbedder,
+}
 
+impl SemanticModelHttpEmbedder {
+    fn from_config(config: &EmbedderRuntimeConfig) -> std::result::Result<Self, String> {
+        let endpoint_raw = config
+            .model_endpoint
+            .as_deref()
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .unwrap_or(DEFAULT_MODEL_ENDPOINT);
+        let endpoint = parse_local_endpoint(endpoint_raw)?;
+
+        let model = config
+            .model_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .unwrap_or(DEFAULT_MODEL_NAME)
+            .to_string();
+        let timeout_ms = config.model_timeout_ms.unwrap_or(3_000).clamp(100, 60_000);
+        let strict = config.strict;
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_millis(timeout_ms))
+            .build()
+            .map_err(|err| format!("failed to build model embedder client: {err}"))?;
+        let version = format!("semantic-model-http:{}:{}", model, endpoint.path());
+
+        Ok(Self {
+            client,
+            endpoint,
+            model,
+            version,
+            strict,
+            fallback: SemanticLiteEmbedder,
+        })
+    }
+}
+
+impl Embedder for SemanticModelHttpEmbedder {
+    fn provider(&self) -> &'static str {
+        "semantic-model-http"
+    }
+
+    fn vector_version(&self) -> &str {
+        &self.version
+    }
+
+    fn embed(&self, text: &str) -> Vec<f32> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return vec![0.0; EMBED_DIM];
+        }
+        let bounded = if trimmed.chars().count() > MAX_MODEL_INPUT_CHARS {
+            trimmed
+                .chars()
+                .take(MAX_MODEL_INPUT_CHARS)
+                .collect::<String>()
+        } else {
+            trimmed.to_string()
+        };
+
+        let payload = serde_json::json!({
+            "model": self.model,
+            "input": bounded,
+            "prompt": bounded,
+        });
+        let response = self
+            .client
+            .post(self.endpoint.clone())
+            .json(&payload)
+            .send();
+        let Ok(response) = response else {
+            if self.strict {
+                record_strict_embedder_error("semantic-model-http embed request failed");
+            }
+            return self.fallback.embed(trimmed);
+        };
+        if !response.status().is_success() {
+            if self.strict {
+                record_strict_embedder_error("semantic-model-http non-success status");
+            }
+            return self.fallback.embed(trimmed);
+        }
+        let value = response.json::<Value>();
+        let Ok(value) = value else {
+            if self.strict {
+                record_strict_embedder_error("semantic-model-http invalid json response");
+            }
+            return self.fallback.embed(trimmed);
+        };
+        let Some(raw) = extract_embedding_vector(&value) else {
+            if self.strict {
+                record_strict_embedder_error("semantic-model-http missing embedding vector");
+            }
+            return self.fallback.embed(trimmed);
+        };
+
+        project_embedding_to_dim(&raw, EMBED_DIM)
+    }
+}
+
+static ACTIVE_EMBEDDER: OnceLock<Box<dyn Embedder>> = OnceLock::new();
+static EMBEDDER_RUNTIME_CONFIG: OnceLock<EmbedderRuntimeConfig> = OnceLock::new();
+static STRICT_EMBEDDER_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+pub(crate) fn configure_runtime(config: EmbedderRuntimeConfig) -> Result<()> {
+    if let Some(existing) = EMBEDDER_RUNTIME_CONFIG.get() {
+        return validate_runtime_config(existing, &config);
+    }
+
+    if ACTIVE_EMBEDDER.get().is_some() {
+        let existing = EMBEDDER_RUNTIME_CONFIG.get_or_init(EmbedderRuntimeConfig::default);
+        return validate_runtime_config(existing, &config);
+    }
+
+    let _ = EMBEDDER_RUNTIME_CONFIG.set(config);
+    Ok(())
+}
+
+fn validate_runtime_config(
+    existing: &EmbedderRuntimeConfig,
+    proposed: &EmbedderRuntimeConfig,
+) -> Result<()> {
+    if existing == proposed {
+        return Ok(());
+    }
+    Err(AxiomError::Validation(
+        "embedding runtime config conflict: already initialized with different values".to_string(),
+    ))
+}
+
+#[must_use]
 pub fn embed_text(text: &str) -> Vec<f32> {
     active_embedder().embed(text)
 }
 
+#[must_use]
 pub fn embedding_profile() -> EmbeddingProfile {
     let embedder = active_embedder();
     EmbeddingProfile {
@@ -115,14 +298,38 @@ pub fn embedding_profile() -> EmbeddingProfile {
     }
 }
 
+#[must_use]
+pub fn embedding_strict_mode() -> bool {
+    EMBEDDER_RUNTIME_CONFIG
+        .get_or_init(EmbedderRuntimeConfig::default)
+        .strict
+}
+
+pub fn embedding_strict_error() -> Option<String> {
+    STRICT_EMBEDDER_ERROR
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone())
+}
+
+pub(crate) fn clear_embedding_strict_error() {
+    let lock = STRICT_EMBEDDER_ERROR.get_or_init(|| Mutex::new(None));
+    if let Ok(mut slot) = lock.lock() {
+        *slot = None;
+    }
+}
+
+#[must_use]
 pub fn tokenize_vec(text: &str) -> Vec<String> {
     text.to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|x| !x.is_empty())
-        .map(|x| x.to_string())
+        .map(ToString::to_string)
         .collect()
 }
 
+#[must_use]
 pub fn tokenize_set(text: &str) -> HashSet<String> {
     tokenize_vec(text).into_iter().collect()
 }
@@ -130,13 +337,105 @@ pub fn tokenize_set(text: &str) -> HashSet<String> {
 fn active_embedder() -> &'static dyn Embedder {
     ACTIVE_EMBEDDER
         .get_or_init(|| {
-            let kind = resolve_embedder_kind(std::env::var(EMBEDDER_ENV).ok().as_deref());
+            let runtime = EMBEDDER_RUNTIME_CONFIG.get_or_init(EmbedderRuntimeConfig::default);
+            let kind = resolve_embedder_kind(runtime.kind.as_deref());
             match kind {
                 EmbedderKind::SemanticLite => Box::new(SemanticLiteEmbedder),
                 EmbedderKind::Hash => Box::new(HashEmbedder),
+                EmbedderKind::SemanticModelHttp => {
+                    match SemanticModelHttpEmbedder::from_config(runtime) {
+                        Ok(embedder) => Box::new(embedder),
+                        Err(err) => {
+                            if embedding_strict_mode() {
+                                record_strict_embedder_error(&format!(
+                                    "semantic-model-http initialization failed: {err}"
+                                ));
+                            }
+                            Box::new(SemanticLiteEmbedder)
+                        }
+                    }
+                }
             }
         })
         .as_ref()
+}
+
+fn record_strict_embedder_error(message: &str) {
+    let lock = STRICT_EMBEDDER_ERROR.get_or_init(|| Mutex::new(None));
+    if let Ok(mut slot) = lock.lock()
+        && slot.is_none()
+    {
+        *slot = Some(message.to_string());
+    }
+}
+
+#[cfg(test)]
+fn reset_strict_embedder_error_for_tests() {
+    clear_embedding_strict_error();
+}
+
+fn parse_local_endpoint(raw: &str) -> std::result::Result<Url, String> {
+    parse_local_loopback_endpoint(raw, "model endpoint", "local/offline host")
+}
+
+fn extract_embedding_vector(value: &Value) -> Option<Vec<f32>> {
+    if let Some(values) = value.get("embedding").and_then(|x| x.as_array()) {
+        return parse_embedding_values(values);
+    }
+    if let Some(values) = value
+        .get("data")
+        .and_then(|x| x.as_array())
+        .and_then(|data| data.first())
+        .and_then(|first| first.get("embedding"))
+        .and_then(|x| x.as_array())
+    {
+        return parse_embedding_values(values);
+    }
+    None
+}
+
+fn parse_embedding_values(values: &[Value]) -> Option<Vec<f32>> {
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        let num = value.as_f64()?;
+        if !num.is_finite() {
+            return None;
+        }
+        let number = finite_f64_to_f32(num)?;
+        out.push(number);
+    }
+    if out.is_empty() { None } else { Some(out) }
+}
+
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "value bounds are checked against f32::MIN/MAX before casting"
+)]
+fn finite_f64_to_f32(value: f64) -> Option<f32> {
+    let min = f64::from(f32::MIN);
+    let max = f64::from(f32::MAX);
+    if value < min || value > max {
+        return None;
+    }
+    Some(value as f32)
+}
+
+fn project_embedding_to_dim(raw: &[f32], dim: usize) -> Vec<f32> {
+    if raw.is_empty() {
+        return vec![0.0; dim];
+    }
+    let mut out = vec![0.0f32; dim];
+    for (idx, value) in raw.iter().enumerate() {
+        let bucket = idx % dim;
+        let sign = if (idx / dim).is_multiple_of(2) {
+            1.0
+        } else {
+            -0.5
+        };
+        out[bucket] += value * sign;
+    }
+    normalize_vector(&mut out);
+    out
 }
 
 fn accumulate_feature(vec: &mut [f32], feature: &str, weight: f32) {
@@ -205,6 +504,10 @@ fn char_ngrams(token: &str, n: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{ErrorKind, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Mutex, OnceLock};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -249,6 +552,149 @@ mod tests {
             EmbedderKind::SemanticLite
         );
         assert_eq!(resolve_embedder_kind(Some("hash")), EmbedderKind::Hash);
+        assert_eq!(
+            resolve_embedder_kind(Some("semantic-model-http")),
+            EmbedderKind::SemanticModelHttp
+        );
+    }
+
+    #[test]
+    fn parse_local_endpoint_rejects_non_local_host() {
+        let err = parse_local_endpoint("http://example.com/embed").expect_err("must reject");
+        assert!(err.contains("local/offline"));
+    }
+
+    #[test]
+    fn parse_local_endpoint_accepts_loopback_hosts() {
+        assert!(parse_local_endpoint("http://127.0.0.1:11434/api/embeddings").is_ok());
+        assert!(parse_local_endpoint("http://localhost:9000/embed").is_ok());
+    }
+
+    #[test]
+    fn extract_embedding_vector_supports_common_shapes() {
+        let ollama = serde_json::json!({
+            "embedding": [0.1, -0.2, 0.3]
+        });
+        let openai = serde_json::json!({
+            "data": [{"embedding": [0.4, 0.5, 0.6]}]
+        });
+        assert_eq!(
+            extract_embedding_vector(&ollama).expect("ollama"),
+            vec![0.1, -0.2, 0.3]
+        );
+        assert_eq!(
+            extract_embedding_vector(&openai).expect("openai"),
+            vec![0.4, 0.5, 0.6]
+        );
+    }
+
+    #[test]
+    fn project_embedding_to_dim_is_fixed_size() {
+        let raw = vec![0.1f32; 384];
+        let projected = project_embedding_to_dim(&raw, EMBED_DIM);
+        assert_eq!(projected.len(), EMBED_DIM);
+        let norm = projected.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-3 || norm == 0.0);
+    }
+
+    #[test]
+    fn record_strict_embedder_error_keeps_first_reason() {
+        let _guard = strict_test_guard();
+        reset_strict_embedder_error_for_tests();
+        record_strict_embedder_error("first");
+        record_strict_embedder_error("second");
+        let reason = embedding_strict_error().expect("reason");
+        assert_eq!(reason, "first");
+        reset_strict_embedder_error_for_tests();
+    }
+
+    #[test]
+    fn semantic_model_http_embedder_records_strict_error_on_request_failure() {
+        let _guard = strict_test_guard();
+        reset_strict_embedder_error_for_tests();
+        let embedder = SemanticModelHttpEmbedder {
+            client: Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .expect("client"),
+            endpoint: parse_local_endpoint("http://127.0.0.1:1/api/embeddings").expect("endpoint"),
+            model: "nomic-embed-text".to_string(),
+            version: "semantic-model-http:test".to_string(),
+            strict: true,
+            fallback: SemanticLiteEmbedder,
+        };
+
+        let vector = embedder.embed("oauth login flow");
+        assert_eq!(vector.len(), EMBED_DIM);
+        let reason = embedding_strict_error().expect("strict reason");
+        assert!(reason.contains("embed request failed"));
+        reset_strict_embedder_error_for_tests();
+    }
+
+    #[test]
+    fn semantic_model_http_embedder_records_strict_error_on_non_success_status() {
+        let _guard = strict_test_guard();
+        reset_strict_embedder_error_for_tests();
+        let (endpoint, handle) = match spawn_single_response_server(
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 2\r\n\r\n{}",
+        ) {
+            Ok(server) => server,
+            Err(err) if err.kind() == ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("failed to spawn local test server: {err}"),
+        };
+        let embedder = SemanticModelHttpEmbedder {
+            client: Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .expect("client"),
+            endpoint: parse_local_endpoint(&endpoint).expect("endpoint"),
+            model: "nomic-embed-text".to_string(),
+            version: "semantic-model-http:test".to_string(),
+            strict: true,
+            fallback: SemanticLiteEmbedder,
+        };
+
+        let vector = embedder.embed("oauth login flow");
+        assert_eq!(vector.len(), EMBED_DIM);
+        let reason = embedding_strict_error().expect("strict reason");
+        assert!(reason.contains("non-success status"));
+        handle.join().expect("server join");
+        reset_strict_embedder_error_for_tests();
+    }
+
+    #[test]
+    fn semantic_model_http_embedder_uses_server_embedding_on_success() {
+        let _guard = strict_test_guard();
+        reset_strict_embedder_error_for_tests();
+        let body = r#"{"embedding":[0.1,0.2,0.3,0.4]}"#;
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let (endpoint, handle) = match spawn_single_response_server(&response) {
+            Ok(server) => server,
+            Err(err) if err.kind() == ErrorKind::PermissionDenied => return,
+            Err(err) => panic!("failed to spawn local test server: {err}"),
+        };
+        let embedder = SemanticModelHttpEmbedder {
+            client: Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .expect("client"),
+            endpoint: parse_local_endpoint(&endpoint).expect("endpoint"),
+            model: "nomic-embed-text".to_string(),
+            version: "semantic-model-http:test".to_string(),
+            strict: true,
+            fallback: SemanticLiteEmbedder,
+        };
+
+        let vector = embedder.embed("oauth login flow");
+        assert_eq!(vector.len(), EMBED_DIM);
+        // Successful server response must not set strict error state.
+        assert!(embedding_strict_error().is_none());
+        handle.join().expect("server join");
+        reset_strict_embedder_error_for_tests();
     }
 
     #[test]
@@ -281,5 +727,29 @@ mod tests {
             sum += a[i] * b[i];
         }
         sum
+    }
+
+    fn spawn_single_response_server(
+        response: &str,
+    ) -> std::io::Result<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let payload = response.as_bytes().to_vec();
+        let handle = thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buffer = [0u8; 1024];
+                let _ = stream.read(&mut buffer);
+                let _ = stream.write_all(&payload);
+                let _ = stream.flush();
+            }
+        });
+        Ok((format!("http://{addr}/api/embeddings"), handle))
+    }
+
+    fn strict_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }

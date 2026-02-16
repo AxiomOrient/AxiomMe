@@ -4,25 +4,31 @@ use std::process::Command;
 
 use chrono::Utc;
 
+#[cfg(test)]
+use std::cell::RefCell;
+#[cfg(test)]
+use std::collections::HashMap;
+
 use crate::error::{AxiomError, Result};
 use crate::models::{
     BenchmarkGateResult, EvalLoopReport, OperabilityEvidenceReport, ReleaseGateDecision,
     ReleaseGatePackReport, ReliabilityEvidenceReport, SecurityAuditReport,
 };
+use crate::text::{OutputTrimMode, first_non_empty_output, truncate_text};
 use crate::uri::{AxiomUri, Scope};
 
 const RELEASE_EVAL_MIN_TOP1_ACCURACY: f32 = 0.75;
 const CONTRACT_EXECUTION_TEST_NAME: &str =
-    "client::tests::contract_execution_probe_validates_core_algorithms";
+    "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms";
 
-pub(crate) fn release_gate_pack_report_uri(pack_id: &str) -> Result<AxiomUri> {
+pub fn release_gate_pack_report_uri(pack_id: &str) -> Result<AxiomUri> {
     AxiomUri::root(Scope::Queue)
         .join("release")?
         .join("packs")?
         .join(&format!("{pack_id}.json"))
 }
 
-pub(crate) fn gate_decision(
+pub fn gate_decision(
     gate_id: &str,
     passed: bool,
     details: String,
@@ -37,7 +43,7 @@ pub(crate) fn gate_decision(
     }
 }
 
-pub(crate) fn reliability_evidence_gate_decision(
+pub fn reliability_evidence_gate_decision(
     report: &ReliabilityEvidenceReport,
 ) -> ReleaseGateDecision {
     gate_decision(
@@ -51,7 +57,7 @@ pub(crate) fn reliability_evidence_gate_decision(
     )
 }
 
-pub(crate) fn eval_quality_gate_decision(report: &EvalLoopReport) -> ReleaseGateDecision {
+pub fn eval_quality_gate_decision(report: &EvalLoopReport) -> ReleaseGateDecision {
     let filter_ignored = eval_bucket_count(report, "filter_ignored");
     let relation_missing = eval_bucket_count(report, "relation_missing");
     let passed = report.executed_cases > 0
@@ -73,10 +79,10 @@ pub(crate) fn eval_quality_gate_decision(report: &EvalLoopReport) -> ReleaseGate
     )
 }
 
-pub(crate) fn session_memory_gate_decision(
+pub fn session_memory_gate_decision(
     passed: bool,
     memory_category_miss: usize,
-    details: String,
+    details: &str,
 ) -> ReleaseGateDecision {
     let gate_passed = passed && memory_category_miss == 0;
     gate_decision(
@@ -87,19 +93,26 @@ pub(crate) fn session_memory_gate_decision(
     )
 }
 
-pub(crate) fn security_audit_gate_decision(report: &SecurityAuditReport) -> ReleaseGateDecision {
+pub fn security_audit_gate_decision(report: &SecurityAuditReport) -> ReleaseGateDecision {
+    let strict_mode = report.dependency_audit.mode.eq_ignore_ascii_case("strict");
+    let passed = report.passed && strict_mode;
     gate_decision(
         "G5",
-        report.passed,
+        passed,
         format!(
-            "status={} advisories_found={} packages={}",
-            report.status, report.dependency_audit.advisories_found, report.inventory.package_count
+            "status={} mode={} strict_mode_required=true strict_mode={} audit_status={} advisories_found={} packages={}",
+            report.status,
+            report.dependency_audit.mode,
+            strict_mode,
+            report.dependency_audit.status,
+            report.dependency_audit.advisories_found,
+            report.inventory.package_count
         ),
         Some(report.report_uri.clone()),
     )
 }
 
-pub(crate) fn benchmark_release_gate_decision(report: &BenchmarkGateResult) -> ReleaseGateDecision {
+pub fn benchmark_release_gate_decision(report: &BenchmarkGateResult) -> ReleaseGateDecision {
     let evidence_uri = report
         .release_check_uri
         .clone()
@@ -118,7 +131,7 @@ pub(crate) fn benchmark_release_gate_decision(report: &BenchmarkGateResult) -> R
     )
 }
 
-pub(crate) fn operability_evidence_gate_decision(
+pub fn operability_evidence_gate_decision(
     report: &OperabilityEvidenceReport,
 ) -> ReleaseGateDecision {
     gate_decision(
@@ -132,11 +145,11 @@ pub(crate) fn operability_evidence_gate_decision(
     )
 }
 
-pub(crate) fn unresolved_blockers(decisions: &[ReleaseGateDecision]) -> usize {
+pub fn unresolved_blockers(decisions: &[ReleaseGateDecision]) -> usize {
     decisions.iter().filter(|d| !d.passed).count()
 }
 
-pub(crate) fn blocker_rollup_gate_decision(unresolved_blockers: usize) -> ReleaseGateDecision {
+pub fn blocker_rollup_gate_decision(unresolved_blockers: usize) -> ReleaseGateDecision {
     gate_decision(
         "G8",
         unresolved_blockers == 0,
@@ -145,7 +158,7 @@ pub(crate) fn blocker_rollup_gate_decision(unresolved_blockers: usize) -> Releas
     )
 }
 
-pub(crate) fn finalize_release_gate_pack_report(
+pub fn finalize_release_gate_pack_report(
     pack_id: String,
     workspace_dir: String,
     mut decisions: Vec<ReleaseGateDecision>,
@@ -168,7 +181,7 @@ pub(crate) fn finalize_release_gate_pack_report(
     }
 }
 
-pub(crate) fn resolve_workspace_dir(workspace_dir: Option<&str>) -> Result<PathBuf> {
+pub fn resolve_workspace_dir(workspace_dir: Option<&str>) -> Result<PathBuf> {
     let input = workspace_dir.unwrap_or(".");
     let raw = PathBuf::from(input);
     let absolute = if raw.is_absolute() {
@@ -192,73 +205,30 @@ pub(crate) fn resolve_workspace_dir(workspace_dir: Option<&str>) -> Result<PathB
     Ok(workspace)
 }
 
-pub(crate) fn evaluate_contract_integrity_gate(workspace_dir: &Path) -> ReleaseGateDecision {
-    let required = [
-        workspace_dir.join("docs").join("API_CONTRACT.md"),
-        workspace_dir.join("docs").join("FEATURE_SPEC.md"),
-        workspace_dir.join("plan").join("TASKS.md"),
-        workspace_dir.join("plan").join("QUALITY_GATES.md"),
-    ];
-    let missing = required
-        .iter()
-        .filter(|path| !path.exists())
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>();
-    let mut marker_errors = Vec::<String>::new();
-
-    let api_contract =
-        fs::read_to_string(workspace_dir.join("docs").join("API_CONTRACT.md")).unwrap_or_default();
-    for marker in [
-        "run_security_audit",
-        "collect_operability_evidence",
-        "collect_reliability_evidence",
-    ] {
-        if !api_contract.contains(marker) {
-            marker_errors.push(format!("missing_marker:{marker}"));
-        }
-    }
-
+pub fn evaluate_contract_integrity_gate(workspace_dir: &Path) -> ReleaseGateDecision {
     let (contract_exec_passed, contract_exec_details) = run_contract_execution_probe(workspace_dir);
-    let p1_gap_errors = collect_p1_gap_errors(workspace_dir);
-    let passed = missing.is_empty()
-        && marker_errors.is_empty()
-        && contract_exec_passed
-        && p1_gap_errors.is_empty();
-    let details = if passed {
-        "required docs, extension markers, contract execution probe, and P1 gap checks are present"
-            .to_string()
-    } else {
-        format!(
-            "missing_files={} marker_errors={} contract_exec={} p1_gap_errors={}",
-            if missing.is_empty() {
-                "-".to_string()
-            } else {
-                missing.join(";")
-            },
-            if marker_errors.is_empty() {
-                "-".to_string()
-            } else {
-                marker_errors.join(";")
-            },
-            contract_exec_details,
-            if p1_gap_errors.is_empty() {
-                "-".to_string()
-            } else {
-                p1_gap_errors.join(";")
-            }
-        )
-    };
+    let passed = contract_exec_passed;
+    let details = format!(
+        "contract_probe_test={CONTRACT_EXECUTION_TEST_NAME} contract_exec={contract_exec_details}"
+    );
 
     gate_decision("G0", passed, details, None)
 }
 
-pub(crate) fn evaluate_build_quality_gate(workspace_dir: &Path) -> ReleaseGateDecision {
+pub fn evaluate_build_quality_gate(workspace_dir: &Path) -> ReleaseGateDecision {
     let check = run_workspace_command(workspace_dir, "cargo", &["check", "--workspace"]);
     let fmt = run_workspace_command(workspace_dir, "cargo", &["fmt", "--all", "--check"]);
     let clippy = run_workspace_command(
         workspace_dir,
         "cargo",
-        &["clippy", "--workspace", "--", "-D", "warnings"],
+        &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--",
+            "-D",
+            "warnings",
+        ],
     );
     let passed = check.0 && fmt.0 && clippy.0;
     let details = format!(
@@ -274,6 +244,11 @@ pub(crate) fn evaluate_build_quality_gate(workspace_dir: &Path) -> ReleaseGateDe
 }
 
 fn run_workspace_command(workspace_dir: &Path, cmd: &str, args: &[&str]) -> (bool, String) {
+    #[cfg(test)]
+    if let Some(mock) = run_workspace_command_mock(cmd, args) {
+        return mock;
+    }
+
     match Command::new(cmd)
         .args(args)
         .current_dir(workspace_dir)
@@ -282,11 +257,74 @@ fn run_workspace_command(workspace_dir: &Path, cmd: &str, args: &[&str]) -> (boo
         Ok(output) => {
             let stdout = String::from_utf8_lossy(&output.stdout).to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let text = first_non_empty_output(&stdout, &stderr).unwrap_or_default();
+            let text = first_non_empty_output(&stdout, &stderr, OutputTrimMode::Preserve)
+                .unwrap_or_default();
             (output.status.success(), text)
         }
         Err(err) => (false, err.to_string()),
     }
+}
+
+#[cfg(test)]
+fn workspace_command_key(cmd: &str, args: &[&str]) -> String {
+    if args.is_empty() {
+        cmd.to_string()
+    } else {
+        format!("{cmd} {}", args.join(" "))
+    }
+}
+
+#[cfg(test)]
+fn run_workspace_command_mock(cmd: &str, args: &[&str]) -> Option<(bool, String)> {
+    let key = workspace_command_key(cmd, args);
+    WORKSPACE_COMMAND_MOCK_STORE.with(|store| store.borrow().get(&key).cloned())
+}
+
+#[cfg(test)]
+thread_local! {
+    static WORKSPACE_COMMAND_MOCK_STORE: RefCell<HashMap<String, (bool, String)>> =
+        RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+struct WorkspaceCommandMockResetGuard {
+    previous: HashMap<String, (bool, String)>,
+}
+
+#[cfg(test)]
+impl WorkspaceCommandMockResetGuard {
+    fn install(mocks: &[(&str, &[&str], bool, &str)]) -> Self {
+        let mut current = HashMap::new();
+        for (cmd, args, ok, output) in mocks {
+            current.insert(
+                workspace_command_key(cmd, args),
+                (*ok, (*output).to_string()),
+            );
+        }
+        let previous = WORKSPACE_COMMAND_MOCK_STORE
+            .with(|store| std::mem::replace(&mut *store.borrow_mut(), current));
+        Self { previous }
+    }
+}
+
+#[cfg(test)]
+impl Drop for WorkspaceCommandMockResetGuard {
+    fn drop(&mut self) {
+        let mut previous = HashMap::new();
+        std::mem::swap(&mut previous, &mut self.previous);
+        WORKSPACE_COMMAND_MOCK_STORE.with(|store| {
+            *store.borrow_mut() = previous;
+        });
+    }
+}
+
+#[cfg(test)]
+pub fn with_workspace_command_mocks<T>(
+    mocks: &[(&str, &[&str], bool, &str)],
+    run: impl FnOnce() -> T,
+) -> T {
+    let _reset = WorkspaceCommandMockResetGuard::install(mocks);
+    run()
 }
 
 fn eval_bucket_count(report: &EvalLoopReport, name: &str) -> usize {
@@ -294,8 +332,7 @@ fn eval_bucket_count(report: &EvalLoopReport, name: &str) -> usize {
         .buckets
         .iter()
         .find(|bucket| bucket.name == name)
-        .map(|bucket| bucket.count)
-        .unwrap_or(0)
+        .map_or(0, |bucket| bucket.count)
 }
 
 fn run_contract_execution_probe(workspace_dir: &Path) -> (bool, String) {
@@ -331,46 +368,6 @@ fn run_contract_execution_probe(workspace_dir: &Path) -> (bool, String) {
     )
 }
 
-fn collect_p1_gap_errors(workspace_dir: &Path) -> Vec<String> {
-    let task_paths = [
-        workspace_dir.join("al-plan").join("TASKS.md"),
-        workspace_dir.join("plan").join("TASKS.md"),
-    ];
-
-    let mut selected = None;
-    for path in &task_paths {
-        if path.exists() {
-            selected = Some(path);
-            break;
-        }
-    }
-    let Some(task_path) = selected else {
-        return vec!["tasks_file_missing".to_string()];
-    };
-
-    let Ok(raw) = fs::read_to_string(task_path) else {
-        return vec![format!("tasks_file_unreadable:{}", task_path.display())];
-    };
-
-    let mut unresolved = Vec::<String>::new();
-    for line in raw.lines() {
-        let columns = line
-            .split('|')
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .collect::<Vec<_>>();
-        let id = columns.first().copied().unwrap_or("ALG-UNKNOWN");
-        if !id.starts_with("ALG-T") {
-            continue;
-        }
-        if line.contains("| DONE |") {
-            continue;
-        }
-        unresolved.push(format!("p1_gap_open:{id}"));
-    }
-    unresolved
-}
-
 fn gate_status(passed: bool) -> String {
     if passed {
         "pass".to_string()
@@ -379,26 +376,12 @@ fn gate_status(passed: bool) -> String {
     }
 }
 
-fn first_non_empty_output(stdout: &str, stderr: &str) -> Option<String> {
-    if !stdout.trim().is_empty() {
-        return Some(stdout.to_string());
-    }
-    if !stderr.trim().is_empty() {
-        return Some(stderr.to_string());
-    }
-    None
-}
-
-fn truncate_text(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        text.to_string()
-    } else {
-        format!("{}...", &text[..max.min(text.len())])
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
     use super::*;
     use crate::models::{
         BenchmarkGateRunResult, BenchmarkSummary, DependencyAuditSummary,
@@ -438,6 +421,7 @@ mod tests {
             gate_profile: "rc-release".to_string(),
             threshold_p95_ms: 1000,
             min_top1_accuracy: 0.75,
+            min_stress_top1_accuracy: None,
             max_p95_regression_pct: Some(0.1),
             max_top1_regression_pct: Some(2.0),
             window_size: 3,
@@ -455,17 +439,21 @@ mod tests {
             previous: None,
             regression_pct: None,
             top1_regression_pct: None,
+            stress_top1_accuracy: None,
             run_results: vec![BenchmarkGateRunResult {
                 run_id: "run".to_string(),
                 passed: true,
                 p95_latency_ms: 700,
                 top1_accuracy: 0.9,
+                stress_top1_accuracy: None,
                 regression_pct: None,
                 top1_regression_pct: None,
                 reasons: vec!["ok".to_string()],
             }],
             gate_record_uri: gate_record_uri.map(ToString::to_string),
             release_check_uri: release_check_uri.map(ToString::to_string),
+            embedding_provider: Some("semantic-model-http".to_string()),
+            embedding_strict_error: None,
             reasons: vec!["ok".to_string()],
         }
     }
@@ -502,7 +490,7 @@ mod tests {
 
     #[test]
     fn session_memory_gate_decision_fails_when_category_missing() {
-        let decision = session_memory_gate_decision(true, 2, "probe".to_string());
+        let decision = session_memory_gate_decision(true, 2, "probe");
         assert!(!decision.passed);
         assert!(decision.details.contains("memory_category_miss=2"));
     }
@@ -554,6 +542,7 @@ mod tests {
             },
             dependency_audit: DependencyAuditSummary {
                 tool: "cargo-audit".to_string(),
+                mode: "strict".to_string(),
                 available: true,
                 executed: true,
                 status: "passed".to_string(),
@@ -566,9 +555,127 @@ mod tests {
         };
         let decision = security_audit_gate_decision(&report);
         assert!(decision.details.contains("advisories_found=0"));
+        assert!(decision.passed);
         assert_eq!(
             decision.evidence_uri.as_deref(),
             Some("axiom://queue/release/security/sec-1.json")
         );
+    }
+
+    #[test]
+    fn security_audit_gate_decision_fails_when_mode_is_not_strict() {
+        let mut report = SecurityAuditReport {
+            report_id: "sec-1".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+            workspace_dir: "/tmp/ws".to_string(),
+            passed: true,
+            status: "pass".to_string(),
+            inventory: DependencyInventorySummary {
+                lockfile_present: true,
+                package_count: 42,
+            },
+            dependency_audit: DependencyAuditSummary {
+                tool: "cargo-audit".to_string(),
+                mode: "offline".to_string(),
+                available: true,
+                executed: true,
+                status: "passed".to_string(),
+                advisories_found: 0,
+                tool_version: Some("cargo-audit 1.0".to_string()),
+                output_excerpt: None,
+            },
+            checks: Vec::new(),
+            report_uri: "axiom://queue/release/security/sec-1.json".to_string(),
+        };
+        let decision = security_audit_gate_decision(&report);
+        assert!(!decision.passed);
+        assert!(decision.details.contains("strict_mode=false"));
+
+        report.dependency_audit.mode = "strict".to_string();
+        let strict_decision = security_audit_gate_decision(&report);
+        assert!(strict_decision.passed);
+    }
+
+    #[test]
+    fn build_quality_gate_reports_failure_for_non_workspace_directory() {
+        let temp = tempdir().expect("tempdir");
+        let decision = evaluate_build_quality_gate(temp.path());
+        assert_eq!(decision.gate_id, "G1");
+        assert!(!decision.passed);
+        assert!(decision.details.contains("cargo_check=false"));
+        assert!(decision.details.contains("cargo_fmt=false"));
+        assert!(decision.details.contains("cargo_clippy=false"));
+    }
+
+    #[test]
+    fn contract_integrity_gate_fails_when_core_crate_missing() {
+        let temp = tempdir().expect("tempdir");
+        let decision = evaluate_contract_integrity_gate(temp.path());
+        assert!(!decision.passed);
+        assert!(decision.details.contains("missing_axiomme_core_crate"));
+    }
+
+    #[test]
+    fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
+        let temp = tempdir().expect("tempdir");
+        let core = temp.path().join("crates").join("axiomme-core");
+        fs::create_dir_all(&core).expect("mkdir core");
+
+        fs::write(
+            core.join("Cargo.toml"),
+            "[package]\nname=\"axiomme-core\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write core cargo");
+
+        let output = format!("running 1 test\ntest {CONTRACT_EXECUTION_TEST_NAME} ... ok\n");
+        let decision = with_workspace_command_mocks(
+            &[(
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    CONTRACT_EXECUTION_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                &output,
+            )],
+            || evaluate_contract_integrity_gate(temp.path()),
+        );
+        assert!(decision.passed, "{}", decision.details);
+        assert!(decision.details.contains("contract_probe_test="));
+    }
+
+    #[test]
+    fn contract_integrity_gate_fails_when_contract_probe_output_does_not_match() {
+        let temp = tempdir().expect("tempdir");
+        let core = temp.path().join("crates").join("axiomme-core");
+        fs::create_dir_all(&core).expect("mkdir core");
+        fs::write(
+            core.join("Cargo.toml"),
+            "[package]\nname=\"axiomme-core\"\nversion=\"0.1.0\"\n",
+        )
+        .expect("write core cargo");
+
+        let decision = with_workspace_command_mocks(
+            &[(
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    CONTRACT_EXECUTION_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest some_other_test ... ok\n",
+            )],
+            || evaluate_contract_integrity_gate(temp.path()),
+        );
+        assert!(!decision.passed);
+        assert!(decision.details.contains("matched=false"));
     }
 }

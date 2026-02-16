@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::process::Command;
 
 use chrono::Utc;
@@ -9,16 +10,21 @@ use crate::models::{
 };
 use crate::uri::AxiomUri;
 
-pub(crate) fn percentile_u128(sorted: &[u128], percentile: f32) -> u128 {
+pub fn percentile_u128(sorted: &[u128], percentile_basis_points: u16) -> u128 {
     if sorted.is_empty() {
         return 0;
     }
-    let p = percentile.clamp(0.0, 1.0);
-    let rank = ((sorted.len() as f32 - 1.0) * p).round() as usize;
+    let bounded = usize::from(percentile_basis_points.min(10_000));
+    let len_minus_one = sorted.len() - 1;
+    let rank = (len_minus_one.saturating_mul(bounded) + 5_000) / 10_000;
     sorted[rank.min(sorted.len() - 1)]
 }
 
-pub(crate) fn average_latency_ms(values: &[u128]) -> f32 {
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "latency summaries are emitted as compact f32 metrics"
+)]
+pub fn average_latency_ms(values: &[u128]) -> f32 {
     if values.is_empty() {
         0.0
     } else {
@@ -26,7 +32,7 @@ pub(crate) fn average_latency_ms(values: &[u128]) -> f32 {
     }
 }
 
-pub(crate) fn command_stdout(cmd: &str, args: &[&str]) -> Option<String> {
+pub fn command_stdout(cmd: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(cmd).args(args).output().ok()?;
     if !output.status.success() {
         return None;
@@ -35,7 +41,7 @@ pub(crate) fn command_stdout(cmd: &str, args: &[&str]) -> Option<String> {
     if text.is_empty() { None } else { Some(text) }
 }
 
-pub(crate) fn infer_corpus_profile(file_count: usize, total_bytes: u64) -> String {
+pub fn infer_corpus_profile(file_count: usize, total_bytes: u64) -> String {
     if file_count >= 5_000 || total_bytes >= 1_000_000_000 {
         "M".to_string()
     } else if file_count >= 1_500 || total_bytes >= 300_000_000 {
@@ -68,7 +74,7 @@ fn classify_benchmark_query(query: &str) -> &'static str {
     }
 }
 
-pub(crate) fn build_benchmark_query_set_metadata(
+pub fn build_benchmark_query_set_metadata(
     query_cases: &[EvalQueryCase],
     fixture_name: Option<&str>,
 ) -> BenchmarkQuerySetMetadata {
@@ -88,9 +94,10 @@ pub(crate) fn build_benchmark_query_set_metadata(
     let measured_queries = total_queries.saturating_sub(warmup_queries);
     let date = Utc::now().format("%Y%m%d").to_string();
     let version = format!("qset-v1-{date}");
-    let source = fixture_name
-        .map(|name| format!("fixture:{name}"))
-        .unwrap_or_else(|| "generated:golden+trace".to_string());
+    let source = fixture_name.map_or_else(
+        || infer_generated_query_source(query_cases),
+        |name| format!("fixture:{name}"),
+    );
 
     BenchmarkQuerySetMetadata {
         version,
@@ -104,7 +111,39 @@ pub(crate) fn build_benchmark_query_set_metadata(
     }
 }
 
-pub(crate) fn build_benchmark_acceptance_result(
+fn infer_generated_query_source(query_cases: &[EvalQueryCase]) -> String {
+    let mut has_golden = false;
+    let mut has_trace = false;
+    let mut has_stress = false;
+
+    for case in query_cases {
+        let source = case.source.trim().to_ascii_lowercase();
+        if source.starts_with("golden") {
+            has_golden = true;
+        } else if source.starts_with("stress:") {
+            has_stress = true;
+        } else if source.starts_with("trace") {
+            has_trace = true;
+        }
+    }
+
+    let mut parts = Vec::<&str>::new();
+    if has_golden {
+        parts.push("golden");
+    }
+    if has_stress {
+        parts.push("stress");
+    }
+    if has_trace {
+        parts.push("trace");
+    }
+    if parts.is_empty() {
+        parts.push("unknown");
+    }
+    format!("generated:{}", parts.join("+"))
+}
+
+pub fn build_benchmark_acceptance_result(
     find_p95_latency_ms: u128,
     search_p95_latency_ms: u128,
     commit_p95_latency_ms: u128,
@@ -219,7 +258,7 @@ fn shell_quote(input: &str) -> String {
     out
 }
 
-pub(crate) fn build_eval_replay_command(case: &EvalQueryCase, search_limit: usize) -> String {
+pub fn build_eval_replay_command(case: &EvalQueryCase, search_limit: usize) -> String {
     let mut cmd = format!(
         "axiomme find {} --limit {}",
         shell_quote(&case.query),
@@ -232,7 +271,7 @@ pub(crate) fn build_eval_replay_command(case: &EvalQueryCase, search_limit: usiz
     cmd
 }
 
-pub(crate) fn classify_eval_bucket(
+pub fn classify_eval_bucket(
     case: &EvalQueryCase,
     actual_top_uri: Option<&str>,
     passed: bool,
@@ -257,207 +296,342 @@ pub(crate) fn classify_eval_bucket(
     "ranking_regression"
 }
 
-pub(crate) fn format_eval_report_markdown(report: &EvalLoopReport) -> String {
+fn write_line(out: &mut String, args: std::fmt::Arguments<'_>) {
+    let _ = out.write_fmt(args);
+}
+
+fn write_section_header(out: &mut String, title: &str) {
+    write_line(out, format_args!("\n## {title}\n\n"));
+}
+
+pub fn format_eval_report_markdown(report: &EvalLoopReport) -> String {
     let mut out = String::new();
     out.push_str("# Eval Report\n\n");
-    out.push_str(&format!("- run_id: `{}`\n", report.run_id));
-    out.push_str(&format!("- created_at: `{}`\n", report.created_at));
-    out.push_str(&format!("- include_golden: `{}`\n", report.include_golden));
-    out.push_str(&format!("- golden_only: `{}`\n", report.golden_only));
-    out.push_str(&format!(
-        "- executed_cases: `{}` (pass `{}`, fail `{}`)\n",
-        report.executed_cases, report.passed, report.failed
-    ));
-    out.push_str(&format!("- top1_accuracy: `{:.4}`\n", report.top1_accuracy));
-    out.push_str(&format!(
-        "- trace_cases_used: `{}`, golden_cases_used: `{}`\n",
-        report.trace_cases_used, report.golden_cases_used
-    ));
-    out.push_str(&format!("- query_set_uri: `{}`\n", report.query_set_uri));
-    out.push_str(&format!("- report_uri: `{}`\n", report.report_uri));
-    out.push_str("\n## Buckets\n\n");
+    write_line(&mut out, format_args!("- run_id: `{}`\n", report.run_id));
+    write_line(
+        &mut out,
+        format_args!("- created_at: `{}`\n", report.created_at),
+    );
+    write_line(
+        &mut out,
+        format_args!("- include_golden: `{}`\n", report.include_golden),
+    );
+    write_line(
+        &mut out,
+        format_args!("- golden_only: `{}`\n", report.golden_only),
+    );
+    write_line(
+        &mut out,
+        format_args!(
+            "- executed_cases: `{}` (pass `{}`, fail `{}`)\n",
+            report.executed_cases, report.passed, report.failed
+        ),
+    );
+    write_line(
+        &mut out,
+        format_args!("- top1_accuracy: `{:.4}`\n", report.top1_accuracy),
+    );
+    write_line(
+        &mut out,
+        format_args!(
+            "- trace_cases_used: `{}`, golden_cases_used: `{}`\n",
+            report.trace_cases_used, report.golden_cases_used
+        ),
+    );
+    write_line(
+        &mut out,
+        format_args!("- query_set_uri: `{}`\n", report.query_set_uri),
+    );
+    write_line(
+        &mut out,
+        format_args!("- report_uri: `{}`\n", report.report_uri),
+    );
+
+    write_section_header(&mut out, "Buckets");
     for bucket in &report.buckets {
-        out.push_str(&format!("- {}: {}\n", bucket.name, bucket.count));
+        write_line(
+            &mut out,
+            format_args!("- {}: {}\n", bucket.name, bucket.count),
+        );
     }
-    out.push_str("\n## Failures\n\n");
+
+    write_section_header(&mut out, "Failures");
     if report.failures.is_empty() {
         out.push_str("- none\n");
     } else {
         for failure in report.failures.iter().take(20) {
-            out.push_str(&format!(
-                "- [{}] query=`{}` expected=`{}` actual=`{}` source=`{}`\n",
-                failure.bucket,
-                failure.query,
-                failure.expected_top_uri.as_deref().unwrap_or("-"),
-                failure.actual_top_uri.as_deref().unwrap_or("-"),
-                failure.source
-            ));
-            out.push_str(&format!("  replay: `{}`\n", failure.replay_command));
+            write_line(
+                &mut out,
+                format_args!(
+                    "- [{}] query=`{}` expected=`{}` actual=`{}` source=`{}`\n",
+                    failure.bucket,
+                    failure.query,
+                    failure.expected_top_uri.as_deref().unwrap_or("-"),
+                    failure.actual_top_uri.as_deref().unwrap_or("-"),
+                    failure.source
+                ),
+            );
+            write_line(
+                &mut out,
+                format_args!("  replay: `{}`\n", failure.replay_command),
+            );
         }
     }
     out
 }
 
-pub(crate) fn format_benchmark_report_markdown(report: &BenchmarkReport) -> String {
+pub fn format_benchmark_report_markdown(report: &BenchmarkReport) -> String {
     let mut out = String::new();
-    out.push_str("# Benchmark Report\n\n");
-    out.push_str(&format!("- run_id: `{}`\n", report.run_id));
-    out.push_str(&format!("- created_at: `{}`\n", report.created_at));
-    out.push_str(&format!("- query_limit: `{}`\n", report.query_limit));
-    out.push_str(&format!("- search_limit: `{}`\n", report.search_limit));
-    out.push_str(&format!("- include_golden: `{}`\n", report.include_golden));
-    out.push_str(&format!("- include_trace: `{}`\n", report.include_trace));
-    out.push_str(&format!(
-        "- executed_cases: `{}` (pass `{}`, fail `{}`)\n",
-        report.executed_cases, report.passed, report.failed
-    ));
-    out.push_str(&format!("- error_rate: `{:.4}`\n", report.error_rate));
-    out.push_str(&format!("- top1_accuracy: `{:.4}`\n", report.top1_accuracy));
-    out.push_str(&format!("- ndcg@10: `{:.4}`\n", report.ndcg_at_10));
-    out.push_str(&format!("- recall@10: `{:.4}`\n", report.recall_at_10));
-    out.push_str(&format!(
-        "- find_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
-        report.p50_latency_ms, report.p95_latency_ms, report.p99_latency_ms, report.avg_latency_ms
-    ));
-    out.push_str(&format!(
-        "- search_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
-        report.search_p50_latency_ms,
-        report.search_p95_latency_ms,
-        report.search_p99_latency_ms,
-        report.search_avg_latency_ms
-    ));
-    out.push_str(&format!(
-        "- commit_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
-        report.commit_p50_latency_ms,
-        report.commit_p95_latency_ms,
-        report.commit_p99_latency_ms,
-        report.commit_avg_latency_ms
-    ));
-    out.push_str(&format!("- case_set_uri: `{}`\n", report.case_set_uri));
-    out.push_str(&format!("- report_uri: `{}`\n", report.report_uri));
-    out.push_str("\n## Environment\n\n");
-    out.push_str(&format!(
-        "- machine_profile: `{}`\n",
-        report.environment.machine_profile
-    ));
-    out.push_str(&format!(
-        "- cpu_model: `{}`\n",
-        report.environment.cpu_model
-    ));
-    out.push_str(&format!(
-        "- ram_bytes: `{}`\n",
-        report.environment.ram_bytes
-    ));
-    out.push_str(&format!(
-        "- os_version: `{}`\n",
-        report.environment.os_version
-    ));
-    out.push_str(&format!(
-        "- rustc_version: `{}`\n",
-        report.environment.rustc_version
-    ));
-    out.push_str(&format!(
-        "- retrieval_backend: `{}`\n",
-        report.environment.retrieval_backend
-    ));
-    out.push_str(&format!(
-        "- reranker_profile: `{}`\n",
-        report.environment.reranker_profile
-    ));
-    out.push_str(&format!(
-        "- qdrant_enabled: `{}`\n",
-        report.environment.qdrant_enabled
-    ));
-    out.push_str(&format!(
-        "- qdrant_version: `{}`\n",
-        report.environment.qdrant_version
-    ));
-    out.push_str(&format!(
-        "- qdrant_base_url: `{}`\n",
-        report.environment.qdrant_base_url.as_deref().unwrap_or("-")
-    ));
-    out.push_str(&format!(
-        "- qdrant_collection: `{}`\n",
-        report
-            .environment
-            .qdrant_collection
-            .as_deref()
-            .unwrap_or("-")
-    ));
-    out.push_str("\n## Corpus\n\n");
-    out.push_str(&format!("- profile: `{}`\n", report.corpus.profile));
-    out.push_str(&format!("- snapshot_id: `{}`\n", report.corpus.snapshot_id));
-    out.push_str(&format!("- root_uri: `{}`\n", report.corpus.root_uri));
-    out.push_str(&format!("- file_count: `{}`\n", report.corpus.file_count));
-    out.push_str(&format!("- total_bytes: `{}`\n", report.corpus.total_bytes));
-    out.push_str("\n## Query Set\n\n");
-    out.push_str(&format!("- version: `{}`\n", report.query_set.version));
-    out.push_str(&format!("- source: `{}`\n", report.query_set.source));
-    out.push_str(&format!(
-        "- total_queries: `{}`\n",
-        report.query_set.total_queries
-    ));
-    out.push_str(&format!(
-        "- semantic_queries: `{}`\n",
-        report.query_set.semantic_queries
-    ));
-    out.push_str(&format!(
-        "- lexical_queries: `{}`\n",
-        report.query_set.lexical_queries
-    ));
-    out.push_str(&format!(
-        "- mixed_queries: `{}`\n",
-        report.query_set.mixed_queries
-    ));
-    out.push_str(&format!(
-        "- warmup_queries: `{}`\n",
-        report.query_set.warmup_queries
-    ));
-    out.push_str(&format!(
-        "- measured_queries: `{}`\n",
-        report.query_set.measured_queries
-    ));
-    out.push_str("\n## Acceptance Mapping\n\n");
-    out.push_str(&format!(
-        "- protocol_id: `{}`\n",
-        report.acceptance.protocol_id
-    ));
-    out.push_str(&format!("- passed: `{}`\n", report.acceptance.passed));
-    for check in &report.acceptance.checks {
-        out.push_str(&format!(
-            "- {}: {} (expected `{}`, actual `{}`)\n",
-            check.name,
-            if check.passed { "pass" } else { "fail" },
-            check.expected,
-            check.actual
-        ));
-    }
-    out.push_str("\n## Slowest Cases\n\n");
+    write_benchmark_header(&mut out, report);
+    write_benchmark_environment(&mut out, report);
+    write_benchmark_corpus(&mut out, report);
+    write_benchmark_query_set(&mut out, report);
+    write_benchmark_acceptance(&mut out, report);
+    write_benchmark_slowest_cases(&mut out, report);
+    out
+}
 
+fn write_benchmark_header(out: &mut String, report: &BenchmarkReport) {
+    out.push_str("# Benchmark Report\n\n");
+    write_line(out, format_args!("- run_id: `{}`\n", report.run_id));
+    write_line(out, format_args!("- created_at: `{}`\n", report.created_at));
+    write_line(
+        out,
+        format_args!("- query_limit: `{}`\n", report.query_limit),
+    );
+    write_line(
+        out,
+        format_args!("- search_limit: `{}`\n", report.search_limit),
+    );
+    write_line(
+        out,
+        format_args!("- include_golden: `{}`\n", report.include_golden),
+    );
+    write_line(
+        out,
+        format_args!("- include_trace: `{}`\n", report.include_trace),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- executed_cases: `{}` (pass `{}`, fail `{}`)\n",
+            report.executed_cases, report.passed, report.failed
+        ),
+    );
+    write_line(
+        out,
+        format_args!("- error_rate: `{:.4}`\n", report.error_rate),
+    );
+    write_line(
+        out,
+        format_args!("- top1_accuracy: `{:.4}`\n", report.top1_accuracy),
+    );
+    write_line(out, format_args!("- ndcg@10: `{:.4}`\n", report.ndcg_at_10));
+    write_line(
+        out,
+        format_args!("- recall@10: `{:.4}`\n", report.recall_at_10),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- find_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
+            report.p50_latency_ms,
+            report.p95_latency_ms,
+            report.p99_latency_ms,
+            report.avg_latency_ms
+        ),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- search_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
+            report.search_p50_latency_ms,
+            report.search_p95_latency_ms,
+            report.search_p99_latency_ms,
+            report.search_avg_latency_ms
+        ),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- commit_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
+            report.commit_p50_latency_ms,
+            report.commit_p95_latency_ms,
+            report.commit_p99_latency_ms,
+            report.commit_avg_latency_ms
+        ),
+    );
+    write_line(
+        out,
+        format_args!("- case_set_uri: `{}`\n", report.case_set_uri),
+    );
+    write_line(out, format_args!("- report_uri: `{}`\n", report.report_uri));
+}
+
+fn write_benchmark_environment(out: &mut String, report: &BenchmarkReport) {
+    write_section_header(out, "Environment");
+    write_line(
+        out,
+        format_args!(
+            "- machine_profile: `{}`\n",
+            report.environment.machine_profile
+        ),
+    );
+    write_line(
+        out,
+        format_args!("- cpu_model: `{}`\n", report.environment.cpu_model),
+    );
+    write_line(
+        out,
+        format_args!("- ram_bytes: `{}`\n", report.environment.ram_bytes),
+    );
+    write_line(
+        out,
+        format_args!("- os_version: `{}`\n", report.environment.os_version),
+    );
+    write_line(
+        out,
+        format_args!("- rustc_version: `{}`\n", report.environment.rustc_version),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- retrieval_backend: `{}`\n",
+            report.environment.retrieval_backend
+        ),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- reranker_profile: `{}`\n",
+            report.environment.reranker_profile
+        ),
+    );
+}
+
+fn write_benchmark_corpus(out: &mut String, report: &BenchmarkReport) {
+    write_section_header(out, "Corpus");
+    write_line(
+        out,
+        format_args!("- profile: `{}`\n", report.corpus.profile),
+    );
+    write_line(
+        out,
+        format_args!("- snapshot_id: `{}`\n", report.corpus.snapshot_id),
+    );
+    write_line(
+        out,
+        format_args!("- root_uri: `{}`\n", report.corpus.root_uri),
+    );
+    write_line(
+        out,
+        format_args!("- file_count: `{}`\n", report.corpus.file_count),
+    );
+    write_line(
+        out,
+        format_args!("- total_bytes: `{}`\n", report.corpus.total_bytes),
+    );
+}
+
+fn write_benchmark_query_set(out: &mut String, report: &BenchmarkReport) {
+    write_section_header(out, "Query Set");
+    write_line(
+        out,
+        format_args!("- version: `{}`\n", report.query_set.version),
+    );
+    write_line(
+        out,
+        format_args!("- source: `{}`\n", report.query_set.source),
+    );
+    write_line(
+        out,
+        format_args!("- total_queries: `{}`\n", report.query_set.total_queries),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- semantic_queries: `{}`\n",
+            report.query_set.semantic_queries
+        ),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- lexical_queries: `{}`\n",
+            report.query_set.lexical_queries
+        ),
+    );
+    write_line(
+        out,
+        format_args!("- mixed_queries: `{}`\n", report.query_set.mixed_queries),
+    );
+    write_line(
+        out,
+        format_args!("- warmup_queries: `{}`\n", report.query_set.warmup_queries),
+    );
+    write_line(
+        out,
+        format_args!(
+            "- measured_queries: `{}`\n",
+            report.query_set.measured_queries
+        ),
+    );
+}
+
+fn write_benchmark_acceptance(out: &mut String, report: &BenchmarkReport) {
+    write_section_header(out, "Acceptance Mapping");
+    write_line(
+        out,
+        format_args!("- protocol_id: `{}`\n", report.acceptance.protocol_id),
+    );
+    write_line(
+        out,
+        format_args!("- passed: `{}`\n", report.acceptance.passed),
+    );
+    for check in &report.acceptance.checks {
+        write_line(
+            out,
+            format_args!(
+                "- {}: {} (expected `{}`, actual `{}`)\n",
+                check.name,
+                if check.passed { "pass" } else { "fail" },
+                check.expected,
+                check.actual
+            ),
+        );
+    }
+}
+
+fn write_benchmark_slowest_cases(out: &mut String, report: &BenchmarkReport) {
+    write_section_header(out, "Slowest Cases");
     let mut results = report.results.clone();
     results.sort_by(|a, b| b.latency_ms.cmp(&a.latency_ms));
     if results.is_empty() {
         out.push_str("- none\n");
-    } else {
-        for item in results.iter().take(20) {
-            out.push_str(&format!(
+        return;
+    }
+
+    for item in results.iter().take(20) {
+        let rank = item
+            .expected_rank
+            .map_or_else(|| "-".to_string(), |value| value.to_string());
+        write_line(
+            out,
+            format_args!(
                 "- latency={}ms pass={} source={} rank={} query=`{}` expected=`{}` actual=`{}`\n",
                 item.latency_ms,
                 item.passed,
                 item.source,
-                item.expected_rank
-                    .map(|x| x.to_string())
-                    .unwrap_or_else(|| "-".to_string()),
+                rank,
                 item.query,
                 item.expected_top_uri.as_deref().unwrap_or("-"),
                 item.actual_top_uri.as_deref().unwrap_or("-")
-            ));
-        }
+            ),
+        );
     }
-    out
 }
 
-pub(crate) fn to_benchmark_summary(report: BenchmarkReport) -> BenchmarkSummary {
+pub fn to_benchmark_summary(report: BenchmarkReport) -> BenchmarkSummary {
     BenchmarkSummary {
         run_id: report.run_id,
         created_at: report.created_at,
@@ -468,7 +642,7 @@ pub(crate) fn to_benchmark_summary(report: BenchmarkReport) -> BenchmarkSummary 
     }
 }
 
-pub(crate) fn to_trace_metrics_snapshot_summary(
+pub fn to_trace_metrics_snapshot_summary(
     doc: &TraceMetricsSnapshotDocument,
     report_uri: &str,
 ) -> TraceMetricsSnapshotSummary {
@@ -500,6 +674,16 @@ mod tests {
         }
     }
 
+    fn case_with_source(query: &str, source: &str) -> EvalQueryCase {
+        EvalQueryCase {
+            source_trace_id: "trace-1".to_string(),
+            query: query.to_string(),
+            target_uri: None,
+            expected_top_uri: None,
+            source: source.to_string(),
+        }
+    }
+
     #[test]
     fn benchmark_query_set_metadata_tracks_query_mix() {
         let cases = vec![
@@ -516,6 +700,17 @@ mod tests {
         assert_eq!(metadata.warmup_queries, 3);
         assert_eq!(metadata.measured_queries, 0);
         assert_eq!(metadata.source, "fixture:fixture-a");
+    }
+
+    #[test]
+    fn benchmark_query_set_metadata_infers_generated_sources() {
+        let cases = vec![
+            case_with_source("oauth refresh guide", "golden"),
+            case_with_source("oauth refresh gide", "stress:typo"),
+            case_with_source("oauth", "trace-unlabeled"),
+        ];
+        let metadata = build_benchmark_query_set_metadata(&cases, None);
+        assert_eq!(metadata.source, "generated:golden+stress+trace");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 ## 1. Objective
 
 Build a Rust-native context system with a stable local-first workflow, deterministic behavior, and measurable quality.
+The runtime is standalone and self-contained: no external OM engine repository dependency.
 
 ## 2. Hard Constraints
 
@@ -10,7 +11,8 @@ Build a Rust-native context system with a stable local-first workflow, determini
 - Core scopes: `resources`, `user`, `agent`, `session`
 - Internal scopes: `temp`, `queue`
 - `queue` is read-only for non-system operations
-- Legacy naming and legacy URI protocol tokens are prohibited in docs, code, logs, and tests
+- Obsolete naming and obsolete URI protocol tokens are prohibited in docs, code, logs, and tests
+- OM engine is in-repo (`axiomme-core::om`), and runtime integration stays explicit in `axiomme-core`.
 
 ## 3. Core User Stories
 
@@ -47,10 +49,12 @@ Build a Rust-native context system with a stable local-first workflow, determini
 
 - `find(query, target_uri?, limit?, score_threshold?, filter?)`
 - `search(query, target_uri?, session?, limit?, score_threshold?, filter?)`
+- Lexical retrieval normalizes query terms with optional alias/transliteration expansion (`AXIOMME_QUERY_NORMALIZER`, default on).
 - Budget knobs are supported per request: `max_ms`, `max_nodes`, `max_depth`.
 - Every retrieval returns ranked hits and trace metadata.
-- Hybrid backend merge uses rank-based fusion to avoid score-scale mismatch.
 - Post-retrieval reranking supports document-type-aware profile (`AXIOMME_RERANKER=doc-aware-v1|off`).
+- Retrieval backend policy stays explicit and operator-controlled via `AXIOMME_RETRIEVAL_BACKEND=sqlite|memory`.
+- Invalid `AXIOMME_RETRIEVAL_BACKEND` value fails fast as runtime configuration error.
 
 ### FR-005 Session and Memory
 
@@ -71,7 +75,7 @@ Build a Rust-native context system with a stable local-first workflow, determini
 ### FR-008 Naming Migration
 
 - All protocol strings, examples, and surface text use `axiom://`.
-- Prohibited legacy terms must be removed from repository text and runtime outputs.
+- Prohibited obsolete terms must be removed from repository text and runtime outputs.
 
 ### FR-009 Replacement Validation
 
@@ -86,6 +90,20 @@ Build a Rust-native context system with a stable local-first workflow, determini
 - Provider selection must be explicit (`AXIOMME_EMBEDDER`) and local/offline only.
 - Deterministic fallback is allowed, but production profile requires a semantic model backend.
 - Retrieval quality gates must detect embedding regressions early.
+- `AXIOMME_EMBEDDER` supports:
+  - `semantic-lite` (default local heuristic)
+  - `hash` (deterministic fallback)
+  - `semantic-model-http` (local model server backend)
+- `semantic-model-http` configuration:
+  - `AXIOMME_EMBEDDER_MODEL_ENDPOINT` (default: `http://127.0.0.1:11434/api/embeddings`)
+  - `AXIOMME_EMBEDDER_MODEL_NAME` (default: `nomic-embed-text`)
+  - `AXIOMME_EMBEDDER_MODEL_TIMEOUT_MS` (default: `3000`)
+  - `AXIOMME_EMBEDDER_STRICT` (`1|true|yes|on`): strict mode; model failures are recorded into benchmark run environment (`embedding_strict_error`) and release-profile gate must fail
+- `semantic-model-http` endpoint must be localhost/loopback only (`127.0.0.1`, `localhost`, `::1`).
+- Release-profile benchmark gates (`gate_profile` contains `release` or `write_release_check=true`) require benchmark environment embedding provider to be `semantic-model-http`.
+- Benchmark gate optionally enforces a stress-query quality floor via `min_stress_top1_accuracy` (CLI: `--min-stress-top1-accuracy`).
+- Release pack optionally forwards stress-query gate floor via `--benchmark-min-stress-top1-accuracy`.
+- Release check artifacts must include embedding diagnostics (`embedding_provider`, `embedding_strict_error`) when release gate reasons include embedding policy failures.
 
 ### FR-011 Markdown Web Viewer/Edit
 

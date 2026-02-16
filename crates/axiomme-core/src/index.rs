@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 
 use crate::embedding::{embed_text, tokenize_set};
+use crate::mime::infer_mime;
 use crate::models::{IndexRecord, SearchFilter};
 use crate::uri::{AxiomUri, Scope};
 
@@ -11,6 +12,8 @@ const W_DENSE: f32 = 0.55;
 const W_SPARSE: f32 = 0.30;
 const W_RECENCY: f32 = 0.10;
 const W_PATH: f32 = 0.05;
+const BM25_K1: f32 = 1.2;
+const BM25_B: f32 = 0.75;
 
 #[derive(Debug, Clone)]
 pub struct ScoredRecord {
@@ -23,7 +26,7 @@ pub struct ScoredRecord {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct InMemoryHybridIndex {
+pub struct InMemoryIndex {
     records: HashMap<String, IndexRecord>,
     vectors: HashMap<String, Vec<f32>>,
     token_sets: HashMap<String, HashSet<String>>,
@@ -34,7 +37,8 @@ pub struct InMemoryHybridIndex {
     total_doc_length: usize,
 }
 
-impl InMemoryHybridIndex {
+impl InMemoryIndex {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -88,16 +92,19 @@ impl InMemoryHybridIndex {
         self.total_doc_length = 0;
     }
 
+    #[must_use]
     pub fn get(&self, uri: &str) -> Option<&IndexRecord> {
         self.records.get(uri)
     }
 
+    #[must_use]
     pub fn all_records(&self) -> Vec<IndexRecord> {
         let mut out: Vec<_> = self.records.values().cloned().collect();
         out.sort_by(|a, b| a.uri.cmp(&b.uri));
         out
     }
 
+    #[must_use]
     pub fn children_of(&self, parent_uri: &str) -> Vec<IndexRecord> {
         let mut out: Vec<_> = self
             .records
@@ -124,7 +131,7 @@ impl InMemoryHybridIndex {
         let avg_doc_length = if self.records.is_empty() {
             1.0
         } else {
-            (self.total_doc_length as f32 / self.records.len() as f32).max(1.0)
+            (usize_to_f32(self.total_doc_length) / usize_to_f32(self.records.len())).max(1.0)
         };
 
         let mut scored = Vec::new();
@@ -140,10 +147,7 @@ impl InMemoryHybridIndex {
             }
 
             let uri = &record.uri;
-            let dense = cosine(
-                &q_embed,
-                self.vectors.get(uri).map(Vec::as_slice).unwrap_or(&[]),
-            );
+            let dense = cosine(&q_embed, self.vectors.get(uri).map_or(&[], Vec::as_slice));
             let sparse = lexical_score(
                 &q_token_list,
                 &q_tokens,
@@ -163,7 +167,10 @@ impl InMemoryHybridIndex {
             let recency = recency_score(record.updated_at);
             let path = path_score(uri, target_uri);
 
-            let score = W_DENSE * dense + W_SPARSE * sparse + W_RECENCY * recency + W_PATH * path;
+            let score = W_PATH.mul_add(
+                path,
+                W_RECENCY.mul_add(recency, W_SPARSE.mul_add(sparse, W_DENSE * dense)),
+            );
             if let Some(threshold) = score_threshold
                 && score < threshold
             {
@@ -208,6 +215,7 @@ impl InMemoryHybridIndex {
         out
     }
 
+    #[must_use]
     pub fn record_matches_filter(
         &self,
         record: &IndexRecord,
@@ -224,6 +232,7 @@ impl InMemoryHybridIndex {
         self.has_matching_leaf_descendant(&record.uri, &filter)
     }
 
+    #[must_use]
     pub fn scope_roots(&self, scopes: &[Scope]) -> Vec<IndexRecord> {
         let mut roots = Vec::new();
         for scope in scopes {
@@ -254,7 +263,7 @@ impl InMemoryHybridIndex {
     }
 
     fn has_matching_leaf_descendant(&self, ancestor_uri: &str, filter: &NormalizedFilter) -> bool {
-        let prefix = format!("{}/", ancestor_uri);
+        let prefix = format!("{ancestor_uri}/");
         self.records.values().any(|record| {
             record.is_leaf && record.uri.starts_with(&prefix) && leaf_matches_filter(record, filter)
         })
@@ -310,17 +319,6 @@ fn leaf_matches_filter(record: &IndexRecord, filter: &NormalizedFilter) -> bool 
     true
 }
 
-fn infer_mime(record: &IndexRecord) -> Option<&'static str> {
-    let ext = record.name.rsplit('.').next()?.to_lowercase();
-    match ext.as_str() {
-        "md" | "markdown" => Some("text/markdown"),
-        "txt" | "log" => Some("text/plain"),
-        "json" => Some("application/json"),
-        "rs" => Some("text/rust"),
-        _ => None,
-    }
-}
-
 fn score_ordering(a: &ScoredRecord, b: &ScoredRecord) -> Ordering {
     b.score
         .partial_cmp(&a.score)
@@ -344,8 +342,8 @@ fn lexical_overlap(query_tokens: &HashSet<String>, doc_tokens: &HashSet<String>)
     if query_tokens.is_empty() || doc_tokens.is_empty() {
         return 0.0;
     }
-    let inter = query_tokens.intersection(doc_tokens).count() as f32;
-    let union = query_tokens.union(doc_tokens).count() as f32;
+    let inter = usize_to_f32(query_tokens.intersection(doc_tokens).count());
+    let union = usize_to_f32(query_tokens.union(doc_tokens).count());
     if union == 0.0 { 0.0 } else { inter / union }
 }
 
@@ -358,8 +356,7 @@ fn lexical_score(
 ) -> f32 {
     let overlap = doc
         .token_set
-        .map(|tokens| lexical_overlap(query_tokens, tokens))
-        .unwrap_or(0.0);
+        .map_or(0.0, |tokens| lexical_overlap(query_tokens, tokens));
     let bm25_raw = doc
         .term_freq
         .map(|tf| {
@@ -372,12 +369,15 @@ fn lexical_score(
                 corpus.avg_doc_len,
             )
         })
-        .unwrap_or(0.0);
+        .unwrap_or_default();
     let bm25_norm = bm25_raw / (bm25_raw + 2.0);
     let literal = literal_match_score(query_lower, doc.text_lower.unwrap_or_default());
-    (0.65 * bm25_norm + 0.25 * overlap + 0.10 * literal).clamp(0.0, 1.0)
+    0.10f32
+        .mul_add(literal, 0.25f32.mul_add(overlap, 0.65f32 * bm25_norm))
+        .clamp(0.0, 1.0)
 }
 
+#[derive(Debug, Clone, Copy)]
 struct LexicalDocView<'a> {
     term_freq: Option<&'a HashMap<String, u32>>,
     token_set: Option<&'a HashSet<String>>,
@@ -385,6 +385,7 @@ struct LexicalDocView<'a> {
     doc_len: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
 struct LexicalCorpusView<'a> {
     doc_freqs: &'a HashMap<String, usize>,
     total_docs: usize,
@@ -403,9 +404,6 @@ fn bm25_score(
         return 0.0;
     }
 
-    const K1: f32 = 1.2;
-    const B: f32 = 0.75;
-
     let mut score = 0.0;
     let mut seen = HashSet::new();
     for token in query_tokens {
@@ -415,13 +413,16 @@ fn bm25_score(
         let Some(tf) = doc_term_freq.get(token) else {
             continue;
         };
-        let df = *doc_freqs.get(token).unwrap_or(&0) as f32;
-        let n = total_docs as f32;
-        let idf = (((n - df + 0.5) / (df + 0.5)) + 1.0).ln().max(0.0);
-        let tf = *tf as f32;
-        let denom = tf + K1 * (1.0 - B + B * (doc_len as f32 / avg_doc_len.max(1.0)));
+        let df = usize_to_f32(*doc_freqs.get(token).unwrap_or(&0));
+        let n = usize_to_f32(total_docs);
+        let idf_ratio = (n - df + 0.5) / (df + 0.5);
+        let idf = idf_ratio.ln_1p().max(0.0);
+        let tf = u32_to_f32(*tf);
+        let length_norm =
+            BM25_B.mul_add(usize_to_f32(doc_len) / avg_doc_len.max(1.0), 1.0 - BM25_B);
+        let denom = BM25_K1.mul_add(length_norm, tf);
         if denom > 0.0 {
-            score += idf * (tf * (K1 + 1.0) / denom);
+            score += idf * (tf * (BM25_K1 + 1.0) / denom);
         }
     }
     score
@@ -436,7 +437,7 @@ fn literal_match_score(query_lower: &str, doc_text_lower: &str) -> f32 {
 }
 
 fn recency_score(updated_at: DateTime<Utc>) -> f32 {
-    let age_days = (Utc::now() - updated_at).num_days().max(0) as f32;
+    let age_days = i64_to_f32((Utc::now() - updated_at).num_days().max(0));
     (1.0 / (1.0 + age_days / 30.0)).clamp(0.0, 1.0)
 }
 
@@ -467,6 +468,30 @@ fn path_score(uri: &str, target: Option<&AxiomUri>) -> f32 {
     0.0
 }
 
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "ranking weights are intentionally lossy floating-point values"
+)]
+const fn usize_to_f32(value: usize) -> f32 {
+    value as f32
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "ranking weights are intentionally lossy floating-point values"
+)]
+const fn u32_to_f32(value: u32) -> f32 {
+    value as f32
+}
+
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "ranking decay operates in f32 and accepts intentional precision loss"
+)]
+const fn i64_to_f32(value: i64) -> f32 {
+    value as f32
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -476,7 +501,7 @@ mod tests {
 
     #[test]
     fn search_prioritizes_matching_doc() {
-        let mut index = InMemoryHybridIndex::new();
+        let mut index = InMemoryIndex::new();
         index.upsert(IndexRecord {
             id: "1".to_string(),
             uri: "axiom://resources/docs/auth".to_string(),
@@ -513,7 +538,7 @@ mod tests {
 
     #[test]
     fn lexical_exact_match_boost_prioritizes_literal_query() {
-        let mut index = InMemoryHybridIndex::new();
+        let mut index = InMemoryIndex::new();
         index.upsert(IndexRecord {
             id: "1".to_string(),
             uri: "axiom://resources/logs/exact".to_string(),
@@ -553,7 +578,7 @@ mod tests {
 
     #[test]
     fn tag_filter_limits_leaf_results() {
-        let mut index = InMemoryHybridIndex::new();
+        let mut index = InMemoryIndex::new();
         index.upsert(IndexRecord {
             id: "root".to_string(),
             uri: "axiom://resources/docs".to_string(),
@@ -562,7 +587,7 @@ mod tests {
             context_type: "resource".to_string(),
             name: "docs".to_string(),
             abstract_text: "docs".to_string(),
-            content: "".to_string(),
+            content: String::new(),
             tags: vec![],
             updated_at: Utc::now(),
             depth: 1,
@@ -613,7 +638,7 @@ mod tests {
 
     #[test]
     fn mime_filter_matches_extension_derived_mime() {
-        let mut index = InMemoryHybridIndex::new();
+        let mut index = InMemoryIndex::new();
         index.upsert(IndexRecord {
             id: "1".to_string(),
             uri: "axiom://resources/docs/guide.md".to_string(),

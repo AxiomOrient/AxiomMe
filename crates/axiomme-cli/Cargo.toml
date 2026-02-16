@@ -2,18 +2,17 @@
 name = "axiomme-cli"
 version = "0.1.0"
 edition = "2024"
+description = "Command-line interface for AxiomMe data runtime."
+license = "Apache-2.0"
+readme = "README.md"
 
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-axiomme-core = { path = "../axiomme-core" }
-axum = { workspace = true }
-tokio = { workspace = true }
-pulldown-cmark = { workspace = true }
-tower = { workspace = true }
-uuid = { workspace = true }
+axiomme-core = { version = "0.1.0", path = "../axiomme-core" }
+axiomme-web = { version = "0.1.0", path = "../axiomme-web" }
+
+[dev-dependencies]
 tempfile = { workspace = true }
-blake3 = { workspace = true }
-chrono = { workspace = true }

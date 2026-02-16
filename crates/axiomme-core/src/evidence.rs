@@ -2,7 +2,7 @@ use crate::models::{
     OperabilityEvidenceCheck, QueueDiagnostics, ReliabilityEvidenceCheck, ReplayReport,
 };
 
-pub(crate) fn accumulate_replay_report(total: &mut ReplayReport, report: &ReplayReport) {
+pub const fn accumulate_replay_report(total: &mut ReplayReport, report: &ReplayReport) {
     total.fetched = total.fetched.saturating_add(report.fetched);
     total.processed = total.processed.saturating_add(report.processed);
     total.done = total.done.saturating_add(report.done);
@@ -11,7 +11,7 @@ pub(crate) fn accumulate_replay_report(total: &mut ReplayReport, report: &Replay
     total.skipped = total.skipped.saturating_add(report.skipped);
 }
 
-pub(crate) fn checkpoint_advanced(baseline: Option<i64>, final_checkpoint: Option<i64>) -> bool {
+pub const fn checkpoint_advanced(baseline: Option<i64>, final_checkpoint: Option<i64>) -> bool {
     match (baseline, final_checkpoint) {
         (Some(before), Some(after)) => after > before,
         (None, Some(_)) => true,
@@ -19,7 +19,7 @@ pub(crate) fn checkpoint_advanced(baseline: Option<i64>, final_checkpoint: Optio
     }
 }
 
-pub(crate) fn build_operability_evidence_checks(
+pub fn build_operability_evidence_checks(
     request_logs_scanned: usize,
     traces_analyzed: usize,
     request_type_count: usize,
@@ -35,8 +35,7 @@ pub(crate) fn build_operability_evidence_checks(
             name: "trace_metrics_present".to_string(),
             passed: traces_analyzed > 0,
             details: format!(
-                "traces_analyzed={} request_types={}",
-                traces_analyzed, request_type_count
+                "traces_analyzed={traces_analyzed} request_types={request_type_count}",
             ),
         },
         OperabilityEvidenceCheck {
@@ -50,7 +49,7 @@ pub(crate) fn build_operability_evidence_checks(
     ]
 }
 
-pub(crate) struct ReliabilityEvidenceInput<'a> {
+pub struct ReliabilityEvidenceInput<'a> {
     pub replay_totals: &'a ReplayReport,
     pub queue_after_replay: &'a QueueDiagnostics,
     pub baseline_dead_letter: u64,
@@ -61,7 +60,7 @@ pub(crate) struct ReliabilityEvidenceInput<'a> {
     pub restart_hit_uri: Option<&'a str>,
 }
 
-pub(crate) fn build_reliability_evidence_checks(
+pub fn build_reliability_evidence_checks(
     input: &ReliabilityEvidenceInput<'_>,
 ) -> Vec<ReliabilityEvidenceCheck> {
     let checkpoint_is_advanced =
@@ -109,10 +108,10 @@ pub(crate) fn build_reliability_evidence_checks(
         ReliabilityEvidenceCheck {
             name: "replay_checkpoint_recorded".to_string(),
             passed: input.final_checkpoint.is_some(),
-            details: match input.final_checkpoint {
-                Some(value) => format!("checkpoint={value}"),
-                None => "checkpoint missing".to_string(),
-            },
+            details: input.final_checkpoint.map_or_else(
+                || "checkpoint missing".to_string(),
+                |value| format!("checkpoint={value}"),
+            ),
         },
         ReliabilityEvidenceCheck {
             name: "searchable_after_replay".to_string(),
@@ -133,7 +132,7 @@ pub(crate) fn build_reliability_evidence_checks(
     ]
 }
 
-pub(crate) fn evidence_status(passed: bool) -> String {
+pub fn evidence_status(passed: bool) -> String {
     if passed {
         "pass".to_string()
     } else {
@@ -144,7 +143,7 @@ pub(crate) fn evidence_status(passed: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{QueueCounts, QueueDiagnostics};
+    use crate::models::{OmQueueStatus, OmReflectionApplyMetrics, QueueCounts, QueueDiagnostics};
 
     fn queue(new_due: u64, processing: u64, dead_letter: u64) -> QueueDiagnostics {
         QueueDiagnostics {
@@ -155,6 +154,9 @@ mod tests {
                 ..QueueCounts::default()
             },
             checkpoints: Vec::new(),
+            queue_dead_letter_rate: Vec::new(),
+            om_status: OmQueueStatus::default(),
+            om_reflection_apply_metrics: OmReflectionApplyMetrics::default(),
         }
     }
 
