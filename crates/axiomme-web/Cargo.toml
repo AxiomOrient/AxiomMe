@@ -1,0 +1,23 @@
+[package]
+name = "axiomme-web"
+version = "0.1.0"
+edition = "2024"
+description = "Web server and editor surface for AxiomMe."
+license = "Apache-2.0"
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+pulldown-cmark = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+blake3 = { workspace = true }
+chrono = { workspace = true }
+axiomme-core = { version = "0.1.0", path = "../axiomme-core" }
+
+[dev-dependencies]
+tower = { workspace = true }
+tempfile = { workspace = true }

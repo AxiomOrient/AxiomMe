@@ -1,0 +1,675 @@
+{
+  "config_cases": [
+    {
+      "name": "default_thresholds_and_async_defaults",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": false,
+        "observation": {},
+        "reflection": {}
+      },
+      "expect": {
+        "message_tokens_base": 30000,
+        "observation_tokens": 40000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "observation_buffer_activation": 0.8,
+        "observation_block_after": 36000,
+        "reflection_buffer_activation": 0.5,
+        "reflection_block_after": 48000,
+        "async_buffering_disabled": false
+      }
+    },
+    {
+      "name": "share_budget_requires_async_disabled",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": true,
+        "observation": {},
+        "reflection": {}
+      },
+      "expect_error": "ShareTokenBudgetRequiresAsyncDisabled"
+    },
+    {
+      "name": "share_budget_allows_explicit_buffer_disable",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": true,
+        "observation": {
+          "buffer_tokens": {
+            "type": "disabled"
+          }
+        },
+        "reflection": {}
+      },
+      "expect": {
+        "message_tokens_base": 30000,
+        "observation_tokens": 40000,
+        "total_budget": 70000,
+        "buffer_tokens": null,
+        "observation_buffer_activation": null,
+        "observation_block_after": null,
+        "reflection_buffer_activation": null,
+        "reflection_block_after": null,
+        "async_buffering_disabled": true
+      }
+    },
+    {
+      "name": "ratio_near_lower_bound_rounds_to_single_token",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": false,
+        "observation": {
+          "buffer_tokens": {
+            "type": "ratio",
+            "value": 0.000034
+          }
+        },
+        "reflection": {}
+      },
+      "expect": {
+        "message_tokens_base": 30000,
+        "observation_tokens": 40000,
+        "total_budget": null,
+        "buffer_tokens": 1,
+        "observation_buffer_activation": 0.8,
+        "observation_block_after": 36000,
+        "reflection_buffer_activation": 0.5,
+        "reflection_block_after": 48000,
+        "async_buffering_disabled": false
+      }
+    },
+    {
+      "name": "ratio_near_upper_bound_stays_below_threshold",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": false,
+        "observation": {
+          "buffer_tokens": {
+            "type": "ratio",
+            "value": 0.9999
+          }
+        },
+        "reflection": {}
+      },
+      "expect": {
+        "message_tokens_base": 30000,
+        "observation_tokens": 40000,
+        "total_budget": null,
+        "buffer_tokens": 29997,
+        "observation_buffer_activation": 0.8,
+        "observation_block_after": 36000,
+        "reflection_buffer_activation": 0.5,
+        "reflection_block_after": 48000,
+        "async_buffering_disabled": false
+      }
+    },
+    {
+      "name": "ratio_upper_bound_equal_one_is_rejected",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": false,
+        "observation": {
+          "buffer_tokens": {
+            "type": "ratio",
+            "value": 1.0
+          }
+        },
+        "reflection": {}
+      },
+      "expect_error": "InvalidObservationBufferTokensRatio"
+    },
+    {
+      "name": "block_after_ratio_just_above_one_is_valid",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": false,
+        "observation": {
+          "block_after": 1.0001
+        },
+        "reflection": {}
+      },
+      "expect": {
+        "message_tokens_base": 30000,
+        "observation_tokens": 40000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "observation_buffer_activation": 0.8,
+        "observation_block_after": 30003,
+        "reflection_buffer_activation": 0.5,
+        "reflection_block_after": 48000,
+        "async_buffering_disabled": false
+      }
+    },
+    {
+      "name": "block_after_absolute_equal_threshold_is_valid",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": false,
+        "observation": {
+          "block_after": 30000
+        },
+        "reflection": {}
+      },
+      "expect": {
+        "message_tokens_base": 30000,
+        "observation_tokens": 40000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "observation_buffer_activation": 0.8,
+        "observation_block_after": 30000,
+        "reflection_buffer_activation": 0.5,
+        "reflection_block_after": 48000,
+        "async_buffering_disabled": false
+      }
+    },
+    {
+      "name": "block_after_absolute_minimum_two_is_rejected",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": false,
+        "observation": {
+          "block_after": 2
+        },
+        "reflection": {}
+      },
+      "expect_error": "InvalidObservationBlockAfter"
+    }
+  ],
+  "reflector_trigger_cases": [
+    {
+      "name": "equal_threshold_does_not_trigger",
+      "observation_tokens": 40000,
+      "threshold": 40000,
+      "expected": false
+    },
+    {
+      "name": "above_threshold_triggers",
+      "observation_tokens": 40001,
+      "threshold": 40000,
+      "expected": true
+    }
+  ],
+  "reflection_action_cases": [
+    {
+      "name": "async_below_threshold_and_above_activation_buffers",
+      "observation_tokens": 20000,
+      "reflection_threshold": 40000,
+      "buffer_activation": 0.5,
+      "block_after": 48000,
+      "has_buffered_reflection": false,
+      "is_buffering_reflection": false,
+      "is_reflecting": false,
+      "expected_action": "buffer"
+    },
+    {
+      "name": "async_at_threshold_without_buffer_falls_back_to_buffer",
+      "observation_tokens": 40001,
+      "reflection_threshold": 40000,
+      "buffer_activation": 0.5,
+      "block_after": 48000,
+      "has_buffered_reflection": false,
+      "is_buffering_reflection": false,
+      "is_reflecting": false,
+      "expected_action": "buffer"
+    },
+    {
+      "name": "async_at_threshold_with_buffer_reflects",
+      "observation_tokens": 40001,
+      "reflection_threshold": 40000,
+      "buffer_activation": 0.5,
+      "block_after": 48000,
+      "has_buffered_reflection": true,
+      "is_buffering_reflection": false,
+      "is_reflecting": false,
+      "expected_action": "reflect"
+    },
+    {
+      "name": "async_block_after_exceeded_reflects",
+      "observation_tokens": 48000,
+      "reflection_threshold": 40000,
+      "buffer_activation": 0.5,
+      "block_after": 48000,
+      "has_buffered_reflection": false,
+      "is_buffering_reflection": false,
+      "is_reflecting": false,
+      "expected_action": "reflect"
+    },
+    {
+      "name": "sync_threshold_reached_reflects",
+      "observation_tokens": 40001,
+      "reflection_threshold": 40000,
+      "buffer_activation": null,
+      "block_after": null,
+      "has_buffered_reflection": false,
+      "is_buffering_reflection": false,
+      "is_reflecting": false,
+      "expected_action": "reflect"
+    },
+    {
+      "name": "is_reflecting_takes_precedence_and_skips_action",
+      "observation_tokens": 50000,
+      "reflection_threshold": 40000,
+      "buffer_activation": 0.5,
+      "block_after": 48000,
+      "has_buffered_reflection": true,
+      "is_buffering_reflection": true,
+      "is_reflecting": true,
+      "expected_action": "none"
+    },
+    {
+      "name": "threshold_reached_buffering_only_keeps_none",
+      "observation_tokens": 40001,
+      "reflection_threshold": 40000,
+      "buffer_activation": 0.5,
+      "block_after": 48000,
+      "has_buffered_reflection": false,
+      "is_buffering_reflection": true,
+      "is_reflecting": false,
+      "expected_action": "none"
+    },
+    {
+      "name": "threshold_reached_with_buffered_and_buffering_prefers_reflect",
+      "observation_tokens": 40001,
+      "reflection_threshold": 40000,
+      "buffer_activation": 0.5,
+      "block_after": 48000,
+      "has_buffered_reflection": true,
+      "is_buffering_reflection": true,
+      "is_reflecting": false,
+      "expected_action": "reflect"
+    }
+  ],
+  "observer_write_decision_cases": [
+    {
+      "name": "async_interval_trigger_runs_observer_below_threshold",
+      "record_pending_tokens": 6100,
+      "record_observation_tokens": 0,
+      "record_last_buffered_at_tokens": 0,
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "buffer_activation": 0.8,
+        "block_after": 36000
+      },
+      "expected": {
+        "threshold": 30000,
+        "threshold_reached": false,
+        "interval_triggered": true,
+        "block_after_exceeded": false,
+        "should_run_observer": true,
+        "should_activate_after_observer": false
+      }
+    },
+    {
+      "name": "sync_threshold_reached_runs_and_activates_observer",
+      "record_pending_tokens": 30000,
+      "record_observation_tokens": 0,
+      "record_last_buffered_at_tokens": 0,
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": null,
+        "buffer_activation": null,
+        "block_after": null
+      },
+      "expected": {
+        "threshold": 30000,
+        "threshold_reached": true,
+        "interval_triggered": false,
+        "block_after_exceeded": false,
+        "should_run_observer": true,
+        "should_activate_after_observer": true
+      }
+    },
+    {
+      "name": "async_threshold_crossing_without_debounce_still_triggers_interval_path",
+      "record_pending_tokens": 30000,
+      "record_observation_tokens": 0,
+      "record_last_buffered_at_tokens": 29500,
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "buffer_activation": 0.8,
+        "block_after": 36000
+      },
+      "expected": {
+        "threshold": 30000,
+        "threshold_reached": true,
+        "interval_triggered": true,
+        "block_after_exceeded": false,
+        "should_run_observer": true,
+        "should_activate_after_observer": false
+      }
+    },
+    {
+      "name": "async_block_after_exceeded_without_interval_still_runs_and_activates",
+      "record_pending_tokens": 36000,
+      "record_observation_tokens": 0,
+      "record_last_buffered_at_tokens": 36000,
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "buffer_activation": 0.8,
+        "block_after": 36000
+      },
+      "expected": {
+        "threshold": 30000,
+        "threshold_reached": true,
+        "interval_triggered": false,
+        "block_after_exceeded": true,
+        "should_run_observer": true,
+        "should_activate_after_observer": true
+      }
+    },
+    {
+      "name": "async_below_threshold_without_interval_does_not_run",
+      "record_pending_tokens": 5900,
+      "record_observation_tokens": 0,
+      "record_last_buffered_at_tokens": 0,
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "buffer_activation": 0.8,
+        "block_after": 36000
+      },
+      "expected": {
+        "threshold": 30000,
+        "threshold_reached": false,
+        "interval_triggered": false,
+        "block_after_exceeded": false,
+        "should_run_observer": false,
+        "should_activate_after_observer": false
+      }
+    }
+  ],
+  "process_input_step_cases": [
+    {
+      "name": "step0_async_threshold_with_chunks_activates_before_and_filters",
+      "record": {
+        "pending_message_tokens": 30000,
+        "observation_token_count": 0,
+        "last_buffered_at_tokens": 0,
+        "has_buffered_reflection": false,
+        "is_reflecting": false,
+        "is_buffering_reflection": false
+      },
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "buffer_activation": 0.8,
+        "block_after": 36000
+      },
+      "reflection_config": {
+        "observation_tokens": 40000,
+        "buffer_activation": 0.5,
+        "block_after": 48000
+      },
+      "options": {
+        "is_initial_step": true,
+        "read_only": false,
+        "has_buffered_observation_chunks": true
+      },
+      "expected": {
+        "should_activate_buffered_before_observer": true,
+        "should_run_observer": true,
+        "should_activate_buffered_after_observer": false,
+        "reflection_action": "none",
+        "reflection_command_present": false,
+        "reflection_should_increment_trigger_count": false,
+        "reflection_next_is_reflecting": false,
+        "reflection_next_is_buffering_reflection": false
+      }
+    },
+    {
+      "name": "read_only_step_disables_observer_and_reflection",
+      "record": {
+        "pending_message_tokens": 6100,
+        "observation_token_count": 0,
+        "last_buffered_at_tokens": 0,
+        "has_buffered_reflection": false,
+        "is_reflecting": false,
+        "is_buffering_reflection": false
+      },
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": 6000,
+        "buffer_activation": 0.8,
+        "block_after": 36000
+      },
+      "reflection_config": {
+        "observation_tokens": 40000,
+        "buffer_activation": 0.5,
+        "block_after": 48000
+      },
+      "options": {
+        "is_initial_step": true,
+        "read_only": true,
+        "has_buffered_observation_chunks": true
+      },
+      "expected": {
+        "should_activate_buffered_before_observer": false,
+        "should_run_observer": false,
+        "should_activate_buffered_after_observer": false,
+        "reflection_action": null,
+        "reflection_command_present": false,
+        "reflection_should_increment_trigger_count": null,
+        "reflection_next_is_reflecting": null,
+        "reflection_next_is_buffering_reflection": null
+      }
+    },
+    {
+      "name": "step_gt_zero_sync_threshold_runs_and_enqueues_reflect",
+      "record": {
+        "pending_message_tokens": 30000,
+        "observation_token_count": 40001,
+        "last_buffered_at_tokens": 0,
+        "has_buffered_reflection": false,
+        "is_reflecting": false,
+        "is_buffering_reflection": false
+      },
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": null,
+        "buffer_activation": null,
+        "block_after": null
+      },
+      "reflection_config": {
+        "observation_tokens": 40000,
+        "buffer_activation": null,
+        "block_after": null
+      },
+      "options": {
+        "is_initial_step": false,
+        "read_only": false,
+        "has_buffered_observation_chunks": false
+      },
+      "expected": {
+        "should_activate_buffered_before_observer": false,
+        "should_run_observer": true,
+        "should_activate_buffered_after_observer": true,
+        "reflection_action": "reflect",
+        "reflection_command_present": true,
+        "reflection_should_increment_trigger_count": true,
+        "reflection_next_is_reflecting": true,
+        "reflection_next_is_buffering_reflection": false
+      }
+    },
+    {
+      "name": "step0_async_reflection_activation_enqueues_buffer",
+      "record": {
+        "pending_message_tokens": 1000,
+        "observation_token_count": 20000,
+        "last_buffered_at_tokens": 0,
+        "has_buffered_reflection": false,
+        "is_reflecting": false,
+        "is_buffering_reflection": false
+      },
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": null,
+        "buffer_activation": null,
+        "block_after": null
+      },
+      "reflection_config": {
+        "observation_tokens": 40000,
+        "buffer_activation": 0.5,
+        "block_after": 48000
+      },
+      "options": {
+        "is_initial_step": true,
+        "read_only": false,
+        "has_buffered_observation_chunks": false
+      },
+      "expected": {
+        "should_activate_buffered_before_observer": false,
+        "should_run_observer": false,
+        "should_activate_buffered_after_observer": false,
+        "reflection_action": "buffer",
+        "reflection_command_present": true,
+        "reflection_should_increment_trigger_count": true,
+        "reflection_next_is_reflecting": false,
+        "reflection_next_is_buffering_reflection": true
+      }
+    },
+    {
+      "name": "read_only_step_gt_zero_disables_observer_reflection_and_filtering",
+      "record": {
+        "pending_message_tokens": 30000,
+        "observation_token_count": 40001,
+        "last_buffered_at_tokens": 0,
+        "has_buffered_reflection": false,
+        "is_reflecting": false,
+        "is_buffering_reflection": false
+      },
+      "observation_config": {
+        "message_tokens_base": 30000,
+        "total_budget": null,
+        "buffer_tokens": null,
+        "buffer_activation": null,
+        "block_after": null
+      },
+      "reflection_config": {
+        "observation_tokens": 40000,
+        "buffer_activation": null,
+        "block_after": null
+      },
+      "options": {
+        "is_initial_step": false,
+        "read_only": true,
+        "has_buffered_observation_chunks": true
+      },
+      "expected": {
+        "should_activate_buffered_before_observer": false,
+        "should_run_observer": false,
+        "should_activate_buffered_after_observer": false,
+        "reflection_action": null,
+        "reflection_command_present": false,
+        "reflection_should_increment_trigger_count": null,
+        "reflection_next_is_reflecting": null,
+        "reflection_next_is_buffering_reflection": null
+      }
+    }
+  ],
+  "process_output_result_cases": [
+    {
+      "name": "read_only_never_saves",
+      "read_only": true,
+      "unsaved_message_count": 2,
+      "expected_should_save_unsaved_messages": false
+    },
+    {
+      "name": "writable_without_unsaved_messages_is_false",
+      "read_only": false,
+      "unsaved_message_count": 0,
+      "expected_should_save_unsaved_messages": false
+    },
+    {
+      "name": "writable_with_unsaved_messages_is_true",
+      "read_only": false,
+      "unsaved_message_count": 1,
+      "expected_should_save_unsaved_messages": true
+    }
+  ],
+  "activation_cases": [
+    {
+      "name": "activation_boundary_prefers_under_target",
+      "activation_ratio": 0.8,
+      "message_threshold": 5000,
+      "current_pending_tokens": 6000,
+      "chunks": [
+        {
+          "message_tokens": 1000,
+          "observation_tokens": 200,
+          "message_ids": ["m1"]
+        },
+        {
+          "message_tokens": 1200,
+          "observation_tokens": 250,
+          "message_ids": ["m2"]
+        },
+        {
+          "message_tokens": 1800,
+          "observation_tokens": 300,
+          "message_ids": ["m3"]
+        }
+      ],
+      "expected": {
+        "chunks_activated": 3,
+        "message_tokens_activated": 4000,
+        "observation_tokens_activated": 750,
+        "activated_message_ids": ["m1", "m2", "m3"]
+      }
+    },
+    {
+      "name": "activation_boundary_empty_chunks_returns_zero",
+      "activation_ratio": 0.8,
+      "message_threshold": 5000,
+      "current_pending_tokens": 6000,
+      "chunks": [],
+      "expected": {
+        "chunks_activated": 0,
+        "message_tokens_activated": 0,
+        "observation_tokens_activated": 0,
+        "activated_message_ids": []
+      }
+    },
+    {
+      "name": "activation_boundary_zero_ratio_keeps_high_retention",
+      "activation_ratio": 0.0,
+      "message_threshold": 5000,
+      "current_pending_tokens": 6000,
+      "chunks": [
+        {
+          "message_tokens": 900,
+          "observation_tokens": 90,
+          "message_ids": ["m1"]
+        },
+        {
+          "message_tokens": 800,
+          "observation_tokens": 80,
+          "message_ids": ["m2"]
+        },
+        {
+          "message_tokens": 700,
+          "observation_tokens": 70,
+          "message_ids": ["m3"]
+        }
+      ],
+      "expected": {
+        "chunks_activated": 1,
+        "message_tokens_activated": 900,
+        "observation_tokens_activated": 90,
+        "activated_message_ids": ["m1"]
+      }
+    }
+  ]
+}

@@ -9,9 +9,9 @@ use crate::models::RequestLogEntry;
 use super::AxiomMe;
 
 impl AxiomMe {
-    pub(super) fn try_log_request(&self, entry: RequestLogEntry) {
+    pub(super) fn try_log_request(&self, entry: &RequestLogEntry) {
         if let Ok(uri) = request_log_uri()
-            && let Ok(serialized) = serde_json::to_string(&entry)
+            && let Ok(serialized) = serde_json::to_string(entry)
         {
             let mut line = serialized;
             line.push('\n');
@@ -28,7 +28,7 @@ impl AxiomMe {
         target_uri: Option<String>,
         details: Option<serde_json::Value>,
     ) {
-        self.try_log_request(RequestLogEntry {
+        self.try_log_request(&RequestLogEntry {
             request_id,
             operation: operation.to_string(),
             status: status.to_string(),
@@ -51,7 +51,7 @@ impl AxiomMe {
         err: &AxiomError,
         details: Option<serde_json::Value>,
     ) {
-        self.try_log_request(RequestLogEntry {
+        self.try_log_request(&RequestLogEntry {
             request_id,
             operation: operation.to_string(),
             status: "error".to_string(),
@@ -61,6 +61,29 @@ impl AxiomMe {
             target_uri,
             error_code: Some(err.code().to_string()),
             error_message: Some(err.to_string()),
+            details,
+        });
+    }
+
+    pub(super) fn log_request_warning(
+        &self,
+        request_id: String,
+        operation: &str,
+        started: Instant,
+        target_uri: Option<String>,
+        warning_message: &str,
+        details: Option<serde_json::Value>,
+    ) {
+        self.try_log_request(&RequestLogEntry {
+            request_id,
+            operation: operation.to_string(),
+            status: "warning".to_string(),
+            latency_ms: started.elapsed().as_millis(),
+            created_at: Utc::now().to_rfc3339(),
+            trace_id: None,
+            target_uri,
+            error_code: None,
+            error_message: Some(warning_message.to_string()),
             details,
         });
     }

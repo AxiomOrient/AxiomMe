@@ -45,21 +45,21 @@ enum EditorMode {
 }
 
 impl EditorMode {
-    fn load_operation(self) -> &'static str {
+    const fn load_operation(self) -> &'static str {
         match self {
             Self::Markdown => "markdown.load",
             Self::Document => "document.load",
         }
     }
 
-    fn save_operation(self) -> &'static str {
+    const fn save_operation(self) -> &'static str {
         match self {
             Self::Markdown => "markdown.save",
             Self::Document => "document.save",
         }
     }
 
-    fn label(self) -> &'static str {
+    const fn label(self) -> &'static str {
         match self {
             Self::Markdown => "markdown",
             Self::Document => "document",
@@ -76,16 +76,10 @@ impl EditorMode {
     fn unsupported_target_message(self, uri: &AxiomUri) -> String {
         match self {
             Self::Markdown => {
-                format!(
-                    "markdown editor only supports .md/.markdown targets: {}",
-                    uri
-                )
+                format!("markdown editor only supports .md/.markdown targets: {uri}")
             }
             Self::Document => {
-                format!(
-                    "document editor supports .md/.markdown/.json/.yaml/.yml targets: {}",
-                    uri
-                )
+                format!("document editor supports .md/.markdown/.json/.yaml/.yml targets: {uri}")
             }
         }
     }
@@ -103,7 +97,7 @@ fn load_editor_document(app: &AxiomMe, uri: &str, mode: EditorMode) -> Result<Ma
         let _guard = app
             .markdown_edit_gate
             .read()
-            .map_err(|_| AxiomError::Internal("markdown edit gate lock poisoned".to_string()))?;
+            .map_err(|_| AxiomError::lock_poisoned("markdown edit gate"))?;
 
         let content = app.fs.read(&uri)?;
         let etag = markdown_etag(&content);
@@ -168,14 +162,14 @@ fn save_editor_document(
         let _guard = app
             .markdown_edit_gate
             .write()
-            .map_err(|_| AxiomError::Internal("markdown edit gate lock poisoned".to_string()))?;
+            .map_err(|_| AxiomError::lock_poisoned("markdown edit gate"))?;
 
         let previous = app.fs.read(&uri)?;
         let current_etag = markdown_etag(&previous);
         if let Some(expected_etag) = expected_etag
             && current_etag != expected_etag
         {
-            return Err(AxiomError::Conflict(format!("etag mismatch for {}", uri)));
+            return Err(AxiomError::Conflict(format!("etag mismatch for {uri}")));
         }
 
         let save_started = Instant::now();
@@ -192,19 +186,13 @@ fn save_editor_document(
             };
             let rollback_write_status = rollback_write
                 .as_ref()
-                .map(|_| "ok".to_string())
-                .unwrap_or_else(|err| format!("err:{err}"));
+                .map_or_else(|err| format!("err:{err}"), |()| "ok".to_string());
             let rollback_reindex_status = rollback_reindex
                 .as_ref()
-                .map(|err| format!("err:{err}"))
-                .unwrap_or_else(|| "ok_or_skipped".to_string());
+                .map_or_else(|| "ok_or_skipped".to_string(), |err| format!("err:{err}"));
+            let label = mode.label();
             return Err(AxiomError::Internal(format!(
-                "{} save failed during reindex for {}: reindex_err={}; rollback_write={}; rollback_reindex={}",
-                mode.label(),
-                uri,
-                reindex_err,
-                rollback_write_status,
-                rollback_reindex_status
+                "{label} save failed during reindex for {uri}: reindex_err={reindex_err}; rollback_write={rollback_write_status}; rollback_reindex={rollback_reindex_status}",
             )));
         }
         let reindex_ms = reindex_started.elapsed().as_millis();
@@ -311,7 +299,7 @@ fn validate_editor_content(mode: EditorMode, ext: &str, content: &str) -> Result
                 AxiomError::Validation(format!("invalid json content for document save: {err}"))
             })?;
         } else if ext == "yaml" || ext == "yml" {
-            serde_yaml::from_str::<serde_yaml::Value>(content).map_err(|err| {
+            serde_yml::from_str::<serde_yml::Value>(content).map_err(|err| {
                 AxiomError::Validation(format!("invalid yaml content for document save: {err}"))
             })?;
         }

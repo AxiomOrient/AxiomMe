@@ -19,6 +19,7 @@ impl LocalContextFs {
         Self { root: root.into() }
     }
 
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -39,6 +40,7 @@ impl LocalContextFs {
         Ok(())
     }
 
+    #[must_use]
     pub fn resolve_uri(&self, uri: &AxiomUri) -> PathBuf {
         let mut out = self.root.join(uri.scope().as_str());
         for segment in uri.segments() {
@@ -66,7 +68,7 @@ impl LocalContextFs {
             }
         };
 
-        let mut uri = AxiomUri::parse(&format!("axiom://{}", scope_str))?;
+        let mut uri = AxiomUri::parse(&format!("axiom://{scope_str}"))?;
         for comp in components {
             if let Component::Normal(s) = comp {
                 uri = uri.join(&s.to_string_lossy())?;
@@ -75,16 +77,18 @@ impl LocalContextFs {
         Ok(uri)
     }
 
+    #[must_use]
     pub fn exists(&self, uri: &AxiomUri) -> bool {
         self.resolve_uri(uri).exists()
     }
 
+    #[must_use]
     pub fn is_dir(&self, uri: &AxiomUri) -> bool {
         self.resolve_uri(uri).is_dir()
     }
 
     pub fn create_dir_all(&self, uri: &AxiomUri, system: bool) -> Result<()> {
-        self.ensure_writable(uri, system)?;
+        Self::ensure_writable(uri, system)?;
         let path = self.resolve_uri(uri);
         self.ensure_path_within_root(&path)?;
         fs::create_dir_all(path)?;
@@ -98,8 +102,7 @@ impl LocalContextFs {
         }
         if path.is_dir() {
             return Err(AxiomError::Validation(format!(
-                "cannot read directory: {}",
-                uri
+                "cannot read directory: {uri}"
             )));
         }
         self.ensure_path_within_root(&path)?;
@@ -107,7 +110,7 @@ impl LocalContextFs {
     }
 
     pub fn write(&self, uri: &AxiomUri, content: &str, system: bool) -> Result<()> {
-        self.ensure_writable(uri, system)?;
+        Self::ensure_writable(uri, system)?;
         let path = self.resolve_uri(uri);
         self.ensure_path_within_root(&path)?;
         if let Some(parent) = path.parent() {
@@ -118,7 +121,7 @@ impl LocalContextFs {
     }
 
     pub fn write_atomic(&self, uri: &AxiomUri, content: &str, system: bool) -> Result<()> {
-        self.ensure_writable(uri, system)?;
+        Self::ensure_writable(uri, system)?;
         let path = self.resolve_uri(uri);
         self.ensure_path_within_root(&path)?;
         let parent = path
@@ -155,7 +158,7 @@ impl LocalContextFs {
     }
 
     pub fn append(&self, uri: &AxiomUri, content: &str, system: bool) -> Result<()> {
-        self.ensure_writable(uri, system)?;
+        Self::ensure_writable(uri, system)?;
         let path = self.resolve_uri(uri);
         self.ensure_path_within_root(&path)?;
         if let Some(parent) = path.parent() {
@@ -170,7 +173,7 @@ impl LocalContextFs {
     }
 
     pub fn write_bytes(&self, uri: &AxiomUri, bytes: &[u8], system: bool) -> Result<()> {
-        self.ensure_writable(uri, system)?;
+        Self::ensure_writable(uri, system)?;
         let path = self.resolve_uri(uri);
         self.ensure_path_within_root(&path)?;
         if let Some(parent) = path.parent() {
@@ -187,28 +190,32 @@ impl LocalContextFs {
         }
         if path.is_dir() {
             return Err(AxiomError::Validation(format!(
-                "cannot read directory: {}",
-                uri
+                "cannot read directory: {uri}"
             )));
         }
         self.ensure_path_within_root(&path)?;
         Ok(fs::read(path)?)
     }
 
+    #[must_use]
     pub fn abstract_path(&self, uri: &AxiomUri) -> PathBuf {
         self.resolve_uri(uri).join(".abstract.md")
     }
 
+    #[must_use]
     pub fn overview_path(&self, uri: &AxiomUri) -> PathBuf {
         self.resolve_uri(uri).join(".overview.md")
     }
 
     pub fn read_abstract(&self, uri: &AxiomUri) -> Result<String> {
         let path = self.abstract_path(uri);
+        self.ensure_path_within_root(&path)?;
         if !path.exists() {
-            return Err(AxiomError::NotFound(format!(
-                "missing abstract for {}",
-                uri
+            return Err(AxiomError::NotFound(format!("missing abstract for {uri}")));
+        }
+        if path.is_dir() {
+            return Err(AxiomError::Validation(format!(
+                "abstract path is a directory: {uri}"
             )));
         }
         Ok(fs::read_to_string(path)?)
@@ -216,10 +223,13 @@ impl LocalContextFs {
 
     pub fn read_overview(&self, uri: &AxiomUri) -> Result<String> {
         let path = self.overview_path(uri);
+        self.ensure_path_within_root(&path)?;
         if !path.exists() {
-            return Err(AxiomError::NotFound(format!(
-                "missing overview for {}",
-                uri
+            return Err(AxiomError::NotFound(format!("missing overview for {uri}")));
+        }
+        if path.is_dir() {
+            return Err(AxiomError::Validation(format!(
+                "overview path is a directory: {uri}"
             )));
         }
         Ok(fs::read_to_string(path)?)
@@ -227,9 +237,14 @@ impl LocalContextFs {
 
     pub fn write_tiers(&self, uri: &AxiomUri, abstract_md: &str, overview_md: &str) -> Result<()> {
         let base = self.resolve_uri(uri);
+        self.ensure_path_within_root(&base)?;
         fs::create_dir_all(&base)?;
-        fs::write(base.join(".abstract.md"), abstract_md)?;
-        fs::write(base.join(".overview.md"), overview_md)?;
+        let abstract_path = base.join(".abstract.md");
+        let overview_path = base.join(".overview.md");
+        self.ensure_path_within_root(&abstract_path)?;
+        self.ensure_path_within_root(&overview_path)?;
+        fs::write(abstract_path, abstract_md)?;
+        fs::write(overview_path, overview_md)?;
         Ok(())
     }
 
@@ -252,7 +267,7 @@ impl LocalContextFs {
         relations: &[RelationLink],
         system: bool,
     ) -> Result<()> {
-        self.ensure_writable(uri, system)?;
+        Self::ensure_writable(uri, system)?;
         let relation_path = self.relations_path(uri)?;
         if let Some(parent) = relation_path.parent() {
             fs::create_dir_all(parent)?;
@@ -276,11 +291,8 @@ impl LocalContextFs {
         let mut entries = Vec::new();
 
         if recursive {
-            for item in WalkDir::new(&base)
-                .follow_links(false)
-                .into_iter()
-                .filter_map(std::result::Result::ok)
-            {
+            for item in WalkDir::new(&base).follow_links(false) {
+                let item = item.map_err(|e| AxiomError::Validation(e.to_string()))?;
                 if item.path() == base {
                     continue;
                 }
@@ -290,7 +302,7 @@ impl LocalContextFs {
                 let item_uri = self.uri_from_path(item.path())?;
                 entries.push(Entry {
                     uri: item_uri.to_string(),
-                    name: item.file_name().to_str().unwrap_or_default().to_string(),
+                    name: item.file_name().to_string_lossy().to_string(),
                     is_dir: meta.is_dir(),
                     size: if meta.is_file() { meta.len() } else { 0 },
                 });
@@ -330,12 +342,9 @@ impl LocalContextFs {
             .build()
             .map_err(|e| AxiomError::Validation(e.to_string()))?;
 
-        let mut matches = Vec::new();
-        for item in WalkDir::new(&base)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(std::result::Result::ok)
-        {
+        let mut matched_uris = Vec::new();
+        for item in WalkDir::new(&base).follow_links(false) {
+            let item = item.map_err(|e| AxiomError::Validation(e.to_string()))?;
             if item.path() == base {
                 continue;
             }
@@ -345,15 +354,15 @@ impl LocalContextFs {
                 .map_err(|e| AxiomError::Validation(e.to_string()))?;
             if matcher.is_match(rel) {
                 let item_uri = self.uri_from_path(item.path())?;
-                matches.push(item_uri.to_string());
+                matched_uris.push(item_uri.to_string());
             }
         }
-        matches.sort();
-        Ok(matches)
+        matched_uris.sort();
+        Ok(matched_uris)
     }
 
     pub fn rm(&self, uri: &AxiomUri, recursive: bool, system: bool) -> Result<()> {
-        self.ensure_writable(uri, system)?;
+        Self::ensure_writable(uri, system)?;
         let path = self.resolve_uri(uri);
         if !path.exists() {
             return Ok(());
@@ -372,8 +381,8 @@ impl LocalContextFs {
     }
 
     pub fn mv(&self, from: &AxiomUri, to: &AxiomUri, system: bool) -> Result<()> {
-        self.ensure_writable(from, system)?;
-        self.ensure_writable(to, system)?;
+        Self::ensure_writable(from, system)?;
+        Self::ensure_writable(to, system)?;
         let from_path = self.resolve_uri(from);
         let to_path = self.resolve_uri(to);
         self.ensure_path_within_root(&from_path)?;
@@ -419,7 +428,7 @@ impl LocalContextFs {
         Ok(node)
     }
 
-    fn ensure_writable(&self, uri: &AxiomUri, system: bool) -> Result<()> {
+    fn ensure_writable(uri: &AxiomUri, system: bool) -> Result<()> {
         if !system && matches!(uri.scope(), Scope::Queue) {
             return Err(AxiomError::PermissionDenied(
                 "queue scope is read-only for non-system operations".to_string(),
@@ -472,8 +481,7 @@ impl LocalContextFs {
         let base = self.resolve_uri(uri);
         if base.exists() && !base.is_dir() {
             return Err(AxiomError::Validation(format!(
-                "relations owner must be directory: {}",
-                uri
+                "relations owner must be directory: {uri}"
             )));
         }
         self.ensure_path_within_root(&base)?;
@@ -606,6 +614,45 @@ mod tests {
         let uri = AxiomUri::parse("axiom://resources/secret-link.txt").expect("parse uri");
         let err = fs.read(&uri).expect_err("must fail");
         assert!(matches!(err, AxiomError::SecurityViolation(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_tiers_rejects_symlink_escape_outside_root() {
+        let temp = tempdir().expect("tempdir");
+        let outside = tempdir().expect("outside");
+        let fs = LocalContextFs::new(temp.path());
+        fs.initialize().expect("init failed");
+
+        let link_path = temp.path().join("resources").join("escape-tiers");
+        symlink(outside.path(), &link_path).expect("symlink");
+
+        let uri = AxiomUri::parse("axiom://resources/escape-tiers").expect("parse uri");
+        let err = fs
+            .write_tiers(&uri, "abstract", "overview")
+            .expect_err("must fail");
+        assert!(matches!(err, AxiomError::SecurityViolation(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_tiers_reject_symlink_escape_outside_root() {
+        let temp = tempdir().expect("tempdir");
+        let outside = tempdir().expect("outside");
+        let fs = LocalContextFs::new(temp.path());
+        fs.initialize().expect("init failed");
+
+        fs::write(outside.path().join(".abstract.md"), "secret abstract").expect("write abstract");
+        fs::write(outside.path().join(".overview.md"), "secret overview").expect("write overview");
+
+        let link_path = temp.path().join("resources").join("escape-tiers");
+        symlink(outside.path(), &link_path).expect("symlink");
+        let uri = AxiomUri::parse("axiom://resources/escape-tiers").expect("parse uri");
+
+        let abstract_err = fs.read_abstract(&uri).expect_err("must fail abstract read");
+        assert!(matches!(abstract_err, AxiomError::SecurityViolation(_)));
+        let overview_err = fs.read_overview(&uri).expect_err("must fail overview read");
+        assert!(matches!(overview_err, AxiomError::SecurityViolation(_)));
     }
 
     #[test]

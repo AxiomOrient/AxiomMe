@@ -37,10 +37,6 @@
 /temp/
 /queue/
 
-# Qdrant vector database
-/qdrant_storage/
-/.qdrant/
-
 # Ingest staging
 /ingest/
 /.ingest/

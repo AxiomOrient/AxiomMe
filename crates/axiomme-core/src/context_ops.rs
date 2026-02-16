@@ -8,7 +8,7 @@ use crate::error::{AxiomError, Result};
 use crate::models::{IndexRecord, MetadataFilter};
 use crate::uri::{AxiomUri, Scope};
 
-pub(crate) fn default_resource_target(path_or_url: &str) -> Result<AxiomUri> {
+pub fn default_resource_target(path_or_url: &str) -> Result<AxiomUri> {
     let base = if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
         let stripped = path_or_url
             .trim_start_matches("https://")
@@ -26,7 +26,7 @@ pub(crate) fn default_resource_target(path_or_url: &str) -> Result<AxiomUri> {
     AxiomUri::root(Scope::Resources).join(&base)
 }
 
-pub(crate) fn classify_context(uri: &AxiomUri) -> String {
+pub fn classify_context(uri: &AxiomUri) -> String {
     let uri_str = uri.to_string();
     if uri_str.starts_with("axiom://agent/skills") {
         return "skill".to_string();
@@ -41,17 +41,16 @@ pub(crate) fn classify_context(uri: &AxiomUri) -> String {
     "resource".to_string()
 }
 
-pub(crate) fn infer_tags(name: &str, content: &str) -> Vec<String> {
+pub fn infer_tags(name: &str, content: &str) -> Vec<String> {
     let mut tags = HashSet::new();
 
-    let lower_name = name.to_lowercase();
-    if lower_name.ends_with(".rs") {
+    if has_extension(name, "rs") {
         tags.insert("rust".to_string());
     }
-    if lower_name.ends_with(".md") {
+    if has_extension(name, "md") {
         tags.insert("markdown".to_string());
     }
-    if lower_name.ends_with(".json") {
+    if has_extension(name, "json") {
         tags.insert("json".to_string());
     }
 
@@ -67,7 +66,7 @@ pub(crate) fn infer_tags(name: &str, content: &str) -> Vec<String> {
     out
 }
 
-pub(crate) fn validate_filter(filter: Option<&MetadataFilter>) -> Result<()> {
+pub fn validate_filter(filter: Option<&MetadataFilter>) -> Result<()> {
     let Some(filter) = filter else {
         return Ok(());
     };
@@ -76,15 +75,14 @@ pub(crate) fn validate_filter(filter: Option<&MetadataFilter>) -> Result<()> {
     for key in filter.fields.keys() {
         if !allowed.contains(&key.as_str()) {
             return Err(AxiomError::Validation(format!(
-                "unknown filter field: {}",
-                key
+                "unknown filter field: {key}"
             )));
         }
     }
     Ok(())
 }
 
-pub(crate) struct RecordInput<'a> {
+pub struct RecordInput<'a> {
     pub uri: &'a AxiomUri,
     pub parent_uri: Option<&'a AxiomUri>,
     pub is_leaf: bool,
@@ -95,11 +93,11 @@ pub(crate) struct RecordInput<'a> {
     pub tags: Vec<String>,
 }
 
-pub(crate) fn build_record(input: RecordInput<'_>) -> IndexRecord {
+pub fn build_record(input: RecordInput<'_>) -> IndexRecord {
     IndexRecord {
         id: uuid::Uuid::new_v4().to_string(),
         uri: input.uri.to_string(),
-        parent_uri: input.parent_uri.map(|p| p.to_string()),
+        parent_uri: input.parent_uri.map(ToString::to_string),
         is_leaf: input.is_leaf,
         context_type: input.context_type,
         name: input.name,
@@ -109,6 +107,13 @@ pub(crate) fn build_record(input: RecordInput<'_>) -> IndexRecord {
         updated_at: Utc::now(),
         depth: input.uri.segments().len(),
     }
+}
+
+fn has_extension(name: &str, expected: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(expected))
 }
 
 #[cfg(test)]
