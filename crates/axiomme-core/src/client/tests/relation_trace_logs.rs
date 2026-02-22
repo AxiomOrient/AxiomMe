@@ -120,7 +120,7 @@ fn contract_execution_probe_validates_core_algorithms() {
             None,
         )
         .expect("search");
-    assert!(search.query_plan["typed_queries"].is_array());
+    assert!(!search.query_plan.typed_queries.is_empty());
     assert!(!search.query_results.is_empty());
 
     let mut tag_fields = HashMap::new();
@@ -227,7 +227,7 @@ fn search_uses_archive_relevant_session_hints_when_active_messages_absent() {
         )
         .expect("search");
 
-    let plan: QueryPlan = serde_json::from_value(result.query_plan).expect("query plan");
+    let plan = result.query_plan;
     let session_query = plan
         .typed_queries
         .iter()

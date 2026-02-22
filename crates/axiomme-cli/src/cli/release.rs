@@ -1,4 +1,12 @@
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
+
+use super::parsers::{parse_min_one_usize, parse_non_negative_f32, parse_unit_interval_f32};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum ReleaseSecurityAuditModeArg {
+    Offline,
+    Strict,
+}
 
 #[derive(Debug, Args)]
 pub struct ReleaseArgs {
@@ -30,20 +38,25 @@ pub enum ReleaseCommand {
         benchmark_search_limit: usize,
         #[arg(long, default_value_t = 600)]
         benchmark_threshold_p95_ms: u128,
-        #[arg(long, default_value_t = 0.75)]
+        #[arg(long, default_value_t = 0.75, value_parser = parse_unit_interval_f32)]
         benchmark_min_top1_accuracy: f32,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_unit_interval_f32)]
         benchmark_min_stress_top1_accuracy: Option<f32>,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_non_negative_f32)]
         benchmark_max_p95_regression_pct: Option<f32>,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_non_negative_f32)]
         benchmark_max_top1_regression_pct: Option<f32>,
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = parse_min_one_usize)]
         benchmark_window_size: usize,
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = parse_min_one_usize)]
         benchmark_required_passes: usize,
-        #[arg(long, default_value = "strict")]
-        security_audit_mode: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ReleaseSecurityAuditModeArg::Strict,
+            help = "security audit mode for G5 gate (strict is required to pass; offline is diagnostics-only)"
+        )]
+        security_audit_mode: ReleaseSecurityAuditModeArg,
         #[arg(long, default_value_t = false)]
         enforce: bool,
     },

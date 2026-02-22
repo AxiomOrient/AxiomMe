@@ -15,7 +15,7 @@ pub use benchmark::{
     BenchmarkCaseResult, BenchmarkCorpusMetadata, BenchmarkEnvironmentMetadata,
     BenchmarkFixtureDocument, BenchmarkFixtureSummary, BenchmarkGateOptions, BenchmarkGateResult,
     BenchmarkGateRunResult, BenchmarkQuerySetMetadata, BenchmarkReport, BenchmarkRunOptions,
-    BenchmarkSummary, BenchmarkTrendReport, ReleaseGatePackOptions,
+    BenchmarkSummary, BenchmarkTrendReport, ReleaseGatePackOptions, ReleaseSecurityAuditMode,
 };
 pub use eval::{
     EvalBucket, EvalCaseResult, EvalGoldenAddResult, EvalGoldenDocument, EvalGoldenMergeReport,
@@ -38,12 +38,14 @@ pub use release::{
 };
 pub use search::{
     BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, IndexRecord, MetadataFilter,
-    QueryPlan, RelationLink, RelationSummary, RetrievalStep, RetrievalTrace, SearchBudget,
-    SearchFilter, SearchOptions, SearchRequest, TracePoint, TraceStats, TypedQueryPlan,
+    QueryPlan, RelationLink, RelationSummary, RetrievalStep, RetrievalTrace, RuntimeHint,
+    RuntimeHintKind, SearchBudget, SearchFilter, SearchOptions, SearchRequest, TracePoint,
+    TraceStats, TypedQueryPlan,
 };
 pub use session::{
-    CommitResult, CommitStats, ContextUsage, MemoryCandidate, Message, SearchContext, SessionInfo,
-    SessionMeta,
+    CommitMode, CommitResult, CommitStats, ContextUsage, MemoryCandidate, MemoryCategory,
+    MemoryPromotionFact, MemoryPromotionRequest, MemoryPromotionResult, Message,
+    PromotionApplyMode, SearchContext, SessionInfo, SessionMeta,
 };
 pub use trace::{
     RequestLogEntry, TraceIndexEntry, TraceMetricsReport, TraceMetricsSample,

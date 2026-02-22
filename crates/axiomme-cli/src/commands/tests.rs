@@ -4,8 +4,9 @@ use tempfile::tempdir;
 
 use super::{command_needs_runtime, run};
 use crate::cli::{
-    BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs, DocumentCommand, DocumentMode,
-    EvalArgs, EvalCommand, FindArgs, QueueArgs, QueueCommand, TraceArgs, TraceCommand,
+    AddArgs, BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs, DocumentCommand,
+    DocumentMode, EvalArgs, EvalCommand, FindArgs, QueueArgs, QueueCommand, ReconcileArgs,
+    TraceArgs, TraceCommand,
 };
 use axiomme_core::AxiomMe;
 
@@ -31,7 +32,43 @@ fn find_requires_runtime_prepare() {
 }
 
 #[test]
-fn search_uses_bootstrap_only_when_backend_is_default_sqlite() {
+fn backend_requires_runtime_prepare() {
+    let command = Commands::Backend;
+    assert!(command_needs_runtime(&command));
+}
+
+#[test]
+fn backend_runs_runtime_prepare_and_reflects_local_records() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+
+    let source_path = temp.path().join("backend.md");
+    fs::write(&source_path, "# Backend\n\nruntime index probe").expect("write source");
+    run(
+        &app,
+        temp.path(),
+        Commands::Add(AddArgs {
+            source: source_path.to_string_lossy().to_string(),
+            target: Some("axiom://resources/backend".to_string()),
+            wait: false,
+            markdown_only: false,
+            include_hidden: false,
+            exclude: Vec::new(),
+        }),
+    )
+    .expect("add");
+
+    let before = app.backend_status().expect("backend before");
+    assert_eq!(before.local_records, 0);
+
+    run(&app, temp.path(), Commands::Backend).expect("backend command");
+    let after = app.backend_status().expect("backend after");
+    assert!(after.local_records > 0);
+}
+
+#[test]
+fn search_runs_runtime_prepare_for_memory_backend() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app");
 
@@ -49,8 +86,8 @@ fn search_uses_bootstrap_only_when_backend_is_default_sqlite() {
     run(&app, temp.path(), command).expect("search");
 
     assert!(
-        !temp.path().join("resources").join(".abstract.md").exists(),
-        "default sqlite search should not force runtime tier synthesis"
+        temp.path().join("resources").join(".abstract.md").exists(),
+        "memory search should run runtime prepare and synthesize root tiers"
     );
 }
 
@@ -288,4 +325,120 @@ fn benchmark_gate_enforce_propagates_failure_as_cli_error() {
     )
     .expect_err("must fail with enforce");
     assert!(format!("{err:#}").contains("benchmark gate failed"));
+}
+
+#[test]
+fn document_preview_validation_runs_before_bootstrap_side_effects() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+
+    let err = run(
+        &app,
+        temp.path(),
+        Commands::Document(DocumentArgs {
+            command: DocumentCommand::Preview {
+                uri: None,
+                content: None,
+                from: None,
+                stdin: false,
+            },
+        }),
+    )
+    .expect_err("must fail without source");
+    assert!(format!("{err:#}").contains("preview source is required"));
+    assert!(!temp.path().join("resources").exists());
+}
+
+#[test]
+fn add_markdown_flag_validation_runs_before_bootstrap_side_effects() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+
+    let err = run(
+        &app,
+        temp.path(),
+        Commands::Add(AddArgs {
+            source: "/tmp/does-not-matter".to_string(),
+            target: Some("axiom://resources/invalid".to_string()),
+            wait: false,
+            markdown_only: false,
+            include_hidden: false,
+            exclude: vec!["**/*.json".to_string()],
+        }),
+    )
+    .expect_err("must fail");
+    assert!(format!("{err:#}").contains("--exclude requires --markdown-only"));
+    assert!(!temp.path().join("resources").exists());
+}
+
+#[test]
+fn reconcile_scope_validation_runs_before_bootstrap_side_effects() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+
+    let err = run(
+        &app,
+        temp.path(),
+        Commands::Reconcile(ReconcileArgs {
+            dry_run: true,
+            scopes: vec!["not-a-scope".to_string()],
+            max_drift_sample: 50,
+        }),
+    )
+    .expect_err("invalid scope must fail");
+    assert!(format!("{err:#}").contains("invalid --scope value"));
+    assert!(!temp.path().join("resources").exists());
+}
+
+#[test]
+fn queue_work_zero_iterations_has_stable_mode_value() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+
+    let report = super::queue::run_queue_worker(&app, 0, 10, 0, false, true).expect("report");
+    let payload = serde_json::to_value(report).expect("serialize");
+    assert_eq!(payload["mode"], "work");
+    assert_eq!(payload["iterations"], 0);
+}
+
+#[test]
+fn queue_daemon_zero_max_cycles_still_reports_daemon_mode() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+
+    let report = super::queue::run_queue_daemon(&app, 0, 10, 0, false, true, 1).expect("report");
+    let payload = serde_json::to_value(report).expect("serialize");
+    assert_eq!(payload["mode"], "daemon");
+}
+
+#[test]
+fn benchmark_gate_rejects_required_passes_over_window_before_runtime_prepare() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+
+    let err = run(
+        &app,
+        temp.path(),
+        Commands::Benchmark(BenchmarkArgs {
+            command: BenchmarkCommand::Gate {
+                threshold_p95_ms: 600,
+                min_top1_accuracy: 0.75,
+                min_stress_top1_accuracy: None,
+                gate_profile: "custom".to_string(),
+                max_p95_regression_pct: None,
+                max_top1_regression_pct: None,
+                window_size: 1,
+                required_passes: 2,
+                record: false,
+                write_release_check: false,
+                enforce: false,
+            },
+        }),
+    )
+    .expect_err("invalid gate policy must fail");
+
+    assert!(format!("{err:#}").contains("--required-passes (2) cannot exceed --window-size (1)"));
+    assert!(!temp.path().join("resources").exists());
 }

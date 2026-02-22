@@ -87,10 +87,11 @@ impl GateSnapshot {
         let latest = reports.first().cloned().map(to_benchmark_summary);
         let previous = reports.get(1).cloned().map(to_benchmark_summary);
 
-        let regression_pct = match (latest.as_ref(), previous.as_ref()) {
-            (Some(current), Some(prev)) => {
-                percent_delta_u128(current.p95_latency_ms, prev.p95_latency_ms)
-            }
+        let regression_pct = match (reports.first(), reports.get(1)) {
+            (Some(current), Some(prev)) => percent_delta_u128(
+                p95_latency_for_regression(current),
+                p95_latency_for_regression(prev),
+            ),
             _ => None,
         };
         let top1_regression_pct = match (latest.as_ref(), previous.as_ref()) {
@@ -435,8 +436,12 @@ fn evaluate_gate_run(
         }
     }
 
-    let run_regression_pct =
-        prev_report.and_then(|prev| percent_delta_u128(report.p95_latency_ms, prev.p95_latency_ms));
+    let run_regression_pct = prev_report.and_then(|prev| {
+        percent_delta_u128(
+            p95_latency_for_regression(report),
+            p95_latency_for_regression(prev),
+        )
+    });
     if let (Some(max_regression), Some(pct)) = (config.max_p95_regression_pct, run_regression_pct)
         && pct > max_regression
     {
@@ -487,6 +492,7 @@ fn evaluate_gate_run(
         run_id: report.run_id.clone(),
         passed,
         p95_latency_ms: report.p95_latency_ms,
+        p95_latency_us: report.p95_latency_us,
         top1_accuracy: report.top1_accuracy,
         stress_top1_accuracy: run_stress_top1_accuracy,
         regression_pct: run_regression_pct,
@@ -516,6 +522,14 @@ fn stress_top1_accuracy(report: &BenchmarkReport) -> Option<f32> {
     }
 }
 
+fn p95_latency_for_regression(report: &BenchmarkReport) -> u128 {
+    regression_latency_value(report.p95_latency_ms, report.p95_latency_us)
+}
+
+fn regression_latency_value(p95_latency_ms: u128, p95_latency_us: Option<u128>) -> u128 {
+    p95_latency_us.unwrap_or(p95_latency_ms.saturating_mul(1_000))
+}
+
 const fn semantic_quality_regression_eligible(
     current: &BenchmarkReport,
     previous: &BenchmarkReport,
@@ -530,4 +544,29 @@ const fn semantic_quality_regression_eligible(
         && previous.query_set.semantic_queries >= previous_thresholds.min_semantic_queries
         && previous.query_set.lexical_queries >= previous_thresholds.min_lexical_queries
         && previous.query_set.mixed_queries >= previous_thresholds.min_mixed_queries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{percent_delta_u128, regression_latency_value};
+
+    #[test]
+    fn regression_latency_value_prefers_microseconds_when_present() {
+        assert_eq!(regression_latency_value(1, Some(437)), 437);
+        assert_eq!(regression_latency_value(1, Some(901)), 901);
+    }
+
+    #[test]
+    fn regression_latency_value_falls_back_to_millisecond_basis() {
+        assert_eq!(regression_latency_value(0, None), 0);
+        assert_eq!(regression_latency_value(1, None), 1_000);
+    }
+
+    #[test]
+    fn percent_delta_uses_microsecond_basis_when_millisecond_values_tie() {
+        let current = regression_latency_value(1, Some(437));
+        let previous = regression_latency_value(1, Some(465));
+        let pct = percent_delta_u128(current, previous).expect("regression pct");
+        assert!(pct < 0.0, "expected improvement pct, got {pct}");
+    }
 }

@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 use std::process::Command;
+use std::time::Duration;
 
 use chrono::Utc;
 
@@ -30,6 +31,24 @@ pub fn average_latency_ms(values: &[u128]) -> f32 {
     } else {
         values.iter().copied().sum::<u128>() as f32 / values.len() as f32
     }
+}
+
+#[must_use]
+pub fn duration_to_latency_ms(duration: Duration) -> u128 {
+    let nanos = duration.as_nanos();
+    if nanos == 0 {
+        return 0;
+    }
+    nanos.saturating_add(999_999) / 1_000_000
+}
+
+#[must_use]
+pub fn duration_to_latency_us(duration: Duration) -> u128 {
+    let nanos = duration.as_nanos();
+    if nanos == 0 {
+        return 0;
+    }
+    nanos.saturating_add(999) / 1_000
 }
 
 pub fn command_stdout(cmd: &str, args: &[&str]) -> Option<String> {
@@ -441,6 +460,19 @@ fn write_benchmark_header(out: &mut String, report: &BenchmarkReport) {
             report.avg_latency_ms
         ),
     );
+    if let (Some(p50), Some(p95), Some(p99)) = (
+        report.p50_latency_us,
+        report.p95_latency_us,
+        report.p99_latency_us,
+    ) {
+        write_line(
+            out,
+            format_args!(
+                "- find_latency_us: p50=`{}`, p95=`{}`, p99=`{}`\n",
+                p50, p95, p99
+            ),
+        );
+    }
     write_line(
         out,
         format_args!(
@@ -451,6 +483,19 @@ fn write_benchmark_header(out: &mut String, report: &BenchmarkReport) {
             report.search_avg_latency_ms
         ),
     );
+    if let (Some(p50), Some(p95), Some(p99)) = (
+        report.search_p50_latency_us,
+        report.search_p95_latency_us,
+        report.search_p99_latency_us,
+    ) {
+        write_line(
+            out,
+            format_args!(
+                "- search_latency_us: p50=`{}`, p95=`{}`, p99=`{}`\n",
+                p50, p95, p99
+            ),
+        );
+    }
     write_line(
         out,
         format_args!(
@@ -461,6 +506,19 @@ fn write_benchmark_header(out: &mut String, report: &BenchmarkReport) {
             report.commit_avg_latency_ms
         ),
     );
+    if let (Some(p50), Some(p95), Some(p99)) = (
+        report.commit_p50_latency_us,
+        report.commit_p95_latency_us,
+        report.commit_p99_latency_us,
+    ) {
+        write_line(
+            out,
+            format_args!(
+                "- commit_latency_us: p50=`{}`, p95=`{}`, p99=`{}`\n",
+                p50, p95, p99
+            ),
+        );
+    }
     write_line(
         out,
         format_args!("- case_set_uri: `{}`\n", report.case_set_uri),
@@ -615,11 +673,15 @@ fn write_benchmark_slowest_cases(out: &mut String, report: &BenchmarkReport) {
         let rank = item
             .expected_rank
             .map_or_else(|| "-".to_string(), |value| value.to_string());
+        let latency = item.latency_us.map_or_else(
+            || format!("{}ms", item.latency_ms),
+            |us| format!("{}ms/{}us", item.latency_ms, us),
+        );
         write_line(
             out,
             format_args!(
-                "- latency={}ms pass={} source={} rank={} query=`{}` expected=`{}` actual=`{}`\n",
-                item.latency_ms,
+                "- latency={} pass={} source={} rank={} query=`{}` expected=`{}` actual=`{}`\n",
+                latency,
                 item.passed,
                 item.source,
                 rank,
@@ -638,6 +700,7 @@ pub fn to_benchmark_summary(report: BenchmarkReport) -> BenchmarkSummary {
         executed_cases: report.executed_cases,
         top1_accuracy: report.top1_accuracy,
         p95_latency_ms: report.p95_latency_ms,
+        p95_latency_us: report.p95_latency_us,
         report_uri: report.report_uri,
     }
 }
@@ -658,6 +721,8 @@ pub fn to_trace_metrics_snapshot_summary(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     fn case(
@@ -758,5 +823,23 @@ mod tests {
 
         assert!(!result.passed);
         assert!(result.checks.iter().any(|check| !check.passed));
+    }
+
+    #[test]
+    fn duration_to_latency_ms_uses_non_zero_ceil_rounding() {
+        assert_eq!(duration_to_latency_ms(Duration::ZERO), 0);
+        assert_eq!(duration_to_latency_ms(Duration::from_nanos(1)), 1);
+        assert_eq!(duration_to_latency_ms(Duration::from_micros(999)), 1);
+        assert_eq!(duration_to_latency_ms(Duration::from_micros(1_000)), 1);
+        assert_eq!(duration_to_latency_ms(Duration::from_micros(1_001)), 2);
+    }
+
+    #[test]
+    fn duration_to_latency_us_uses_non_zero_ceil_rounding() {
+        assert_eq!(duration_to_latency_us(Duration::ZERO), 0);
+        assert_eq!(duration_to_latency_us(Duration::from_nanos(1)), 1);
+        assert_eq!(duration_to_latency_us(Duration::from_nanos(999)), 1);
+        assert_eq!(duration_to_latency_us(Duration::from_nanos(1_000)), 1);
+        assert_eq!(duration_to_latency_us(Duration::from_nanos(1_001)), 2);
     }
 }

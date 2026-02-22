@@ -21,7 +21,10 @@ pub(crate) use om::{
     OmConfig, OmObserverConfigSnapshot, OmReflectorConfigSnapshot, OmRuntimeEnvConfig,
     OmRuntimeLimitsConfig, OmScopeConfig,
 };
-pub(crate) use search::{OmHintBounds, OmHintPolicy, RetrievalBackend, SearchConfig};
+pub(crate) use search::{
+    OmHintBounds, OmHintPolicy, QUERY_PLAN_BACKEND_POLICY_MEMORY_ONLY, RETRIEVAL_BACKEND_MEMORY,
+    RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY, SearchConfig,
+};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AppConfig {

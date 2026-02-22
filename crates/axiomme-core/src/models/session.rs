@@ -60,3 +60,71 @@ pub struct MemoryCandidate {
     pub text: String,
     pub source_message_id: String,
 }
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryCategory {
+    Profile,
+    Preferences,
+    Entities,
+    Events,
+    Cases,
+    Patterns,
+}
+
+impl MemoryCategory {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Profile => "profile",
+            Self::Preferences => "preferences",
+            Self::Entities => "entities",
+            Self::Events => "events",
+            Self::Cases => "cases",
+            Self::Patterns => "patterns",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionApplyMode {
+    AllOrNothing,
+    BestEffort,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitMode {
+    ArchiveAndExtract,
+    ArchiveOnly,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryPromotionFact {
+    pub category: MemoryCategory,
+    pub text: String,
+    #[serde(default)]
+    pub source_message_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    pub confidence_milli: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryPromotionRequest {
+    pub session_id: String,
+    pub checkpoint_id: String,
+    pub apply_mode: PromotionApplyMode,
+    pub facts: Vec<MemoryPromotionFact>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryPromotionResult {
+    pub session_id: String,
+    pub checkpoint_id: String,
+    pub accepted: usize,
+    pub persisted: usize,
+    pub skipped_duplicates: usize,
+    pub rejected: usize,
+}

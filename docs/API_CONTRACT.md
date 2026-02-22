@@ -60,6 +60,8 @@ Markdown web editor (`extension`):
 - `POST /api/document/save { uri, content, expected_etag? } -> MarkdownSaveResult`
   - Save target supports `markdown`, `json`, `yaml`
   - Save path keeps full-replace + etag + sync reindex + rollback policy
+  - Save reindex scope is targeted to the changed document and its ancestor tier chain
+  - Unrelated invalid sibling paths do not fail save/reindex for the edited document
 - `GET /api/markdown?uri=axiom://... -> MarkdownDocument`
 - `POST /api/markdown/save { uri, content, expected_etag? } -> MarkdownSaveResult`
 - `POST /api/markdown/preview { content } -> { html }`
@@ -93,14 +95,25 @@ Markdown request metrics (`extension`):
 - `find_with_budget(query, target_uri?, limit?, score_threshold?, filter?, budget?) -> FindResult` (`extension`)
 - `search(query, target_uri?, session?, limit?, score_threshold?, filter?) -> FindResult`
 - `search_with_budget(query, target_uri?, session?, limit?, score_threshold?, filter?, budget?) -> FindResult` (`extension`)
+- `search_with_request(SearchRequest{ ..., runtime_hints }) -> FindResult` (`extension`)
+
+Runtime hint boundary (`extension`):
+
+- `SearchRequest.runtime_hints` is request-scoped context only.
+- Runtime hints are not persisted to `messages.jsonl`.
+- Runtime hints do not enqueue outbox events and are excluded from commit extraction input.
 
 Ranking behavior (`extension`):
 
-- Post-retrieval reranker profile is controlled by `AXIOMME_RERANKER` (`doc-aware-v1`, `off`).
-- Retrieval backend selection remains explicit via `AXIOMME_RETRIEVAL_BACKEND=sqlite|memory`.
+- Post-retrieval reranker is off by default and enabled only with `AXIOMME_RERANKER=doc-aware-v1`.
+- Retrieval backend is memory-only (`AXIOMME_RETRIEVAL_BACKEND=memory`).
 - Invalid `AXIOMME_RETRIEVAL_BACKEND` token is treated as configuration error (fail-fast).
-- SQLite lexical retrieval applies optional query normalization/alias expansion before FTS `MATCH`.
-  - env: `AXIOMME_QUERY_NORMALIZER` (default enabled; set `off|none|0|false` to disable)
+- Retrieval query-plan notes include explicit backend policy marker:
+  - `backend_policy:memory_only`
+- Retrieval tokenization is deterministic in the memory search path.
+- Search request logs include backend policy fields:
+  - `retrieval_backend`
+  - `retrieval_backend_policy`
 
 Embedding provider behavior (`extension`):
 
@@ -132,6 +145,9 @@ Embedding provider behavior (`extension`):
 - `session(session_id?) -> SessionHandle`
 - `sessions() -> List<SessionInfo>` (`extension`)
 - `delete(session_id) -> bool` (`extension`)
+- `promote_session_memories(request) -> MemoryPromotionResult` (`extension`)
+- `checkpoint_session_archive_only(session_id) -> CommitResult` (`extension`)
+- `promote_and_checkpoint_archive_only(request) -> MemoryPromotionResult` (`extension`)
 
 Session handle:
 
@@ -140,7 +156,16 @@ Session handle:
 - `used(contexts?, skill?) -> Result<()>`
 - `update_tool_part(message_id, tool_id, output, status?) -> Result<()>`
 - `commit() -> CommitResult`
+- `commit_with_mode(mode) -> CommitResult` (`extension`)
 - `get_context_for_search(query, max_archives?, max_messages?) -> SearchContext`
+
+Checkpoint promotion contract (`extension`):
+
+- `commit_with_mode(archive_only)` archives active messages and skips auto memory extraction.
+- `promote_session_memories` accepts explicit `MemoryPromotionRequest` facts only.
+- Promotion idempotency key is `(session_id, checkpoint_id)` with deterministic `request_hash`.
+- Same key + same hash returns cached result; same key + different hash returns validation conflict.
+- In-flight same key (`phase=applying`) returns retryable conflict (`checkpoint_busy`).
 
 ### Package
 
@@ -206,6 +231,56 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
   }
 }
 ```
+
+### SearchRequest (extension)
+
+```json
+{
+  "query": "runtime hints",
+  "session": "s1",
+  "runtime_hints": [
+    {"kind":"observation", "text":"short-lived hint", "source":"episodic"},
+    {"kind":"current_task", "text":"answer with boundary-safe flow", "source":"episodic"}
+  ]
+}
+```
+
+### MemoryPromotionRequest / Result (extension)
+
+```json
+{
+  "session_id": "s1",
+  "checkpoint_id": "cp-1",
+  "apply_mode": "all_or_nothing",
+  "facts": [
+    {
+      "category": "cases",
+      "text": "Integrate episodic runtime boundary flow",
+      "source_message_ids": ["m-1"],
+      "source": "episodic",
+      "confidence_milli": 850
+    }
+  ]
+}
+```
+
+```json
+{
+  "session_id": "s1",
+  "checkpoint_id": "cp-1",
+  "accepted": 1,
+  "persisted": 1,
+  "skipped_duplicates": 0,
+  "rejected": 0
+}
+```
+
+Field semantics:
+
+- `accepted`: validated incoming fact count after normalization/dedup.
+- `persisted`: durable fact writes count (not unique file count).
+- `skipped_duplicates`: dropped because same normalized category+text already existed.
+- `rejected`: invalid or failed facts under `best_effort`.
 
 ### QueueStatus
 

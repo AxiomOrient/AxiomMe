@@ -43,14 +43,7 @@ pub fn retry_backoff_seconds(event_type: &str, attempt: u32, event_id: i64) -> i
 }
 
 pub fn default_scope_set() -> Vec<Scope> {
-    vec![
-        Scope::Resources,
-        Scope::User,
-        Scope::Agent,
-        Scope::Session,
-        Scope::Temp,
-        Scope::Queue,
-    ]
+    vec![Scope::Resources, Scope::User, Scope::Agent, Scope::Session]
 }
 
 pub fn push_drift_sample(sample: &mut Vec<String>, uri: &str, max: usize) {
@@ -128,13 +121,13 @@ mod tests {
     #[test]
     fn default_scope_set_contains_all_expected_scopes() {
         let scopes = default_scope_set();
-        assert_eq!(scopes.len(), 6);
+        assert_eq!(scopes.len(), 4);
         assert!(scopes.contains(&Scope::Resources));
         assert!(scopes.contains(&Scope::User));
         assert!(scopes.contains(&Scope::Agent));
         assert!(scopes.contains(&Scope::Session));
-        assert!(scopes.contains(&Scope::Temp));
-        assert!(scopes.contains(&Scope::Queue));
+        assert!(!scopes.contains(&Scope::Temp));
+        assert!(!scopes.contains(&Scope::Queue));
     }
 
     #[test]

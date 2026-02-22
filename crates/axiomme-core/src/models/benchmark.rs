@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::EvalQueryCase;
-use super::defaults::{default_release_security_audit_mode, default_true};
+use super::defaults::default_true;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(
@@ -44,6 +44,8 @@ pub struct BenchmarkAmortizedRunSummary {
     pub ndcg_at_10: f32,
     pub recall_at_10: f32,
     pub p95_latency_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p95_latency_us: Option<u128>,
     pub report_uri: String,
 }
 
@@ -70,6 +72,8 @@ pub struct BenchmarkAmortizedReport {
     pub ndcg_at_10_avg: f32,
     pub recall_at_10_avg: f32,
     pub p95_latency_ms_median: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p95_latency_us_median: Option<u128>,
     pub runs: Vec<BenchmarkAmortizedRunSummary>,
 }
 
@@ -106,6 +110,29 @@ impl Default for BenchmarkGateOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReleaseSecurityAuditMode {
+    Offline,
+    Strict,
+}
+
+impl ReleaseSecurityAuditMode {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Offline => "offline",
+            Self::Strict => "strict",
+        }
+    }
+}
+
+impl Default for ReleaseSecurityAuditMode {
+    fn default() -> Self {
+        Self::Strict
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReleaseGatePackOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_dir: Option<String>,
@@ -128,8 +155,8 @@ pub struct ReleaseGatePackOptions {
     pub benchmark_max_top1_regression_pct: Option<f32>,
     pub benchmark_window_size: usize,
     pub benchmark_required_passes: usize,
-    #[serde(default = "default_release_security_audit_mode")]
-    pub security_audit_mode: String,
+    #[serde(default)]
+    pub security_audit_mode: ReleaseSecurityAuditMode,
 }
 
 impl Default for ReleaseGatePackOptions {
@@ -152,7 +179,7 @@ impl Default for ReleaseGatePackOptions {
             benchmark_max_top1_regression_pct: None,
             benchmark_window_size: 1,
             benchmark_required_passes: 1,
-            security_audit_mode: default_release_security_audit_mode(),
+            security_audit_mode: ReleaseSecurityAuditMode::default(),
         }
     }
 }
@@ -166,6 +193,8 @@ pub struct BenchmarkCaseResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expected_rank: Option<usize>,
     pub latency_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latency_us: Option<u128>,
     pub passed: bool,
     pub source: String,
 }
@@ -268,14 +297,32 @@ pub struct BenchmarkReport {
     pub p50_latency_ms: u128,
     pub p95_latency_ms: u128,
     pub p99_latency_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p50_latency_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p95_latency_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p99_latency_us: Option<u128>,
     pub avg_latency_ms: f32,
     pub search_p50_latency_ms: u128,
     pub search_p95_latency_ms: u128,
     pub search_p99_latency_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_p50_latency_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_p95_latency_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_p99_latency_us: Option<u128>,
     pub search_avg_latency_ms: f32,
     pub commit_p50_latency_ms: u128,
     pub commit_p95_latency_ms: u128,
     pub commit_p99_latency_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_p50_latency_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_p95_latency_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit_p99_latency_us: Option<u128>,
     pub commit_avg_latency_ms: f32,
     pub error_rate: f32,
     pub environment: BenchmarkEnvironmentMetadata,
@@ -295,6 +342,8 @@ pub struct BenchmarkSummary {
     pub executed_cases: usize,
     pub top1_accuracy: f32,
     pub p95_latency_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p95_latency_us: Option<u128>,
     pub report_uri: String,
 }
 
@@ -319,6 +368,8 @@ pub struct BenchmarkTrendReport {
     pub latest: Option<BenchmarkSummary>,
     pub previous: Option<BenchmarkSummary>,
     pub delta_p95_latency_ms: Option<i128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_p95_latency_us: Option<i128>,
     pub delta_top1_accuracy: Option<f32>,
     pub status: String,
 }
@@ -328,6 +379,8 @@ pub struct BenchmarkGateRunResult {
     pub run_id: String,
     pub passed: bool,
     pub p95_latency_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p95_latency_us: Option<u128>,
     pub top1_accuracy: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stress_top1_accuracy: Option<f32>,

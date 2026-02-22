@@ -140,6 +140,7 @@ impl AxiomMe {
                 latest: None,
                 previous: None,
                 delta_p95_latency_ms: None,
+                delta_p95_latency_us: None,
                 delta_top1_accuracy: None,
                 status: "no_data".to_string(),
             });
@@ -153,6 +154,19 @@ impl AxiomMe {
                 .zip(previous.as_ref())
                 .and_then(|(latest, previous)| {
                     delta_u128_to_i128(latest.p95_latency_ms, previous.p95_latency_ms)
+                });
+        let delta_p95_latency_us =
+            latest
+                .as_ref()
+                .zip(previous.as_ref())
+                .and_then(|(latest, previous)| {
+                    let latest = latest
+                        .p95_latency_us
+                        .unwrap_or(latest.p95_latency_ms.saturating_mul(1_000));
+                    let previous = previous
+                        .p95_latency_us
+                        .unwrap_or(previous.p95_latency_ms.saturating_mul(1_000));
+                    delta_u128_to_i128(latest, previous)
                 });
         let delta_top1_accuracy = match (latest.as_ref(), previous.as_ref()) {
             (Some(l), Some(p)) => Some(l.top1_accuracy - p.top1_accuracy),
@@ -171,6 +185,7 @@ impl AxiomMe {
             latest,
             previous,
             delta_p95_latency_ms,
+            delta_p95_latency_us,
             delta_top1_accuracy,
             status,
         })

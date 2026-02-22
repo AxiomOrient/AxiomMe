@@ -5,11 +5,13 @@ use std::time::UNIX_EPOCH;
 use chrono::{DateTime, Utc};
 
 use crate::catalog::request_log_uri;
+use crate::config::{RETRIEVAL_BACKEND_MEMORY, RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY};
 use crate::error::{AxiomError, Result};
 use crate::jsonl::{jsonl_all_lines_invalid, parse_jsonl_tolerant};
 use crate::models::{
-    BackendStatus, EmbeddingBackendStatus, QueueDiagnostics, QueueOverview, RequestLogEntry,
-    SessionInfo, SessionMeta,
+    BackendStatus, CommitMode, CommitResult, EmbeddingBackendStatus, MemoryPromotionRequest,
+    MemoryPromotionResult, QueueDiagnostics, QueueOverview, RequestLogEntry, SessionInfo,
+    SessionMeta,
 };
 use crate::queue_policy::default_scope_set;
 use crate::session::Session;
@@ -18,8 +20,7 @@ use crate::uri::{AxiomUri, Scope};
 use super::AxiomMe;
 
 const INDEX_PROFILE_STAMP_KEY: &str = "index_profile_stamp";
-const SEARCH_STACK_VERSION: &str = "sqlite-fts5-bm25-v3";
-
+const SEARCH_STACK_VERSION: &str = "drr-memory-v1";
 impl AxiomMe {
     pub fn session(&self, session_id: Option<&str>) -> Session {
         let id = session_id.map_or_else(
@@ -42,6 +43,8 @@ impl AxiomMe {
 
         Ok(BackendStatus {
             local_records,
+            retrieval_backend: RETRIEVAL_BACKEND_MEMORY.to_string(),
+            retrieval_backend_policy: RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY.to_string(),
             embedding: EmbeddingBackendStatus {
                 provider: embed.provider,
                 vector_version: embed.vector_version,
@@ -154,6 +157,32 @@ impl AxiomMe {
         Ok(out)
     }
 
+    pub fn promote_session_memories(
+        &self,
+        request: &MemoryPromotionRequest,
+    ) -> Result<MemoryPromotionResult> {
+        let session = self.session(Some(&request.session_id));
+        session.load()?;
+        session.promote_memories(request)
+    }
+
+    pub fn checkpoint_session_archive_only(&self, session_id: &str) -> Result<CommitResult> {
+        let session = self.session(Some(session_id));
+        session.load()?;
+        session.commit_with_mode(CommitMode::ArchiveOnly)
+    }
+
+    pub fn promote_and_checkpoint_archive_only(
+        &self,
+        request: &MemoryPromotionRequest,
+    ) -> Result<MemoryPromotionResult> {
+        let session = self.session(Some(&request.session_id));
+        session.load()?;
+        let result = session.promote_memories(request)?;
+        let _ = session.commit_with_mode(CommitMode::ArchiveOnly)?;
+        Ok(result)
+    }
+
     pub fn delete(&self, session_id: &str) -> Result<bool> {
         let uri = AxiomUri::root(Scope::Session).join(session_id)?;
         if !self.fs.exists(&uri) {
@@ -165,6 +194,9 @@ impl AxiomMe {
             .remove_search_documents_with_prefix(&uri.to_string())?;
         self.state
             .remove_index_state_with_prefix(&uri.to_string())?;
+        let _ = self
+            .state
+            .remove_promotion_checkpoints_for_session(session_id)?;
         Ok(true)
     }
 
@@ -207,17 +239,24 @@ impl AxiomMe {
 
     fn restore_index_from_state(&self) -> Result<usize> {
         let records = self.state.list_search_documents()?;
-        let count = records.len();
+        let mut restored = 0usize;
         let mut index = self
             .index
             .write()
             .map_err(|_| AxiomError::lock_poisoned("index"))?;
         index.clear();
         for record in records {
+            let Ok(uri) = AxiomUri::parse(&record.uri) else {
+                continue;
+            };
+            if uri.scope().is_internal() {
+                continue;
+            }
             index.upsert(record);
+            restored = restored.saturating_add(1);
         }
         drop(index);
-        Ok(count)
+        Ok(restored)
     }
 
     fn current_index_profile_stamp(&self) -> String {

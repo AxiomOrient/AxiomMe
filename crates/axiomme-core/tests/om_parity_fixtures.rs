@@ -207,6 +207,8 @@ struct ResolvedConfigExpectation {
     message_tokens_base: u32,
     observation_tokens: u32,
     total_budget: Option<u32>,
+    #[serde(default)]
+    max_tokens_per_batch: Option<u32>,
     buffer_tokens: Option<u32>,
     observation_buffer_activation: Option<f32>,
     observation_block_after: Option<u32>,
@@ -473,6 +475,7 @@ fn saturating_usize_to_u32(value: usize) -> u32 {
 fn config_parity_cases_match_expected_results() {
     let fixture = load_fixture();
     for case in fixture.config {
+        let input_max_tokens_per_batch = case.input.observation.max_tokens_per_batch;
         let input = OmConfigInput {
             scope: case.input.scope.into(),
             share_token_budget: case.input.share_token_budget,
@@ -502,7 +505,9 @@ fn config_parity_cases_match_expected_results() {
                 );
                 assert_eq!(
                     resolved.observation.max_tokens_per_batch,
-                    DEFAULT_OBSERVER_MAX_TOKENS_PER_BATCH,
+                    expect.max_tokens_per_batch.unwrap_or(
+                        input_max_tokens_per_batch.unwrap_or(DEFAULT_OBSERVER_MAX_TOKENS_PER_BATCH),
+                    ),
                     "{} max_tokens_per_batch",
                     case.name
                 );

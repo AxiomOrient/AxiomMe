@@ -102,6 +102,8 @@ fn backend_status_exposes_embedding_profile() {
 
     let status = app.backend_status().expect("backend status");
     let profile = crate::embedding::embedding_profile();
+    assert_eq!(status.retrieval_backend, "memory");
+    assert_eq!(status.retrieval_backend_policy, "memory_only");
     assert_eq!(status.embedding.provider, profile.provider);
     assert_eq!(status.embedding.vector_version, profile.vector_version);
     assert_eq!(status.embedding.dim, profile.dim);
@@ -757,7 +759,7 @@ fn markdown_editor_rejects_non_markdown_internal_and_tier_targets() {
 
 #[cfg(unix)]
 #[test]
-fn markdown_editor_rolls_back_file_content_when_reindex_fails() {
+fn markdown_editor_save_ignores_unrelated_invalid_sibling_path() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app new");
     app.initialize().expect("init failed");
@@ -782,12 +784,92 @@ fn markdown_editor_rolls_back_file_content_when_reindex_fails() {
     let uri = "axiom://resources/markdown-rollback/guide.md";
     let loaded = app.load_markdown(uri).expect("load");
 
-    let err = app
-        .save_markdown(uri, "# Guide\n\nrollback_new_token", Some(&loaded.etag))
-        .expect_err("save must fail");
-    assert!(matches!(err, AxiomError::Internal(_)));
+    app.save_markdown(uri, "# Guide\n\nrollback_new_token", Some(&loaded.etag))
+        .expect("save should succeed");
 
-    let after = app.load_markdown(uri).expect("load after failed save");
-    assert!(after.content.contains("rollback_old_token"));
-    assert!(!after.content.contains("rollback_new_token"));
+    let after = app.load_markdown(uri).expect("load after save");
+    assert!(!after.content.contains("rollback_old_token"));
+    assert!(after.content.contains("rollback_new_token"));
+}
+
+#[test]
+#[ignore = "manual performance evidence for targeted reindex vs full-tree reindex"]
+fn markdown_reindex_targeted_vs_full_tree_p95_reference() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let corpus_dir = temp.path().join("reindex_perf_corpus");
+    fs::create_dir_all(corpus_dir.join("nested/deeper")).expect("mkdir nested");
+
+    for idx in 0..240 {
+        let file = corpus_dir.join(format!("doc-{idx:03}.md"));
+        fs::write(file, format!("# Doc {idx}\n\nseed token {idx}")).expect("write corpus file");
+    }
+    for idx in 0..120 {
+        let file = corpus_dir
+            .join("nested/deeper")
+            .join(format!("deep-{idx:03}.md"));
+        fs::write(file, format!("# Deep {idx}\n\nseed deep token {idx}"))
+            .expect("write deep corpus file");
+    }
+
+    fs::write(corpus_dir.join("target.md"), "# Target\n\nseed target").expect("write target");
+
+    app.add_resource(
+        corpus_dir.to_str().expect("corpus str"),
+        Some("axiom://resources/reindex-perf"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add failed");
+
+    let target_uri =
+        AxiomUri::parse("axiom://resources/reindex-perf/target.md").expect("target parse");
+    let parent_uri = target_uri.parent().expect("parent uri");
+
+    let mut targeted_ms = Vec::<u128>::new();
+    let mut full_tree_ms = Vec::<u128>::new();
+    let iterations = 30usize;
+
+    for idx in 0..iterations {
+        let content = format!("# Target\n\nmode:targeted\niteration:{idx}");
+        app.fs
+            .write_atomic(&target_uri, &content, false)
+            .expect("write target content");
+        let started = std::time::Instant::now();
+        app.reindex_document_with_ancestors(&target_uri)
+            .expect("targeted reindex");
+        targeted_ms.push(started.elapsed().as_millis());
+    }
+
+    for idx in 0..iterations {
+        let content = format!("# Target\n\nmode:full_tree\niteration:{idx}");
+        app.fs
+            .write_atomic(&target_uri, &content, false)
+            .expect("write target content");
+        let started = std::time::Instant::now();
+        app.reindex_uri_tree(&parent_uri)
+            .expect("full-tree reindex");
+        full_tree_ms.push(started.elapsed().as_millis());
+    }
+
+    let targeted_p95 = percentile_p95_ms(&targeted_ms);
+    let full_tree_p95 = percentile_p95_ms(&full_tree_ms);
+    println!(
+        "reindex_perf_reference targeted_p95_ms={targeted_p95} full_tree_p95_ms={full_tree_p95}"
+    );
+}
+
+fn percentile_p95_ms(values: &[u128]) -> u128 {
+    if values.is_empty() {
+        return 0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let mut index = (sorted.len() * 95).div_ceil(100);
+    index = index.saturating_sub(1).min(sorted.len().saturating_sub(1));
+    sorted[index]
 }

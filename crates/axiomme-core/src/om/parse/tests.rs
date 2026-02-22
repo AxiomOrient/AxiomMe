@@ -267,6 +267,44 @@ fn aggregate_multi_thread_sections_prefers_primary_thread_metadata() {
 }
 
 #[test]
+fn aggregate_multi_thread_sections_prefers_newest_non_empty_metadata() {
+    let sections = vec![
+        OmMultiThreadObserverSection {
+            thread_id: "thread-1".to_string(),
+            observations: "* old-1".to_string(),
+            current_task: Some("task-1-old".to_string()),
+            suggested_response: Some("reply-1-old".to_string()),
+        },
+        OmMultiThreadObserverSection {
+            thread_id: "thread-2".to_string(),
+            observations: "* old-2".to_string(),
+            current_task: Some("task-2-old".to_string()),
+            suggested_response: Some("reply-2-old".to_string()),
+        },
+        OmMultiThreadObserverSection {
+            thread_id: "thread-1".to_string(),
+            observations: "* new-1".to_string(),
+            current_task: Some("task-1-new".to_string()),
+            suggested_response: Some("   ".to_string()),
+        },
+        OmMultiThreadObserverSection {
+            thread_id: "thread-2".to_string(),
+            observations: "* new-2".to_string(),
+            current_task: Some("task-2-new".to_string()),
+            suggested_response: Some("reply-2-new".to_string()),
+        },
+    ];
+
+    let primary = aggregate_multi_thread_observer_sections(&sections, Some("thread-1"));
+    assert_eq!(primary.current_task.as_deref(), Some("task-1-new"));
+    assert_eq!(primary.suggested_response.as_deref(), Some("reply-2-new"));
+
+    let fallback = aggregate_multi_thread_observer_sections(&sections, None);
+    assert_eq!(fallback.current_task.as_deref(), Some("task-2-new"));
+    assert_eq!(fallback.suggested_response.as_deref(), Some("reply-2-new"));
+}
+
+#[test]
 fn aggregate_multi_thread_sections_escapes_xml_sensitive_values() {
     let aggregate = aggregate_multi_thread_observer_sections(
         &[OmMultiThreadObserverSection {

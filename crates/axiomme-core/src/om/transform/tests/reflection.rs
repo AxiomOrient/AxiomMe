@@ -45,6 +45,28 @@ fn plan_buffered_reflection_slice_uses_all_lines_when_average_is_zero() {
 }
 
 #[test]
+fn plan_buffered_reflection_slice_ignores_trailing_newline_for_line_count() {
+    let without_trailing = plan_buffered_reflection_slice("l1\nl2", 100, 160, 0.5);
+    let with_trailing = plan_buffered_reflection_slice("l1\nl2\n", 100, 160, 0.5);
+    assert_eq!(
+        with_trailing.reflected_observation_line_count,
+        without_trailing.reflected_observation_line_count
+    );
+    assert_eq!(
+        with_trailing.sliced_observations,
+        without_trailing.sliced_observations
+    );
+    assert_eq!(
+        with_trailing.slice_token_estimate,
+        without_trailing.slice_token_estimate
+    );
+    assert_eq!(
+        with_trailing.compression_target_tokens,
+        without_trailing.compression_target_tokens
+    );
+}
+
+#[test]
 fn reflector_compression_guidance_is_empty_at_level_zero() {
     assert_eq!(reflector_compression_guidance(0), "");
 }

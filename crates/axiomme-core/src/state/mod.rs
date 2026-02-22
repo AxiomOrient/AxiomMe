@@ -11,21 +11,16 @@ use crate::models::TraceIndexEntry;
 
 mod migration;
 mod om;
+mod promotion_checkpoint;
 mod queue;
 mod queue_lane;
 mod search;
 
+pub(crate) use promotion_checkpoint::PromotionCheckpointPhase;
+
 #[derive(Clone)]
 pub struct SqliteStateStore {
     conn: Arc<Mutex<Connection>>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SqliteSearchHit {
-    pub uri: String,
-    pub score: f32,
-    pub context_type: String,
-    pub abstract_text: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

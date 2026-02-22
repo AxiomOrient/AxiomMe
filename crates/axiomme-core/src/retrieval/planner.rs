@@ -22,90 +22,88 @@ impl PlannedQuery {
     }
 }
 
-pub(super) trait IntentPlanner {
-    fn plan(&self, options: &SearchOptions) -> Vec<PlannedQuery>;
-}
+pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
+    let base_scopes = intent_scopes(&options.query, options.target_uri.as_ref());
+    let has_session_context = options.session.is_some();
+    let mut planned = vec![PlannedQuery::new(
+        "primary",
+        options.query.clone(),
+        base_scopes.clone(),
+        1,
+    )];
 
-#[derive(Debug, Clone, Default)]
-pub(super) struct RuleIntentPlanner;
+    if !options.request_type.starts_with("search") {
+        return dedup_and_limit_queries(planned, 1);
+    }
 
-impl IntentPlanner for RuleIntentPlanner {
-    fn plan(&self, options: &SearchOptions) -> Vec<PlannedQuery> {
-        let base_scopes = intent_scopes(&options.query, options.target_uri.as_ref());
-        let mut planned = vec![PlannedQuery::new(
-            "primary",
-            options.query.clone(),
-            base_scopes.clone(),
-            1,
-        )];
-
-        if !options.request_type.starts_with("search") {
-            return dedup_and_limit_queries(planned, 1);
+    if !options.session_hints.is_empty() {
+        let hint_text = options
+            .session_hints
+            .iter()
+            .filter(|hint| !is_om_hint(hint))
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !hint_text.trim().is_empty() {
+            let kind = if has_session_context {
+                "session_recent"
+            } else {
+                "runtime_hints"
+            };
+            planned.push(PlannedQuery::new(
+                kind,
+                format!("{} {}", options.query, hint_text),
+                base_scopes.clone(),
+                2,
+            ));
         }
 
-        if !options.session_hints.is_empty() {
-            let hint_text = options
-                .session_hints
-                .iter()
-                .filter(|hint| !is_om_hint(hint))
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(" ");
-            if !hint_text.trim().is_empty() {
-                planned.push(PlannedQuery::new(
-                    "session_recent",
-                    format!("{} {}", options.query, hint_text),
-                    base_scopes.clone(),
-                    2,
-                ));
-            }
-
-            if let Some(om_hint) = options
+        if has_session_context
+            && let Some(om_hint) = options
                 .session_hints
                 .iter()
                 .find(|hint| is_om_hint(hint))
                 .and_then(|hint| normalize_om_hint(hint))
-            {
-                let om_scopes = if options.target_uri.is_some() {
-                    base_scopes
-                } else {
-                    vec![Scope::User, Scope::Agent]
-                };
-                planned.push(PlannedQuery::new(
-                    "session_om",
-                    format!("{} {}", options.query, om_hint),
-                    om_scopes,
-                    2,
-                ));
-            }
+        {
+            let om_scopes = if options.target_uri.is_some() {
+                base_scopes
+            } else {
+                vec![Scope::User, Scope::Agent]
+            };
+            planned.push(PlannedQuery::new(
+                "session_om",
+                format!("{} {}", options.query, om_hint),
+                om_scopes,
+                2,
+            ));
         }
-
-        if options.target_uri.is_none() {
-            let query_lower = options.query.to_lowercase();
-            if query_lower.contains("skill") {
-                planned.push(PlannedQuery::new(
-                    "skill_focus",
-                    options.query.clone(),
-                    vec![Scope::Agent],
-                    2,
-                ));
-            }
-            if query_lower.contains("memory")
-                || query_lower.contains("preference")
-                || query_lower.contains("prefer")
-                || !options.session_hints.is_empty()
-            {
-                planned.push(PlannedQuery::new(
-                    "memory_focus",
-                    options.query.clone(),
-                    vec![Scope::User, Scope::Agent],
-                    3,
-                ));
-            }
-        }
-
-        dedup_and_limit_queries(planned, 5)
     }
+
+    if options.target_uri.is_none() {
+        let query_lower = options.query.to_lowercase();
+        if query_lower.contains("skill") {
+            planned.push(PlannedQuery::new(
+                "skill_focus",
+                options.query.clone(),
+                vec![Scope::Agent],
+                2,
+            ));
+        }
+        if query_lower.contains("memory")
+            || query_lower.contains("preference")
+            || query_lower.contains("prefer")
+            || has_session_context
+        {
+            planned.push(PlannedQuery::new(
+                "memory_focus",
+                options.query.clone(),
+                vec![Scope::User, Scope::Agent],
+                3,
+            ));
+        }
+    }
+
+    dedup_and_limit_queries(planned, 5)
 }
 
 fn intent_scopes(query: &str, target: Option<&AxiomUri>) -> Vec<Scope> {

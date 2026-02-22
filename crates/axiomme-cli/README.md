@@ -54,8 +54,8 @@ Add command target semantics:
 
 Retrieval backend:
 - Select backend explicitly with:
-  - `AXIOMME_RETRIEVAL_BACKEND=sqlite` (default)
-  - `AXIOMME_RETRIEVAL_BACKEND=memory`
+  - `AXIOMME_RETRIEVAL_BACKEND=memory` (default)
+  - `sqlite` is not supported and fails fast as configuration error
 
 ## How To Extend (Developer)
 

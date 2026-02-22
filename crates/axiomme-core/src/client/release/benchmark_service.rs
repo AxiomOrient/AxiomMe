@@ -1,16 +1,20 @@
 use std::fs;
+use std::time::Duration;
 use std::time::Instant;
 
 use chrono::Utc;
 use walkdir::WalkDir;
 
 use crate::catalog::{benchmark_gate_result_uri, release_check_result_uri};
+use crate::config::RETRIEVAL_BACKEND_MEMORY;
 use crate::error::{AxiomError, Result};
 use crate::models::{
     BenchmarkCorpusMetadata, BenchmarkEnvironmentMetadata, BenchmarkGateResult, MetadataFilter,
     ReleaseCheckDocument,
 };
-use crate::quality::{command_stdout, infer_corpus_profile};
+use crate::quality::{
+    command_stdout, duration_to_latency_ms, duration_to_latency_us, infer_corpus_profile,
+};
 use crate::uri::{AxiomUri, Scope};
 
 use super::AxiomMe;
@@ -36,6 +40,28 @@ pub const RELEASE_BENCHMARK_SEED_EXPECTED_URI: &str =
 
 impl AxiomMe {
     pub fn measure_benchmark_commit_latencies(&self, samples: usize) -> Result<Vec<u128>> {
+        let (latencies_ms, _) = self.measure_benchmark_commit_latencies_with_units(samples)?;
+        Ok(latencies_ms)
+    }
+
+    pub fn measure_benchmark_commit_latencies_with_units(
+        &self,
+        samples: usize,
+    ) -> Result<(Vec<u128>, Vec<u128>)> {
+        let durations = self.collect_benchmark_commit_latency_durations(samples)?;
+        let latencies_ms = durations
+            .iter()
+            .copied()
+            .map(duration_to_latency_ms)
+            .collect::<Vec<_>>();
+        let latencies_us = durations
+            .into_iter()
+            .map(duration_to_latency_us)
+            .collect::<Vec<_>>();
+        Ok((latencies_ms, latencies_us))
+    }
+
+    fn collect_benchmark_commit_latency_durations(&self, samples: usize) -> Result<Vec<Duration>> {
         let mut latencies = Vec::new();
         for idx in 0..samples.max(1) {
             let session_id = format!("bench-commit-{}", uuid::Uuid::new_v4().simple());
@@ -45,7 +71,7 @@ impl AxiomMe {
             session.add_message("assistant", "benchmark ack")?;
             let started = Instant::now();
             let _ = session.commit()?;
-            latencies.push(started.elapsed().as_millis());
+            latencies.push(started.elapsed());
             let _ = self.delete(&session_id);
         }
         Ok(latencies)
@@ -65,7 +91,7 @@ impl AxiomMe {
         );
         let rustc_version =
             command_stdout("rustc", &["--version"]).unwrap_or_else(|| "unknown".to_string());
-        let retrieval_backend = self.config.search.retrieval_backend.as_str().to_string();
+        let retrieval_backend = RETRIEVAL_BACKEND_MEMORY.to_string();
         let reranker_profile = normalize_reranker_profile(self.config.search.reranker.as_deref());
         let embedding = crate::embedding::embedding_profile();
 
@@ -171,6 +197,8 @@ impl AxiomMe {
             passing_runs: result.passing_runs,
             latest_report_uri: result.latest.as_ref().map(|x| x.report_uri.clone()),
             previous_report_uri: result.previous.as_ref().map(|x| x.report_uri.clone()),
+            latest_p95_latency_us: result.latest.as_ref().and_then(|x| x.p95_latency_us),
+            previous_p95_latency_us: result.previous.as_ref().and_then(|x| x.p95_latency_us),
             embedding_provider: result.embedding_provider.clone(),
             embedding_strict_error: result.embedding_strict_error.clone(),
             gate_record_uri: result.gate_record_uri.clone(),
@@ -342,6 +370,7 @@ mod tests {
                 executed_cases: 10,
                 top1_accuracy: 0.5,
                 p95_latency_ms: 900,
+                p95_latency_us: Some(899_750),
                 report_uri: "axiom://queue/benchmarks/reports/a.json".to_string(),
             }),
             previous: None,
@@ -352,6 +381,7 @@ mod tests {
                 run_id: "run-a".to_string(),
                 passed: false,
                 p95_latency_ms: 900,
+                p95_latency_us: Some(899_750),
                 top1_accuracy: 0.5,
                 stress_top1_accuracy: None,
                 regression_pct: None,
@@ -384,6 +414,8 @@ mod tests {
             doc.embedding_strict_error.as_deref(),
             Some("semantic-model-http embed request failed")
         );
+        assert_eq!(doc.latest_p95_latency_us, Some(899_750));
+        assert_eq!(doc.previous_p95_latency_us, None);
     }
 
     #[cfg(unix)]

@@ -7,8 +7,8 @@ use tempfile::tempdir;
 use crate::catalog::eval_golden_uri;
 use crate::client::BenchmarkFixtureCreateOptions;
 use crate::models::{
-    BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, MetadataFilter, QueryPlan,
-    ReconcileOptions, ReleaseCheckDocument, TraceIndexEntry,
+    BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, MetadataFilter, ReconcileOptions,
+    ReleaseCheckDocument, TraceIndexEntry,
 };
 use crate::queue_policy::retry_backoff_seconds;
 use crate::release_gate::{

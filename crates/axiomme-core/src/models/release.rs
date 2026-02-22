@@ -24,6 +24,10 @@ pub struct ReleaseCheckDocument {
     pub latest_report_uri: Option<String>,
     pub previous_report_uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_p95_latency_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_p95_latency_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_strict_error: Option<String>,

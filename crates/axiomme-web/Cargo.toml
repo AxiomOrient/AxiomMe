@@ -1,6 +1,6 @@
 [package]
 name = "axiomme-web"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Web server and editor surface for AxiomMe."
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 blake3 = { workspace = true }
 chrono = { workspace = true }
-axiomme-core = { version = "0.1.0", path = "../axiomme-core" }
+axiomme-core = { version = "0.1.1", path = "../axiomme-core" }
 
 [dev-dependencies]
 tower = { workspace = true }

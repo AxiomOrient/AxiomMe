@@ -9,12 +9,18 @@ use crate::uri::{AxiomUri, Scope};
 
 use super::AxiomMe;
 
+const PROCESSING_TIMEOUT_RECOVERY_SECS: i64 = 300;
+
 impl AxiomMe {
     pub fn replay_outbox(&self, limit: usize, include_dead_letter: bool) -> Result<ReplayReport> {
         let request_id = uuid::Uuid::new_v4().to_string();
         let started = Instant::now();
+        let mut recovered_processing = 0u64;
 
         let output = (|| -> Result<ReplayReport> {
+            recovered_processing = self
+                .state
+                .recover_timed_out_processing_events(PROCESSING_TIMEOUT_RECOVERY_SECS)?;
             let mut events = self.state.fetch_outbox("new", limit)?;
             if include_dead_letter && events.len() < limit {
                 let remaining = limit - events.len();
@@ -33,11 +39,14 @@ impl AxiomMe {
                 let attempt = event.attempt_count.saturating_add(1);
                 match self.handle_outbox_event(&event) {
                     Ok(handled) => {
-                        self.state.mark_outbox_status(event.id, "done", false)?;
                         report.processed += 1;
-                        report.done += 1;
-                        if !handled {
-                            report.skipped += 1;
+                        if handled {
+                            self.state.mark_outbox_status(event.id, "done", false)?;
+                            report.done += 1;
+                        } else {
+                            self.state
+                                .mark_outbox_status(event.id, "dead_letter", false)?;
+                            report.dead_letter += 1;
                         }
                         self.state.set_checkpoint("replay", event.id)?;
                     }
@@ -79,6 +88,7 @@ impl AxiomMe {
                         "dead_letter": report.dead_letter,
                         "requeued": report.requeued,
                         "skipped": report.skipped,
+                        "recovered_processing": recovered_processing,
                     })),
                 );
                 Ok(report)
@@ -93,6 +103,7 @@ impl AxiomMe {
                     Some(serde_json::json!({
                         "limit": limit,
                         "include_dead_letter": include_dead_letter,
+                        "recovered_processing": recovered_processing,
                     })),
                 );
                 Err(err)

@@ -118,7 +118,7 @@ impl AxiomMe {
 
         let security = self.run_security_audit_with_mode(
             Some(workspace_dir),
-            Some(&options.security_audit_mode),
+            Some(options.security_audit_mode.as_str()),
         )?;
         decisions.push(security_audit_gate_decision(&security));
 

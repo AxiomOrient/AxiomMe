@@ -133,6 +133,7 @@ impl InMemoryIndex {
         } else {
             (usize_to_f32(self.total_doc_length) / usize_to_f32(self.records.len())).max(1.0)
         };
+        let filter_projection = self.filter_projection_uris(filter);
 
         let mut scored = Vec::new();
         for record in self.records.values() {
@@ -142,7 +143,9 @@ impl InMemoryIndex {
             {
                 continue;
             }
-            if !self.record_matches_filter(record, filter) {
+            if let Some(allowed_uris) = filter_projection.as_ref()
+                && !allowed_uris.contains(&record.uri)
+            {
                 continue;
             }
 
@@ -267,6 +270,37 @@ impl InMemoryIndex {
         self.records.values().any(|record| {
             record.is_leaf && record.uri.starts_with(&prefix) && leaf_matches_filter(record, filter)
         })
+    }
+
+    pub(crate) fn filter_projection_uris(
+        &self,
+        filter: Option<&SearchFilter>,
+    ) -> Option<HashSet<String>> {
+        let filter = normalize_filter(filter)?;
+        let mut allowed_uris = HashSet::new();
+
+        for record in self.records.values().filter(|record| record.is_leaf) {
+            if !leaf_matches_filter(record, &filter) {
+                continue;
+            }
+            allowed_uris.insert(record.uri.clone());
+
+            let mut parent_uri = record.parent_uri.as_deref();
+            let mut remaining_hops = self.records.len();
+            while let Some(uri) = parent_uri {
+                allowed_uris.insert(uri.to_string());
+                if remaining_hops == 0 {
+                    break;
+                }
+                remaining_hops = remaining_hops.saturating_sub(1);
+                parent_uri = self
+                    .records
+                    .get(uri)
+                    .and_then(|parent_record| parent_record.parent_uri.as_deref());
+            }
+        }
+
+        Some(allowed_uris)
     }
 }
 
@@ -627,12 +661,100 @@ mod tests {
         assert!(
             result
                 .iter()
+                .any(|x| x.record.uri == "axiom://resources/docs")
+        );
+        assert!(
+            result
+                .iter()
                 .any(|x| x.record.uri == "axiom://resources/docs/auth.md")
         );
         assert!(
             !result
                 .iter()
                 .any(|x| x.record.uri == "axiom://resources/docs/storage.md")
+        );
+    }
+
+    #[test]
+    fn filter_keeps_matching_leaf_ancestor_chain() {
+        let mut index = InMemoryIndex::new();
+        index.upsert(IndexRecord {
+            id: "root".to_string(),
+            uri: "axiom://resources/docs".to_string(),
+            parent_uri: Some("axiom://resources".to_string()),
+            is_leaf: false,
+            context_type: "resource".to_string(),
+            name: "docs".to_string(),
+            abstract_text: "docs".to_string(),
+            content: String::new(),
+            tags: vec![],
+            updated_at: Utc::now(),
+            depth: 1,
+        });
+        index.upsert(IndexRecord {
+            id: "nested".to_string(),
+            uri: "axiom://resources/docs/guides".to_string(),
+            parent_uri: Some("axiom://resources/docs".to_string()),
+            is_leaf: false,
+            context_type: "resource".to_string(),
+            name: "guides".to_string(),
+            abstract_text: "guides".to_string(),
+            content: String::new(),
+            tags: vec![],
+            updated_at: Utc::now(),
+            depth: 2,
+        });
+        index.upsert(IndexRecord {
+            id: "match".to_string(),
+            uri: "axiom://resources/docs/guides/auth.md".to_string(),
+            parent_uri: Some("axiom://resources/docs/guides".to_string()),
+            is_leaf: true,
+            context_type: "resource".to_string(),
+            name: "auth.md".to_string(),
+            abstract_text: "auth".to_string(),
+            content: "oauth flow".to_string(),
+            tags: vec!["auth".to_string()],
+            updated_at: Utc::now(),
+            depth: 3,
+        });
+        index.upsert(IndexRecord {
+            id: "non-match".to_string(),
+            uri: "axiom://resources/docs/guides/storage.md".to_string(),
+            parent_uri: Some("axiom://resources/docs/guides".to_string()),
+            is_leaf: true,
+            context_type: "resource".to_string(),
+            name: "storage.md".to_string(),
+            abstract_text: "storage".to_string(),
+            content: "disk iops".to_string(),
+            tags: vec!["storage".to_string()],
+            updated_at: Utc::now(),
+            depth: 3,
+        });
+
+        let filter = SearchFilter {
+            tags: vec!["auth".to_string()],
+            mime: None,
+        };
+        let result = index.search("docs", None, 20, None, Some(&filter));
+        assert!(
+            result
+                .iter()
+                .any(|x| x.record.uri == "axiom://resources/docs")
+        );
+        assert!(
+            result
+                .iter()
+                .any(|x| x.record.uri == "axiom://resources/docs/guides")
+        );
+        assert!(
+            result
+                .iter()
+                .any(|x| x.record.uri == "axiom://resources/docs/guides/auth.md")
+        );
+        assert!(
+            !result
+                .iter()
+                .any(|x| x.record.uri == "axiom://resources/docs/guides/storage.md")
         );
     }
 

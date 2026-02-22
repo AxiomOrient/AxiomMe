@@ -182,10 +182,16 @@ fn security_audit_parses_mode() {
         Commands::Security(SecurityArgs {
             command: SecurityCommand::Audit { mode, .. },
         }) => {
-            assert_eq!(mode, "strict");
+            assert!(matches!(mode, SecurityAuditModeArg::Strict));
         }
         _ => panic!("expected security audit command"),
     }
+}
+
+#[test]
+fn security_audit_rejects_unknown_mode() {
+    let parsed = Cli::try_parse_from(["axiomme", "security", "audit", "--mode", "invalid"]);
+    assert!(parsed.is_err(), "unknown security audit mode must fail");
 }
 
 #[test]
@@ -200,7 +206,10 @@ fn release_pack_defaults_security_audit_mode_to_strict() {
                     ..
                 },
         }) => {
-            assert_eq!(security_audit_mode, "strict");
+            assert!(matches!(
+                security_audit_mode,
+                ReleaseSecurityAuditModeArg::Strict
+            ));
         }
         _ => panic!("expected release pack command"),
     }
@@ -282,4 +291,63 @@ fn search_rejects_min_match_tokens_below_two() {
         "1",
     ]);
     assert!(parsed.is_err(), "min-match-tokens below 2 must be rejected");
+}
+
+#[test]
+fn queue_daemon_rejects_zero_idle_cycles() {
+    let parsed = Cli::try_parse_from(["axiomme", "queue", "daemon", "--idle-cycles", "0"]);
+    assert!(parsed.is_err(), "idle-cycles must be >= 1");
+}
+
+#[test]
+fn benchmark_gate_rejects_nan_min_top1_accuracy() {
+    let parsed =
+        Cli::try_parse_from(["axiomme", "benchmark", "gate", "--min-top1-accuracy", "NaN"]);
+    assert!(parsed.is_err(), "NaN threshold must be rejected");
+}
+
+#[test]
+fn benchmark_gate_rejects_zero_window_size() {
+    let parsed = Cli::try_parse_from(["axiomme", "benchmark", "gate", "--window-size", "0"]);
+    assert!(parsed.is_err(), "window-size must be >= 1");
+}
+
+#[test]
+fn benchmark_gate_rejects_zero_required_passes() {
+    let parsed = Cli::try_parse_from(["axiomme", "benchmark", "gate", "--required-passes", "0"]);
+    assert!(parsed.is_err(), "required-passes must be >= 1");
+}
+
+#[test]
+fn benchmark_gate_rejects_negative_regression_threshold() {
+    let parsed = Cli::try_parse_from([
+        "axiomme",
+        "benchmark",
+        "gate",
+        "--max-p95-regression-pct",
+        "-1",
+    ]);
+    assert!(
+        parsed.is_err(),
+        "negative regression threshold must be rejected"
+    );
+}
+
+#[test]
+fn release_pack_rejects_nan_benchmark_min_top1_accuracy() {
+    let parsed = Cli::try_parse_from([
+        "axiomme",
+        "release",
+        "pack",
+        "--benchmark-min-top1-accuracy",
+        "NaN",
+    ]);
+    assert!(parsed.is_err(), "NaN benchmark threshold must be rejected");
+}
+
+#[test]
+fn release_pack_rejects_zero_benchmark_window_size() {
+    let parsed =
+        Cli::try_parse_from(["axiomme", "release", "pack", "--benchmark-window-size", "0"]);
+    assert!(parsed.is_err(), "benchmark-window-size must be >= 1");
 }

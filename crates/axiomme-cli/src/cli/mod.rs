@@ -6,6 +6,7 @@ mod args;
 mod benchmark;
 mod document;
 mod eval;
+mod parsers;
 mod queue;
 mod release;
 mod security;
@@ -23,8 +24,8 @@ pub use benchmark::{BenchmarkArgs, BenchmarkCommand, BenchmarkFixtureCommand};
 pub use document::{DocumentArgs, DocumentCommand, DocumentMode};
 pub use eval::{EvalArgs, EvalCommand, EvalGoldenCommand};
 pub use queue::{QueueArgs, QueueCommand};
-pub use release::{ReleaseArgs, ReleaseCommand};
-pub use security::{SecurityArgs, SecurityCommand};
+pub use release::{ReleaseArgs, ReleaseCommand, ReleaseSecurityAuditModeArg};
+pub use security::{SecurityArgs, SecurityAuditModeArg, SecurityCommand};
 pub use session::{SessionArgs, SessionCommand};
 pub use trace::{TraceArgs, TraceCommand};
 

@@ -1,7 +1,7 @@
 use chrono::Utc;
 
 use crate::index::InMemoryIndex;
-use crate::models::{IndexRecord, QueryPlan, SearchBudget, SearchFilter, SearchOptions};
+use crate::models::{IndexRecord, SearchBudget, SearchFilter, SearchOptions};
 use crate::retrieval::{DrrConfig, DrrEngine};
 use crate::uri::AxiomUri;
 
@@ -121,7 +121,7 @@ fn search_query_plan_includes_typed_queries() {
         },
     );
 
-    let plan: QueryPlan = serde_json::from_value(result.query_plan).expect("query plan");
+    let plan = result.query_plan;
     assert!(plan.typed_queries.iter().any(|x| x.kind == "primary"));
     assert!(
         plan.typed_queries
@@ -181,7 +181,7 @@ fn search_query_plan_includes_session_om_query_and_visibility_note() {
         },
     );
 
-    let plan: QueryPlan = serde_json::from_value(result.query_plan).expect("query plan");
+    let plan = result.query_plan;
     assert!(
         plan.typed_queries
             .iter()
@@ -238,7 +238,7 @@ fn search_query_plan_normalizes_mixed_case_om_hint_prefix() {
         },
     );
 
-    let plan: QueryPlan = serde_json::from_value(result.query_plan).expect("query plan");
+    let plan = result.query_plan;
     let session_om = plan
         .typed_queries
         .iter()
@@ -337,6 +337,103 @@ fn drr_applies_filter_in_child_and_fallback_paths() {
             .query_results
             .iter()
             .any(|x| x.uri == "axiom://resources/docs/storage.md")
+    );
+}
+
+#[test]
+fn drr_respects_target_uri_boundary_during_expansion_and_fallback() {
+    let mut index = InMemoryIndex::new();
+    index.upsert(IndexRecord {
+        id: "root".to_string(),
+        uri: "axiom://resources".to_string(),
+        parent_uri: None,
+        is_leaf: false,
+        context_type: "resource".to_string(),
+        name: "resources".to_string(),
+        abstract_text: "resource root".to_string(),
+        content: String::new(),
+        tags: vec![],
+        updated_at: Utc::now(),
+        depth: 0,
+    });
+    index.upsert(IndexRecord {
+        id: "src".to_string(),
+        uri: "axiom://resources/mv-src".to_string(),
+        parent_uri: Some("axiom://resources".to_string()),
+        is_leaf: false,
+        context_type: "resource".to_string(),
+        name: "mv-src".to_string(),
+        abstract_text: "source root".to_string(),
+        content: String::new(),
+        tags: vec![],
+        updated_at: Utc::now(),
+        depth: 1,
+    });
+    index.upsert(IndexRecord {
+        id: "dst".to_string(),
+        uri: "axiom://resources/mv-dst".to_string(),
+        parent_uri: Some("axiom://resources".to_string()),
+        is_leaf: false,
+        context_type: "resource".to_string(),
+        name: "mv-dst".to_string(),
+        abstract_text: "destination root".to_string(),
+        content: String::new(),
+        tags: vec![],
+        updated_at: Utc::now(),
+        depth: 1,
+    });
+    index.upsert(IndexRecord {
+        id: "src-guide".to_string(),
+        uri: "axiom://resources/mv-src/guide.md".to_string(),
+        parent_uri: Some("axiom://resources/mv-src".to_string()),
+        is_leaf: true,
+        context_type: "resource".to_string(),
+        name: "guide.md".to_string(),
+        abstract_text: "moved token".to_string(),
+        content: "moved_token in source".to_string(),
+        tags: vec!["guide".to_string()],
+        updated_at: Utc::now(),
+        depth: 2,
+    });
+    index.upsert(IndexRecord {
+        id: "dst-guide".to_string(),
+        uri: "axiom://resources/mv-dst/guide.md".to_string(),
+        parent_uri: Some("axiom://resources/mv-dst".to_string()),
+        is_leaf: true,
+        context_type: "resource".to_string(),
+        name: "guide.md".to_string(),
+        abstract_text: "moved token".to_string(),
+        content: "moved_token in destination".to_string(),
+        tags: vec!["guide".to_string()],
+        updated_at: Utc::now(),
+        depth: 2,
+    });
+
+    let engine = DrrEngine::new(DrrConfig::default());
+    let result = engine.run(
+        &index,
+        &SearchOptions {
+            query: "moved_token".to_string(),
+            target_uri: Some(
+                AxiomUri::parse("axiom://resources/mv-src").expect("target uri parse"),
+            ),
+            session: None,
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 10,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: None,
+            request_type: "find".to_string(),
+        },
+    );
+
+    assert!(!result.query_results.is_empty());
+    assert!(
+        result
+            .query_results
+            .iter()
+            .all(|hit| hit.uri.starts_with("axiom://resources/mv-src"))
     );
 }
 

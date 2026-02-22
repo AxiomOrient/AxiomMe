@@ -3,7 +3,7 @@ use std::fs;
 
 use crate::catalog::{eval_case_key, normalize_eval_case_source};
 use crate::error::Result;
-use crate::models::{EvalBucket, EvalCaseResult, EvalQueryCase, MetadataFilter, QueryPlan};
+use crate::models::{EvalBucket, EvalCaseResult, EvalQueryCase, MetadataFilter};
 use crate::quality::{build_eval_replay_command, classify_eval_bucket};
 use crate::uri::uri_equivalent;
 
@@ -310,9 +310,7 @@ fn run_intent_probe(
         None,
         None::<MetadataFilter>,
     )?;
-    let intent_ok = serde_json::from_value::<QueryPlan>(intent.query_plan)
-        .map(|plan| !plan.typed_queries.is_empty())
-        .unwrap_or(false);
+    let intent_ok = !intent.query_plan.typed_queries.is_empty();
     if !intent_ok {
         add_bucket_failure(buckets, "intent_miss");
     }

@@ -16,6 +16,26 @@ impl SqliteStateStore {
         uri: &str,
         payload_json: impl serde::Serialize,
     ) -> Result<i64> {
+        self.enqueue_with_status(event_type, uri, payload_json, "new", 0)
+    }
+
+    pub fn enqueue_dead_letter(
+        &self,
+        event_type: &str,
+        uri: &str,
+        payload_json: impl serde::Serialize,
+    ) -> Result<i64> {
+        self.enqueue_with_status(event_type, uri, payload_json, "dead_letter", 1)
+    }
+
+    fn enqueue_with_status(
+        &self,
+        event_type: &str,
+        uri: &str,
+        payload_json: impl serde::Serialize,
+        status: &str,
+        attempt_count: u32,
+    ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
         let lane = lane_for_event_type(event_type);
         let payload_json = serde_json::to_value(payload_json)?.to_string();
@@ -23,10 +43,18 @@ impl SqliteStateStore {
         self.with_conn(|conn| {
             conn.execute(
                 r"
-                INSERT INTO outbox(event_type, uri, payload_json, created_at, status, next_attempt_at, lane)
-                VALUES (?1, ?2, ?3, ?4, 'new', ?4, ?5)
+                INSERT INTO outbox(event_type, uri, payload_json, created_at, status, attempt_count, next_attempt_at, lane)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?4, ?7)
                 ",
-                params![event_type, uri, payload_json, now, lane],
+                params![
+                    event_type,
+                    uri,
+                    payload_json,
+                    now,
+                    status,
+                    i64::from(attempt_count),
+                    lane
+                ],
             )?;
             Ok(conn.last_insert_rowid())
         })
@@ -97,7 +125,20 @@ impl SqliteStateStore {
 
     pub fn mark_outbox_status(&self, id: i64, status: &str, increment_attempt: bool) -> Result<()> {
         self.with_conn(|conn| {
-            if increment_attempt {
+            if status == "processing" {
+                let now = Utc::now().to_rfc3339();
+                if increment_attempt {
+                    conn.execute(
+                        "UPDATE outbox SET status = ?1, attempt_count = attempt_count + 1, next_attempt_at = ?3 WHERE id = ?2",
+                        params![status, id, now],
+                    )?;
+                } else {
+                    conn.execute(
+                        "UPDATE outbox SET status = ?1, next_attempt_at = ?3 WHERE id = ?2",
+                        params![status, id, now],
+                    )?;
+                }
+            } else if increment_attempt {
                 conn.execute(
                     "UPDATE outbox SET status = ?1, attempt_count = attempt_count + 1 WHERE id = ?2",
                     params![status, id],
@@ -109,6 +150,24 @@ impl SqliteStateStore {
                 )?;
             }
             Ok(())
+        })
+    }
+
+    pub fn recover_timed_out_processing_events(&self, timeout_seconds: i64) -> Result<u64> {
+        let stale_before = (Utc::now() - Duration::seconds(timeout_seconds.max(0))).to_rfc3339();
+        self.with_conn(|conn| {
+            let affected = conn.execute(
+                r"
+                UPDATE outbox
+                SET status = 'new'
+                WHERE status = 'processing'
+                  AND COALESCE(next_attempt_at, created_at) <= ?1
+                ",
+                params![stale_before],
+            )?;
+            Ok(i64_to_u64_saturating(
+                i64::try_from(affected).unwrap_or(i64::MAX),
+            ))
         })
     }
 
@@ -129,6 +188,21 @@ impl SqliteStateStore {
             conn.execute(
                 "UPDATE outbox SET next_attempt_at = ?1 WHERE id = ?2",
                 params![now, id],
+            )?;
+            Ok(())
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_outbox_next_attempt_at_for_test(
+        &self,
+        id: i64,
+        next_attempt_at: &str,
+    ) -> Result<()> {
+        self.with_conn(|conn| {
+            conn.execute(
+                "UPDATE outbox SET next_attempt_at = ?1 WHERE id = ?2",
+                params![next_attempt_at, id],
             )?;
             Ok(())
         })

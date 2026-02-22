@@ -177,10 +177,10 @@ fn save_editor_document(
         let save_ms = save_started.elapsed().as_millis();
 
         let reindex_started = Instant::now();
-        if let Err(reindex_err) = app.reindex_uri_tree(&parent_uri) {
+        if let Err(reindex_err) = app.reindex_document_with_ancestors(&uri) {
             let rollback_write = app.fs.write_atomic(&uri, &previous, false);
             let rollback_reindex = if rollback_write.is_ok() {
-                app.reindex_uri_tree(&parent_uri).err()
+                app.reindex_document_with_ancestors(&uri).err()
             } else {
                 None
             };
@@ -299,7 +299,7 @@ fn validate_editor_content(mode: EditorMode, ext: &str, content: &str) -> Result
                 AxiomError::Validation(format!("invalid json content for document save: {err}"))
             })?;
         } else if ext == "yaml" || ext == "yml" {
-            serde_yml::from_str::<serde_yml::Value>(content).map_err(|err| {
+            serde_norway::from_str::<serde_norway::Value>(content).map_err(|err| {
                 AxiomError::Validation(format!("invalid yaml content for document save: {err}"))
             })?;
         }

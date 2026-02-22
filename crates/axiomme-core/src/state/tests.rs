@@ -1,7 +1,7 @@
 use chrono::{Duration, Utc};
 use tempfile::tempdir;
 
-use crate::models::{IndexRecord, OmReflectionApplyMetrics, SearchFilter};
+use crate::models::{IndexRecord, OmReflectionApplyMetrics};
 use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope};
 
 use super::*;
@@ -191,6 +191,54 @@ fn migration_creates_om_tables() {
         }
         drop(conn);
     }
+}
+
+#[test]
+fn migration_drops_legacy_search_docs_fts_table() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state-legacy-search-fts.db");
+
+    {
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute_batch(
+            r"
+                CREATE TABLE IF NOT EXISTS search_docs_fts (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL
+                );
+                ",
+        )
+        .expect("create legacy search_docs_fts");
+        let exists_before = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+                params!["search_docs_fts"],
+                |_| Ok(()),
+            )
+            .optional()
+            .expect("query legacy table")
+            .is_some();
+        assert!(
+            exists_before,
+            "legacy search_docs_fts table must exist before migrate"
+        );
+    }
+
+    let store = SqliteStateStore::open(&db_path).expect("open failed");
+    let conn = store.conn.lock().expect("sqlite lock");
+    let exists_after = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+            params!["search_docs_fts"],
+            |_| Ok(()),
+        )
+        .optional()
+        .expect("query table after migrate")
+        .is_some();
+    assert!(
+        !exists_after,
+        "legacy search_docs_fts table must be dropped"
+    );
 }
 
 #[test]
@@ -932,6 +980,37 @@ fn requeue_with_delay_hides_event_until_due() {
 }
 
 #[test]
+fn recover_timed_out_processing_events_requeues_stale_events() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let store = SqliteStateStore::open(db_path).expect("open failed");
+
+    let id = store
+        .enqueue(
+            "semantic_scan",
+            "axiom://resources/recover-stale",
+            serde_json::json!({}),
+        )
+        .expect("enqueue");
+    store
+        .mark_outbox_status(id, "processing", true)
+        .expect("mark processing");
+    let stale_at = (Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
+    store
+        .set_outbox_next_attempt_at_for_test(id, &stale_at)
+        .expect("set stale next-at");
+
+    let recovered = store
+        .recover_timed_out_processing_events(300)
+        .expect("recover stale processing");
+    assert_eq!(recovered, 1);
+
+    let visible = store.fetch_outbox("new", 10).expect("fetch new");
+    assert_eq!(visible.len(), 1);
+    assert_eq!(visible[0].id, id);
+}
+
+#[test]
 fn open_rejects_outbox_without_next_attempt_at() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("outbox-missing-next-at.db");
@@ -1007,7 +1086,7 @@ fn open_rejects_outbox_without_lane_column() {
                 INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at)
                 VALUES (?1, ?2, '{}', ?3, 0, 'dead_letter', ?3)
                 ",
-                params!["sqlite_search_failed", "axiom://resources/a.md", now],
+                params!["embedding_search_failed", "axiom://resources/a.md", now],
             )
             .expect("insert embedding dead");
     }
@@ -1067,7 +1146,7 @@ fn open_accepts_outbox_with_required_lane_column_and_existing_rows() {
                 INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at, lane)
                 VALUES (?1, ?2, '{}', ?3, 0, 'dead_letter', ?3, 'embedding')
                 ",
-                params!["sqlite_search_failed", "axiom://resources/a.md", now],
+                params!["embedding_search_failed", "axiom://resources/a.md", now],
             )
             .expect("insert embedding dead");
     }
@@ -1154,7 +1233,7 @@ fn queue_status_splits_semantic_and_embedding_lanes() {
 
     let embedding_dead = store
         .enqueue(
-            "sqlite_search_failed",
+            "embedding_search_failed",
             "axiom://resources/a.md",
             serde_json::json!({}),
         )
@@ -1203,7 +1282,7 @@ fn queue_status_reports_lane_pending_and_processing_counts() {
 
     let embedding_processing = store
         .enqueue(
-            "sqlite_search_failed",
+            "embedding_search_failed",
             "axiom://resources/embedding-processing",
             serde_json::json!({}),
         )
@@ -1291,7 +1370,7 @@ fn queue_counts_match_lane_totals() {
 
     let embedding_processing = store
         .enqueue(
-            "sqlite_search_failed",
+            "embedding_search_failed",
             "axiom://resources/embedding-processing",
             serde_json::json!({}),
         )
@@ -1302,7 +1381,7 @@ fn queue_counts_match_lane_totals() {
 
     let embedding_dead = store
         .enqueue(
-            "sqlite_search_failed",
+            "embedding_search_failed",
             "axiom://resources/embedding-dead",
             serde_json::json!({}),
         )
@@ -1545,160 +1624,6 @@ fn list_search_documents_reconstructs_records() {
 }
 
 #[test]
-fn search_documents_fts_applies_prefix_and_filters() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("state.db");
-    let store = SqliteStateStore::open(db_path).expect("open failed");
-
-    let markdown = IndexRecord {
-        id: "a".to_string(),
-        uri: "axiom://resources/docs/auth.md".to_string(),
-        parent_uri: Some("axiom://resources/docs".to_string()),
-        is_leaf: true,
-        context_type: "resource".to_string(),
-        name: "auth.md".to_string(),
-        abstract_text: "oauth auth".to_string(),
-        content: "oauth authorization code flow".to_string(),
-        tags: vec!["auth".to_string(), "security".to_string()],
-        updated_at: Utc::now(),
-        depth: 3,
-    };
-    let json_doc = IndexRecord {
-        id: "b".to_string(),
-        uri: "axiom://resources/docs/schema.json".to_string(),
-        parent_uri: Some("axiom://resources/docs".to_string()),
-        is_leaf: true,
-        context_type: "resource".to_string(),
-        name: "schema.json".to_string(),
-        abstract_text: "oauth schema".to_string(),
-        content: "oauth token schema".to_string(),
-        tags: vec!["auth".to_string(), "schema".to_string()],
-        updated_at: Utc::now(),
-        depth: 3,
-    };
-
-    store
-        .upsert_search_document(&markdown)
-        .expect("upsert markdown");
-    store
-        .upsert_search_document(&json_doc)
-        .expect("upsert json");
-
-    let all = store
-        .search_documents_fts(
-            "oauth",
-            Some("axiom://resources/docs"),
-            None,
-            None,
-            true,
-            10,
-            None,
-        )
-        .expect("search all");
-    assert_eq!(all.len(), 2);
-
-    let markdown_only = store
-        .search_documents_fts(
-            "oauth",
-            Some("axiom://resources/docs"),
-            Some(&SearchFilter {
-                tags: vec![],
-                mime: Some("text/markdown".to_string()),
-            }),
-            None,
-            true,
-            10,
-            None,
-        )
-        .expect("search markdown");
-    assert_eq!(markdown_only.len(), 1);
-    assert_eq!(markdown_only[0].uri, "axiom://resources/docs/auth.md");
-
-    let tag_and_mime = store
-        .search_documents_fts(
-            "oauth",
-            Some("axiom://resources/docs"),
-            Some(&SearchFilter {
-                tags: vec!["schema".to_string()],
-                mime: Some("application/json".to_string()),
-            }),
-            None,
-            true,
-            10,
-            None,
-        )
-        .expect("search tag+mime");
-    assert_eq!(tag_and_mime.len(), 1);
-    assert_eq!(tag_and_mime[0].uri, "axiom://resources/docs/schema.json");
-}
-
-#[test]
-fn search_documents_fts_applies_min_match_token_filter_when_requested() {
-    let temp = tempdir().expect("tempdir");
-    let db_path = temp.path().join("state.db");
-    let store = SqliteStateStore::open(db_path).expect("open failed");
-
-    let broad = IndexRecord {
-        id: "a".to_string(),
-        uri: "axiom://resources/docs/a.md".to_string(),
-        parent_uri: Some("axiom://resources/docs".to_string()),
-        is_leaf: true,
-        context_type: "resource".to_string(),
-        name: "a.md".to_string(),
-        abstract_text: "oauth callback token".to_string(),
-        content: "oauth callback token exchange".to_string(),
-        tags: vec!["auth".to_string()],
-        updated_at: Utc::now(),
-        depth: 3,
-    };
-    let narrow = IndexRecord {
-        id: "b".to_string(),
-        uri: "axiom://resources/docs/b.md".to_string(),
-        parent_uri: Some("axiom://resources/docs".to_string()),
-        is_leaf: true,
-        context_type: "resource".to_string(),
-        name: "b.md".to_string(),
-        abstract_text: "oauth guide".to_string(),
-        content: "oauth setup quickstart".to_string(),
-        tags: vec!["auth".to_string()],
-        updated_at: Utc::now(),
-        depth: 3,
-    };
-
-    store.upsert_search_document(&broad).expect("upsert broad");
-    store
-        .upsert_search_document(&narrow)
-        .expect("upsert narrow");
-
-    let unfiltered = store
-        .search_documents_fts(
-            "oauth callback token",
-            Some("axiom://resources/docs"),
-            None,
-            None,
-            true,
-            10,
-            None,
-        )
-        .expect("search unfiltered");
-    assert_eq!(unfiltered.len(), 2);
-
-    let filtered = store
-        .search_documents_fts(
-            "oauth callback token",
-            Some("axiom://resources/docs"),
-            None,
-            None,
-            true,
-            10,
-            Some(2),
-        )
-        .expect("search filtered");
-    assert_eq!(filtered.len(), 1);
-    assert_eq!(filtered[0].uri, "axiom://resources/docs/a.md");
-}
-
-#[test]
 fn remove_search_documents_with_prefix_prunes_descendants() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("state.db");
@@ -1756,17 +1681,7 @@ fn remove_search_documents_with_prefix_prunes_descendants() {
         .remove_search_documents_with_prefix("axiom://resources/docs")
         .expect("remove prefix");
 
-    let remaining = store
-        .search_documents_fts(
-            "oauth",
-            Some("axiom://resources"),
-            None,
-            None,
-            true,
-            10,
-            None,
-        )
-        .expect("search remaining");
+    let remaining = store.list_search_documents().expect("list remaining");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].uri, "axiom://resources/other/c.md");
 }

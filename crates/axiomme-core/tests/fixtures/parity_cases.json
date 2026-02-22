@@ -21,6 +21,29 @@
       }
     },
     {
+      "name": "max_tokens_per_batch_override_is_applied",
+      "input": {
+        "scope": "thread",
+        "share_token_budget": false,
+        "observation": {
+          "max_tokens_per_batch": 4321
+        },
+        "reflection": {}
+      },
+      "expect": {
+        "message_tokens_base": 30000,
+        "observation_tokens": 40000,
+        "total_budget": null,
+        "max_tokens_per_batch": 4321,
+        "buffer_tokens": 6000,
+        "observation_buffer_activation": 0.8,
+        "observation_block_after": 36000,
+        "reflection_buffer_activation": 0.5,
+        "reflection_block_after": 48000,
+        "async_buffering_disabled": false
+      }
+    },
+    {
       "name": "share_budget_requires_async_disabled",
       "input": {
         "scope": "thread",

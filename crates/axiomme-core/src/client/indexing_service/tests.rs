@@ -310,6 +310,61 @@ fn reindex_uri_tree_updates_index_state_when_only_mtime_changes() {
     assert!(state_v2.1 >= state_v1.1, "mtime should refresh in state");
 }
 
+#[test]
+fn directory_ancestor_chain_lists_parent_to_root_in_order() {
+    let uri = AxiomUri::parse("axiom://resources/a/b/c.md").expect("uri parse");
+    let parent = uri.parent().expect("parent");
+    let chain = directory_ancestor_chain(&parent)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        chain,
+        vec![
+            "axiom://resources/a/b".to_string(),
+            "axiom://resources/a".to_string(),
+            "axiom://resources".to_string(),
+        ]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reindex_document_with_ancestors_ignores_unrelated_invalid_names() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init");
+
+    let root_uri = AxiomUri::parse("axiom://resources/targeted-reindex").expect("root parse");
+    app.fs.create_dir_all(&root_uri, true).expect("mkdir");
+    let doc_uri = root_uri.join("guide.md").expect("join");
+    app.fs
+        .write(&doc_uri, "# Guide\n\nalpha targeted token", true)
+        .expect("write doc");
+
+    let bad_path = app.fs.resolve_uri(&root_uri).join("bad\\name.md");
+    fs::write(bad_path, "invalid sibling path").expect("write bad sibling");
+
+    app.reindex_document_with_ancestors(&doc_uri)
+        .expect("targeted reindex");
+
+    let result = app
+        .find(
+            "alpha targeted token",
+            Some("axiom://resources/targeted-reindex"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find");
+    assert!(
+        result
+            .query_results
+            .iter()
+            .any(|hit| hit.uri == "axiom://resources/targeted-reindex/guide.md")
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn reindex_uri_tree_skips_broken_symlink_entries() {

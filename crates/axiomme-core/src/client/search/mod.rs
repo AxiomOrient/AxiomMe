@@ -3,12 +3,14 @@ use std::time::Instant;
 
 use chrono::Utc;
 
-use crate::config::{OmHintBounds, OmHintPolicy, RetrievalBackend};
+use crate::config::{
+    OmHintBounds, OmHintPolicy, RETRIEVAL_BACKEND_MEMORY, RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
+};
 use crate::context_ops::validate_filter;
 use crate::error::{AxiomError, Result};
 use crate::llm_io::estimate_text_tokens;
 use crate::models::{
-    FindResult, Message, MetadataFilter, RequestLogEntry, SearchBudget, SearchOptions,
+    FindResult, Message, MetadataFilter, RequestLogEntry, RuntimeHint, SearchBudget, SearchOptions,
     SearchRequest,
 };
 use crate::om::{OmScope, build_bounded_observation_hint};
@@ -42,13 +44,24 @@ struct OmSearchMetrics {
     om_filtered_message_count: u32,
 }
 
+#[derive(Debug, Clone, Default)]
+struct SearchHintLayers {
+    runtime: Vec<String>,
+    recent: Vec<String>,
+    om_hint: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SessionHintSnapshot {
+    recent_hints: Vec<String>,
+    om_hint: Option<String>,
+    metrics: OmSearchMetrics,
+}
+
 impl AxiomMe {
     #[must_use]
     pub fn search_requires_runtime_prepare(&self) -> bool {
-        matches!(
-            self.config.search.retrieval_backend,
-            RetrievalBackend::Memory
-        )
+        true
     }
 
     pub fn find(
@@ -80,21 +93,21 @@ impl AxiomMe {
         let output = (|| -> Result<FindResult> {
             validate_filter(filter.as_ref())?;
             validate_search_cutoff_options(score_threshold, None)?;
-            let target = target_uri.map(AxiomUri::parse).transpose()?;
-            let options = SearchOptions {
-                query: query.to_string(),
-                target_uri: target,
-                session: None,
-                session_hints: Vec::new(),
-                budget: budget.clone(),
-                limit: requested_limit,
+            let target = parse_optional_target_uri(target_uri)?;
+            let options = build_search_options(
+                query.to_string(),
+                target,
+                None,
+                Vec::new(),
+                budget.clone(),
+                requested_limit,
                 score_threshold,
-                min_match_tokens: None,
-                filter: metadata_filter_to_search_filter(filter),
-                request_type: "find".to_string(),
-            };
+                None,
+                filter,
+                "find",
+            );
 
-            let mut result = self.run_retrieval_with_backend(&options)?;
+            let mut result = self.run_retrieval_memory_only(&options)?;
             self.enrich_find_result_relations(&mut result, 5)?;
             annotate_trace_relation_metrics(&mut result);
             self.persist_trace_result(&mut result)?;
@@ -109,6 +122,8 @@ impl AxiomMe {
                     "result_count": result.query_results.len(),
                     "limit": requested_limit,
                     "budget": budget_to_json(budget.as_ref()),
+                    "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
+                    "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
                 });
                 self.try_log_request(&RequestLogEntry {
                     request_id,
@@ -139,6 +154,8 @@ impl AxiomMe {
                         "query": query,
                         "limit": requested_limit,
                         "budget": budget_to_json(budget.as_ref()),
+                        "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
+                        "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
                     })),
                 });
                 Err(err)
@@ -164,6 +181,7 @@ impl AxiomMe {
             min_match_tokens: None,
             filter,
             budget: None,
+            runtime_hints: Vec::new(),
         })
     }
 
@@ -172,7 +190,8 @@ impl AxiomMe {
         session_id: &str,
         query: &str,
         hint_policy: OmHintPolicy,
-    ) -> Result<(Vec<String>, OmSearchMetrics)> {
+        hint_bounds: OmHintBounds,
+    ) -> Result<SessionHintSnapshot> {
         let mut metrics = OmSearchMetrics::default();
         let ctx = self.session(Some(session_id)).get_context_for_search(
             query,
@@ -183,6 +202,10 @@ impl AxiomMe {
         let pre_om_recent_hints =
             collect_recent_hints(&ctx.recent_messages, hint_policy.recent_hint_limit);
         let pre_om_hints = merge_recent_and_om_hints(&pre_om_recent_hints, None, hint_policy);
+        let om_hint = om_state
+            .as_ref()
+            .and_then(|state| state.hint.as_deref())
+            .map(ToString::to_string);
         let filtered_recent_messages =
             if let Some(state) = om_state.as_ref().filter(|state| state.hint.is_some()) {
                 filter_recent_messages_by_ids(&ctx.recent_messages, &state.activated_message_ids)
@@ -191,10 +214,12 @@ impl AxiomMe {
             };
         let recent_hints =
             collect_recent_hints(&filtered_recent_messages, hint_policy.recent_hint_limit);
-        let merged_hints = merge_recent_and_om_hints(
+        let merged_hints = merge_runtime_om_recent_hints(
+            &[],
+            om_hint.as_deref(),
             &recent_hints,
-            om_state.as_ref().and_then(|state| state.hint.as_deref()),
             hint_policy,
+            hint_bounds.max_chars,
         );
 
         metrics.context_tokens_before_om = estimate_hint_tokens(&pre_om_hints);
@@ -220,7 +245,11 @@ impl AxiomMe {
         );
         metrics.context_tokens_after_om = estimate_hint_tokens(&merged_hints);
 
-        Ok((merged_hints, metrics))
+        Ok(SessionHintSnapshot {
+            recent_hints,
+            om_hint,
+            metrics,
+        })
     }
 
     pub fn search_with_request(&self, request: SearchRequest) -> Result<FindResult> {
@@ -233,6 +262,7 @@ impl AxiomMe {
             min_match_tokens,
             filter,
             budget,
+            runtime_hints,
         } = request;
         let request_id = uuid::Uuid::new_v4().to_string();
         let started = Instant::now();
@@ -241,36 +271,59 @@ impl AxiomMe {
         let requested_limit = limit.unwrap_or(10);
         let budget = normalize_budget(budget);
         let hint_policy = self.config.search.om_hint_policy;
+        let hint_bounds = self.config.search.om_hint_bounds;
         let mut om_metrics = OmSearchMetrics::default();
 
         let output = (|| -> Result<FindResult> {
             validate_filter(filter.as_ref())?;
             validate_search_cutoff_options(score_threshold, min_match_tokens)?;
-            let target = target_uri.as_deref().map(AxiomUri::parse).transpose()?;
+            let target = parse_optional_target_uri(target_uri.as_deref())?;
+            let normalized_runtime_hints = normalize_runtime_hints(
+                &runtime_hints,
+                hint_policy.total_hint_limit,
+                hint_bounds.max_chars,
+            );
 
-            let session_hints = if let Some(session_id) = session.as_deref() {
-                let (hints, metrics) =
-                    self.build_search_session_hints(session_id, &query, hint_policy)?;
-                om_metrics = metrics;
-                hints
-            } else {
-                Vec::new()
+            let mut hint_layers = SearchHintLayers {
+                runtime: normalized_runtime_hints,
+                ..SearchHintLayers::default()
             };
 
-            let options = SearchOptions {
-                query: query.clone(),
-                target_uri: target,
-                session: session.clone(),
+            if let Some(session_id) = session.as_deref() {
+                let snapshot =
+                    self.build_search_session_hints(session_id, &query, hint_policy, hint_bounds)?;
+                hint_layers.recent = snapshot.recent_hints;
+                hint_layers.om_hint = snapshot.om_hint;
+                om_metrics = snapshot.metrics;
+            }
+
+            let session_hints = merge_runtime_om_recent_hints(
+                &hint_layers.runtime,
+                hint_layers.om_hint.as_deref(),
+                &hint_layers.recent,
+                hint_policy,
+                hint_bounds.max_chars,
+            );
+
+            if session.is_some() {
+                om_metrics.session_hint_count_final = saturating_usize_to_u32(session_hints.len());
+                om_metrics.context_tokens_after_om = estimate_hint_tokens(&session_hints);
+            }
+
+            let options = build_search_options(
+                query.clone(),
+                target,
+                session.clone(),
                 session_hints,
-                budget: budget.clone(),
-                limit: requested_limit,
+                budget.clone(),
+                requested_limit,
                 score_threshold,
                 min_match_tokens,
-                filter: metadata_filter_to_search_filter(filter),
-                request_type: "search".to_string(),
-            };
+                filter,
+                "search",
+            );
 
-            let mut result = self.run_retrieval_with_backend(&options)?;
+            let mut result = self.run_retrieval_memory_only(&options)?;
             self.enrich_find_result_relations(&mut result, 5)?;
             annotate_trace_relation_metrics(&mut result);
             annotate_om_query_plan_visibility(&mut result, &om_metrics, hint_policy);
@@ -333,11 +386,6 @@ impl AxiomMe {
                 Err(err)
             }
         }
-    }
-
-    fn run_retrieval_with_backend(&self, options: &SearchOptions) -> Result<FindResult> {
-        let backend = self.config.search.retrieval_backend;
-        self.run_retrieval_with_backend_mode(options, backend)
     }
 
     pub(crate) fn fetch_session_om_state(
@@ -496,6 +544,40 @@ fn filter_recent_messages_by_ids(
         .collect::<Vec<_>>()
 }
 
+fn parse_optional_target_uri(target_uri: Option<&str>) -> Result<Option<AxiomUri>> {
+    target_uri.map(AxiomUri::parse).transpose()
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "search option construction keeps query knobs explicit and side-effect free"
+)]
+fn build_search_options(
+    query: String,
+    target_uri: Option<AxiomUri>,
+    session: Option<String>,
+    session_hints: Vec<String>,
+    budget: Option<SearchBudget>,
+    requested_limit: usize,
+    score_threshold: Option<f32>,
+    min_match_tokens: Option<usize>,
+    filter: Option<MetadataFilter>,
+    request_type: &str,
+) -> SearchOptions {
+    SearchOptions {
+        query,
+        target_uri,
+        session,
+        session_hints,
+        budget,
+        limit: requested_limit,
+        score_threshold,
+        min_match_tokens,
+        filter: metadata_filter_to_search_filter(filter),
+        request_type: request_type.to_string(),
+    }
+}
+
 fn saturating_usize_to_u32(value: usize) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
 }
@@ -543,6 +625,104 @@ fn merge_recent_and_om_hints(
         .take(policy.total_hint_limit)
         .cloned()
         .collect::<Vec<_>>()
+}
+
+fn normalize_runtime_hints(
+    runtime_hints: &[RuntimeHint],
+    max_hints: usize,
+    max_chars: usize,
+) -> Vec<String> {
+    if max_chars == 0 || max_hints == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::<String>::with_capacity(max_hints.min(runtime_hints.len()));
+    let mut seen = HashSet::<String>::new();
+    for hint in runtime_hints {
+        let Some(normalized) = normalize_hint_text(hint.text.as_str(), max_chars) else {
+            continue;
+        };
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+            if out.len() >= max_hints {
+                break;
+            }
+        }
+    }
+    out
+}
+
+fn merge_runtime_om_recent_hints(
+    runtime: &[String],
+    om: Option<&str>,
+    recent: &[String],
+    policy: OmHintPolicy,
+    max_chars: usize,
+) -> Vec<String> {
+    if policy.total_hint_limit == 0 {
+        return Vec::new();
+    }
+
+    let mut out = Vec::<String>::with_capacity(policy.total_hint_limit);
+    let mut seen = HashSet::<String>::new();
+    let mut push_hint = |value: &str| {
+        if out.len() >= policy.total_hint_limit {
+            return;
+        }
+        let Some(normalized) = normalize_hint_text(value, max_chars) else {
+            return;
+        };
+        if seen.insert(normalized.clone()) {
+            out.push(normalized);
+        }
+    };
+
+    if let Some(om_hint) = om {
+        let keep_recent = policy
+            .keep_recent_with_om
+            .min(recent.len())
+            .min(policy.total_hint_limit.saturating_sub(1));
+
+        for hint in recent.iter().take(keep_recent) {
+            push_hint(hint);
+        }
+        push_hint(om_hint);
+        for hint in runtime {
+            push_hint(hint);
+        }
+        for hint in recent.iter().skip(keep_recent) {
+            push_hint(hint);
+        }
+        return out;
+    }
+
+    for hint in runtime {
+        push_hint(hint);
+    }
+    for hint in recent {
+        push_hint(hint);
+    }
+    out
+}
+
+fn normalize_hint_text(value: &str, max_chars: usize) -> Option<String> {
+    if max_chars == 0 {
+        return None;
+    }
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    let clipped = normalized
+        .chars()
+        .take(max_chars)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if clipped.is_empty() {
+        None
+    } else {
+        Some(clipped)
+    }
 }
 
 fn annotate_om_query_plan_visibility(
@@ -622,6 +802,8 @@ fn search_request_details(
         "budget": budget_to_json(budget),
         "score_threshold": score_threshold,
         "min_match_tokens": min_match_tokens,
+        "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
+        "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
         "context_tokens_before_om": metrics.context_tokens_before_om,
         "context_tokens_after_om": metrics.context_tokens_after_om,
         "observation_tokens_active": metrics.observation_tokens_active,
@@ -702,8 +884,12 @@ fn merge_observation_hint_with_suggested_response(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_search_cutoff_options;
+    use std::collections::HashMap;
+
+    use super::{build_search_options, parse_optional_target_uri, validate_search_cutoff_options};
     use crate::error::AxiomError;
+    use crate::models::{MetadataFilter, SearchBudget};
+    use crate::uri::AxiomUri;
 
     #[test]
     fn validate_search_cutoff_options_accepts_supported_values() {
@@ -724,6 +910,56 @@ mod tests {
         let err = validate_search_cutoff_options(Some(0.5), Some(1))
             .expect_err("min_match_tokens below 2 must fail");
         assert!(matches!(err, AxiomError::Validation(_)));
+    }
+
+    #[test]
+    fn parse_optional_target_uri_returns_none_when_missing() {
+        let target = parse_optional_target_uri(None).expect("parse none");
+        assert!(target.is_none());
+    }
+
+    #[test]
+    fn build_search_options_maps_metadata_filter_without_side_effects() {
+        let mut fields = HashMap::new();
+        fields.insert("tags".to_string(), serde_json::json!(["auth", "oauth"]));
+        fields.insert("mime".to_string(), serde_json::json!("text/markdown"));
+        let filter = MetadataFilter { fields };
+
+        let options = build_search_options(
+            "oauth".to_string(),
+            Some(AxiomUri::parse("axiom://resources").expect("target parse")),
+            Some("s-1".to_string()),
+            vec!["recent hint".to_string()],
+            Some(SearchBudget {
+                max_ms: Some(100),
+                max_nodes: Some(10),
+                max_depth: Some(3),
+            }),
+            5,
+            Some(0.5),
+            Some(2),
+            Some(filter),
+            "search",
+        );
+
+        assert_eq!(options.query, "oauth");
+        assert_eq!(options.request_type, "search");
+        assert_eq!(options.limit, 5);
+        assert_eq!(options.session.as_deref(), Some("s-1"));
+        assert_eq!(
+            options
+                .target_uri
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("axiom://resources")
+        );
+        let resolved_filter = options.filter.expect("mapped filter");
+        assert_eq!(
+            resolved_filter.tags,
+            vec!["auth".to_string(), "oauth".to_string()]
+        );
+        assert_eq!(resolved_filter.mime.as_deref(), Some("text/markdown"));
     }
 }
 

@@ -1,10 +1,9 @@
 use crate::error::{AxiomError, Result};
 
-use super::env::{parse_enabled_default_true, read_env_usize, read_non_empty_env};
+use super::env::{read_env_usize, read_non_empty_env};
 
 const ENV_RETRIEVAL_BACKEND: &str = "AXIOMME_RETRIEVAL_BACKEND";
 const ENV_RERANKER: &str = "AXIOMME_RERANKER";
-const ENV_QUERY_NORMALIZER: &str = "AXIOMME_QUERY_NORMALIZER";
 const ENV_OM_CONTEXT_MAX_ARCHIVES: &str = "AXIOMME_OM_CONTEXT_MAX_ARCHIVES";
 const ENV_OM_CONTEXT_MAX_MESSAGES: &str = "AXIOMME_OM_CONTEXT_MAX_MESSAGES";
 const ENV_OM_RECENT_HINT_LIMIT: &str = "AXIOMME_OM_RECENT_HINT_LIMIT";
@@ -13,6 +12,9 @@ const ENV_OM_KEEP_RECENT_WITH_OM: &str = "AXIOMME_OM_KEEP_RECENT_WITH_OM";
 const ENV_OM_HINT_MAX_LINES: &str = "AXIOMME_OM_HINT_MAX_LINES";
 const ENV_OM_HINT_MAX_CHARS: &str = "AXIOMME_OM_HINT_MAX_CHARS";
 const ENV_OM_HINT_SUGGESTED_MAX_CHARS: &str = "AXIOMME_OM_HINT_SUGGESTED_MAX_CHARS";
+pub(crate) const RETRIEVAL_BACKEND_MEMORY: &str = "memory";
+pub(crate) const RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY: &str = "memory_only";
+pub(crate) const QUERY_PLAN_BACKEND_POLICY_MEMORY_ONLY: &str = "backend_policy:memory_only";
 
 const DEFAULT_OM_CONTEXT_MAX_ARCHIVES: usize = 2;
 const DEFAULT_OM_CONTEXT_MAX_MESSAGES: usize = 8;
@@ -23,70 +25,42 @@ const DEFAULT_OM_HINT_MAX_CHARS: usize = 480;
 const DEFAULT_OM_HINT_MAX_LINES: usize = 4;
 const DEFAULT_OM_HINT_SUGGESTED_MAX_CHARS: usize = 160;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum RetrievalBackend {
-    #[default]
-    Sqlite,
-    Memory,
-}
-
-impl RetrievalBackend {
-    #[must_use]
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Sqlite => "sqlite",
-            Self::Memory => "memory",
-        }
-    }
-
-    fn parse(raw: Option<&str>) -> Result<Self> {
-        let normalized = raw.map(|value| value.trim().to_ascii_lowercase());
-        match normalized.as_deref() {
-            None => Ok(Self::Sqlite),
-            Some("sqlite") => Ok(Self::Sqlite),
-            Some("memory") => Ok(Self::Memory),
-            Some(other) => Err(AxiomError::Validation(format!(
-                "invalid {ENV_RETRIEVAL_BACKEND}: {other} (expected sqlite|memory)"
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SearchConfig {
-    pub(crate) retrieval_backend: RetrievalBackend,
     pub(crate) reranker: Option<String>,
-    pub(crate) query_normalizer_enabled: bool,
     pub(crate) om_hint_policy: OmHintPolicy,
     pub(crate) om_hint_bounds: OmHintBounds,
 }
 
 impl SearchConfig {
     pub(super) fn from_env() -> Result<Self> {
+        validate_retrieval_backend(std::env::var(ENV_RETRIEVAL_BACKEND).ok().as_deref())?;
         Ok(Self {
-            retrieval_backend: RetrievalBackend::parse(
-                std::env::var(ENV_RETRIEVAL_BACKEND).ok().as_deref(),
-            )?,
             reranker: read_non_empty_env(ENV_RERANKER),
-            query_normalizer_enabled: parse_enabled_default_true(
-                std::env::var(ENV_QUERY_NORMALIZER).ok().as_deref(),
-            ),
             om_hint_policy: OmHintPolicy::from_env(),
             om_hint_bounds: OmHintBounds::from_env(),
         })
     }
 }
 
-impl Default for SearchConfig {
-    fn default() -> Self {
-        Self {
-            retrieval_backend: RetrievalBackend::Sqlite,
-            reranker: None,
-            query_normalizer_enabled: true,
-            om_hint_policy: OmHintPolicy::default(),
-            om_hint_bounds: OmHintBounds::default(),
-        }
+fn validate_retrieval_backend(raw: Option<&str>) -> Result<()> {
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized == RETRIEVAL_BACKEND_MEMORY {
+        return Ok(());
     }
+
+    let rendered = if normalized.is_empty() {
+        "<empty>"
+    } else {
+        normalized.as_str()
+    };
+    Err(AxiomError::Validation(format!(
+        "invalid {ENV_RETRIEVAL_BACKEND}: {rendered} (expected {RETRIEVAL_BACKEND_MEMORY})"
+    )))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,28 +149,23 @@ impl OmHintBounds {
 
 #[cfg(test)]
 mod tests {
-    use super::RetrievalBackend;
+    use super::validate_retrieval_backend;
 
     #[test]
-    fn retrieval_backend_parser_defaults_to_sqlite_when_unset() {
-        assert_eq!(
-            RetrievalBackend::parse(None).expect("default backend"),
-            RetrievalBackend::Sqlite
-        );
+    fn retrieval_backend_validation_accepts_unset() {
+        validate_retrieval_backend(None).expect("unset backend");
     }
 
     #[test]
-    fn retrieval_backend_parser_accepts_memory() {
-        assert_eq!(
-            RetrievalBackend::parse(Some("memory")).expect("memory backend"),
-            RetrievalBackend::Memory
-        );
+    fn retrieval_backend_validation_accepts_memory() {
+        validate_retrieval_backend(Some("memory")).expect("memory backend");
     }
 
     #[test]
-    fn retrieval_backend_parser_rejects_unknown_values() {
-        assert!(RetrievalBackend::parse(Some("invalid-backend")).is_err());
-        assert!(RetrievalBackend::parse(Some("bm25")).is_err());
-        assert!(RetrievalBackend::parse(Some("")).is_err());
+    fn retrieval_backend_validation_rejects_unknown_values() {
+        assert!(validate_retrieval_backend(Some("sqlite")).is_err());
+        assert!(validate_retrieval_backend(Some("invalid-backend")).is_err());
+        assert!(validate_retrieval_backend(Some("bm25")).is_err());
+        assert!(validate_retrieval_backend(Some("")).is_err());
     }
 }

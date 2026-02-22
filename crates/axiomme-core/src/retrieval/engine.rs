@@ -13,31 +13,30 @@ use crate::models::{
 use super::budget::{ResolvedBudget, resolve_budget};
 use super::config::DrrConfig;
 use super::expansion::run_single_query;
-use super::planner::{IntentPlanner, PlannedQuery, RuleIntentPlanner, collect_scope_names};
+use super::planner::{PlannedQuery, collect_scope_names, plan_queries};
 use super::scoring::{
-    merge_hits, merge_trace_points, sorted_trace_points, split_hits, tokenize_keywords,
+    fanout_priority_weight, merge_hits, merge_trace_points, scale_hit_scores,
+    scale_trace_point_scores, sorted_trace_points, split_hits, tokenize_keywords,
     typed_query_plans,
 };
 
 #[derive(Debug, Clone)]
 pub struct DrrEngine {
     config: DrrConfig,
-    planner: RuleIntentPlanner,
 }
+
+const FANOUT_PRIORITY_WEIGHT_NOTE: &str = "fanout_weight:p1=1.00,p2=0.82,p3=0.64,p4+=0.46";
 
 impl DrrEngine {
     #[must_use]
     pub const fn new(config: DrrConfig) -> Self {
-        Self {
-            config,
-            planner: RuleIntentPlanner,
-        }
+        Self { config }
     }
 
     pub fn run(&self, index: &InMemoryIndex, options: &SearchOptions) -> FindResult {
         let start = Instant::now();
         let trace_id = Uuid::new_v4().to_string();
-        let planned_queries = self.planner.plan(options);
+        let planned_queries = plan_queries(options);
         let request_budget = resolve_budget(&self.config, options.budget.as_ref());
         let fanout = execute_planned_queries(
             &self.config,
@@ -90,13 +89,12 @@ impl DrrEngine {
             memories,
             resources,
             skills,
-            query_plan: serde_json::to_value(QueryPlan {
+            query_plan: QueryPlan {
                 scopes: collect_scope_names(&planned_queries),
                 keywords: tokenize_keywords(&options.query),
                 typed_queries: typed_query_plans(&planned_queries),
                 notes,
-            })
-            .unwrap_or_else(|_| serde_json::json!({})),
+            },
             query_results: hits,
             trace: Some(trace),
             trace_uri: None,
@@ -141,7 +139,7 @@ fn execute_planned_queries(
             break;
         }
 
-        let single = run_single_query(
+        let mut single = run_single_query(
             config,
             index,
             options,
@@ -152,6 +150,9 @@ fn execute_planned_queries(
                 depth: request_budget.depth,
             },
         );
+        let weight = fanout_priority_weight(planned.priority);
+        scale_hit_scores(&mut single.hits, weight);
+        scale_trace_point_scores(&mut single.trace.start_points, weight);
         merge_hits(&mut state.merged_hits, single.hits);
         merge_trace_points(&mut state.merged_start_points, &single.trace.start_points);
 
@@ -196,6 +197,7 @@ fn build_query_notes(
     let mut notes = vec![
         "drr".to_string(),
         format!("fanout:{planned_query_count}"),
+        FANOUT_PRIORITY_WEIGHT_NOTE.to_string(),
         format!("budget_nodes:{}", request_budget.nodes),
         format!("budget_depth:{}", request_budget.depth),
     ];

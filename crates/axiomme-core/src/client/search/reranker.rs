@@ -50,15 +50,13 @@ enum DocumentClass {
 }
 
 pub(super) fn resolve_reranker_mode(raw: Option<&str>) -> RerankerMode {
-    if raw.is_some_and(|value| {
-        let value = value.trim();
-        value.eq_ignore_ascii_case("off")
-            || value.eq_ignore_ascii_case("none")
-            || value.eq_ignore_ascii_case("disabled")
-    }) {
-        RerankerMode::Off
-    } else {
+    let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return RerankerMode::Off;
+    };
+    if value.eq_ignore_ascii_case("doc-aware-v1") {
         RerankerMode::DocAwareV1
+    } else {
+        RerankerMode::Off
     }
 }
 

@@ -160,9 +160,9 @@ fn release_gate_pack_fails_fast_for_workspace_without_manifest() {
 #[test]
 #[expect(
     clippy::too_many_lines,
-    reason = "release pack happy path validates full gate orchestration in one deterministic scenario"
+    reason = "release pack gate orchestration is validated end-to-end in one deterministic scenario"
 )]
-fn release_gate_pack_happy_path_runs_with_mocked_workspace_commands() {
+fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app new");
     app.initialize().expect("init failed");
@@ -201,7 +201,7 @@ fn release_gate_pack_happy_path_runs_with_mocked_workspace_commands() {
         benchmark_max_top1_regression_pct: None,
         benchmark_window_size: 1,
         benchmark_required_passes: 1,
-        security_audit_mode: "offline".to_string(),
+        security_audit_mode: crate::models::ReleaseSecurityAuditMode::Offline,
     };
     let report = with_workspace_command_mocks(
         &[
@@ -272,6 +272,19 @@ fn release_gate_pack_happy_path_runs_with_mocked_workspace_commands() {
             .expect("G1 decision")
             .passed,
         "G1 should pass when workspace build commands are mocked to succeed"
+    );
+    let g5 = report
+        .decisions
+        .iter()
+        .find(|decision| decision.gate_id == "G5")
+        .expect("G5 decision");
+    assert!(
+        !g5.passed && g5.details.contains("strict_mode=false"),
+        "G5 should fail when security audit mode is offline"
+    );
+    assert!(
+        !report.passed,
+        "release pack with offline security mode must not pass final blocker gate"
     );
 }
 

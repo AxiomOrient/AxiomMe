@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use reqwest::blocking::Client;
 use serde_json::Value;
 use uuid::Uuid;
@@ -11,7 +11,11 @@ use crate::config::MemoryDedupConfigSnapshot;
 use crate::embedding::embed_text;
 use crate::error::{AxiomError, Result};
 use crate::llm_io::{extract_json_fragment, extract_llm_content, parse_local_loopback_endpoint};
-use crate::models::{CommitResult, CommitStats, IndexRecord, MemoryCandidate};
+use crate::models::{
+    CommitMode, CommitResult, CommitStats, IndexRecord, MemoryCandidate, MemoryPromotionFact,
+    MemoryPromotionRequest, MemoryPromotionResult, PromotionApplyMode,
+};
+use crate::state::PromotionCheckpointPhase;
 use crate::uri::{AxiomUri, Scope};
 
 use super::Session;
@@ -30,6 +34,11 @@ const DEFAULT_MEMORY_DEDUP_LLM_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_MEMORY_DEDUP_LLM_MAX_OUTPUT_TOKENS: u32 = 600;
 const DEFAULT_MEMORY_DEDUP_LLM_TEMPERATURE_MILLI: u16 = 0;
 const DEFAULT_MEMORY_DEDUP_LLM_MAX_MATCHES: usize = 3;
+const PROMOTION_MAX_FACTS: usize = 64;
+const PROMOTION_MAX_TEXT_CHARS: usize = 512;
+const PROMOTION_MAX_SOURCE_IDS_PER_FACT: usize = 32;
+const PROMOTION_MAX_CONFIDENCE_MILLI: u16 = 1_000;
+const PROMOTION_APPLYING_STALE_SECONDS: i64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedMemoryCandidate {
@@ -45,6 +54,26 @@ struct ExistingMemoryFact {
     uri: AxiomUri,
     text: String,
     vector: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExistingPromotionFact {
+    category: String,
+    text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromotionApplyPlan {
+    candidates: Vec<ResolvedMemoryCandidate>,
+    skipped_duplicates: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PromotionApplyInput {
+    request_hash: String,
+    request_json: String,
+    apply_mode: PromotionApplyMode,
+    facts: Vec<MemoryPromotionFact>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,6 +178,10 @@ struct ParsedLlmDedupDecision {
 
 impl Session {
     pub fn commit(&self) -> Result<CommitResult> {
+        self.commit_with_mode(CommitMode::ArchiveAndExtract)
+    }
+
+    pub fn commit_with_mode(&self, mode: CommitMode) -> Result<CommitResult> {
         let active_messages = self.read_messages()?;
         let total_turns = active_messages.len();
         let meta = self.read_meta()?;
@@ -195,20 +228,23 @@ impl Session {
             &format!("# Session Overview\n\nLatest archive: {archive_num}"),
         )?;
 
-        let extracted =
-            extract_memories_for_commit(&active_messages, &self.config.memory.extractor)?;
-        if let Some(error) = extracted.llm_error.as_deref() {
-            self.record_memory_extractor_fallback(&extracted.mode_requested, error);
-        }
-
-        let candidates = self.resolve_memory_candidates(&extracted.memories)?;
+        let mut candidates_len = 0usize;
         let mut persisted_uris = Vec::new();
-        for candidate in &candidates {
-            let uri = self.persist_memory(candidate)?;
-            persisted_uris.push(uri);
-        }
+        if matches!(mode, CommitMode::ArchiveAndExtract) {
+            let extracted =
+                extract_memories_for_commit(&active_messages, &self.config.memory.extractor)?;
+            if let Some(error) = extracted.llm_error.as_deref() {
+                self.record_memory_extractor_fallback(&extracted.mode_requested, error);
+            }
 
-        self.reindex_memory_uris(&persisted_uris)?;
+            let candidates = self.resolve_memory_candidates(&extracted.memories)?;
+            candidates_len = candidates.len();
+            for candidate in &candidates {
+                let uri = self.persist_memory(candidate)?;
+                persisted_uris.push(uri);
+            }
+            self.reindex_memory_uris(&persisted_uris)?;
+        }
 
         self.touch_meta(|meta| {
             meta.updated_at = Utc::now();
@@ -217,16 +253,358 @@ impl Session {
         Ok(CommitResult {
             session_id: self.session_id.clone(),
             status: "committed".to_string(),
-            memories_extracted: candidates.len(),
+            memories_extracted: candidates_len,
             active_count_updated: persisted_uris.len(),
             archived: true,
             stats: CommitStats {
                 total_turns,
                 contexts_used: meta.context_usage.contexts_used,
                 skills_used: meta.context_usage.skills_used,
-                memories_extracted: candidates.len(),
+                memories_extracted: candidates_len,
             },
         })
+    }
+
+    pub fn promote_memories(
+        &self,
+        request: &MemoryPromotionRequest,
+    ) -> Result<MemoryPromotionResult> {
+        if request.session_id.trim() != self.session_id {
+            return Err(AxiomError::Validation(format!(
+                "promotion session_id mismatch: expected {}, got {}",
+                self.session_id, request.session_id
+            )));
+        }
+        if request.checkpoint_id.trim().is_empty() {
+            return Err(AxiomError::Validation(
+                "checkpoint_id must not be empty".to_string(),
+            ));
+        }
+
+        let mut apply_input = promotion_apply_input_from_request(request)?;
+        let incoming_request_hash = apply_input.request_hash.clone();
+
+        let stale_before =
+            (Utc::now() - Duration::seconds(PROMOTION_APPLYING_STALE_SECONDS)).to_rfc3339();
+        let _ = self.state.demote_stale_promotion_checkpoint(
+            self.session_id.as_str(),
+            request.checkpoint_id.as_str(),
+            stale_before.as_str(),
+        )?;
+
+        if let Some(existing) = self
+            .state
+            .get_promotion_checkpoint(self.session_id.as_str(), request.checkpoint_id.as_str())?
+        {
+            if existing.request_hash != incoming_request_hash {
+                return Err(AxiomError::Validation(
+                    "checkpoint_id conflict: request hash mismatch".to_string(),
+                ));
+            }
+            match existing.phase {
+                PromotionCheckpointPhase::Applied => {
+                    let result_json = existing.result_json.ok_or_else(|| {
+                        AxiomError::Internal("applied checkpoint missing result_json".to_string())
+                    })?;
+                    return Ok(serde_json::from_str(&result_json)?);
+                }
+                PromotionCheckpointPhase::Applying => {
+                    return Err(AxiomError::Conflict(
+                        "checkpoint_busy: checkpoint is currently applying".to_string(),
+                    ));
+                }
+                PromotionCheckpointPhase::Pending => {
+                    let replay_input = promotion_apply_input_from_checkpoint_json(
+                        existing.request_json.as_str(),
+                        self.session_id.as_str(),
+                        request.checkpoint_id.as_str(),
+                    )?;
+                    if replay_input.request_hash != existing.request_hash {
+                        return Err(AxiomError::Internal(
+                            "checkpoint request_json hash mismatch".to_string(),
+                        ));
+                    }
+                    apply_input = replay_input;
+                }
+            }
+        } else {
+            self.state.insert_promotion_checkpoint_pending(
+                self.session_id.as_str(),
+                request.checkpoint_id.as_str(),
+                apply_input.request_hash.as_str(),
+                apply_input.request_json.as_str(),
+            )?;
+        }
+
+        if !self.state.claim_promotion_checkpoint_applying(
+            self.session_id.as_str(),
+            request.checkpoint_id.as_str(),
+            apply_input.request_hash.as_str(),
+        )? {
+            if let Some(current) = self.state.get_promotion_checkpoint(
+                self.session_id.as_str(),
+                request.checkpoint_id.as_str(),
+            )? {
+                if current.request_hash != apply_input.request_hash {
+                    return Err(AxiomError::Validation(
+                        "checkpoint_id conflict: request hash mismatch".to_string(),
+                    ));
+                }
+                return match current.phase {
+                    PromotionCheckpointPhase::Applied => {
+                        let result_json = current.result_json.ok_or_else(|| {
+                            AxiomError::Internal(
+                                "applied checkpoint missing result_json".to_string(),
+                            )
+                        })?;
+                        Ok(serde_json::from_str(&result_json)?)
+                    }
+                    PromotionCheckpointPhase::Applying | PromotionCheckpointPhase::Pending => Err(
+                        AxiomError::Conflict("checkpoint_busy: checkpoint claim lost".to_string()),
+                    ),
+                };
+            }
+            return Err(AxiomError::Internal(
+                "checkpoint claim failed and checkpoint record missing".to_string(),
+            ));
+        }
+
+        let applied = match apply_input.apply_mode {
+            PromotionApplyMode::AllOrNothing => self
+                .apply_promotion_all_or_nothing(request.checkpoint_id.as_str(), &apply_input.facts),
+            PromotionApplyMode::BestEffort => {
+                self.apply_promotion_best_effort(request.checkpoint_id.as_str(), &apply_input.facts)
+            }
+        };
+
+        let result = match applied {
+            Ok(result) => result,
+            Err(err) => {
+                let _ = self.state.set_promotion_checkpoint_pending(
+                    self.session_id.as_str(),
+                    request.checkpoint_id.as_str(),
+                    apply_input.request_hash.as_str(),
+                );
+                return Err(err);
+            }
+        };
+
+        let result_json = serde_json::to_string(&result)?;
+        if !self.state.finalize_promotion_checkpoint_applied(
+            self.session_id.as_str(),
+            request.checkpoint_id.as_str(),
+            apply_input.request_hash.as_str(),
+            result_json.as_str(),
+        )? {
+            return Err(AxiomError::Conflict(
+                "checkpoint finalize failed".to_string(),
+            ));
+        }
+        Ok(result)
+    }
+
+    fn apply_promotion_all_or_nothing(
+        &self,
+        checkpoint_id: &str,
+        facts: &[MemoryPromotionFact],
+    ) -> Result<MemoryPromotionResult> {
+        for fact in facts {
+            validate_promotion_fact_semantics(fact)?;
+        }
+
+        let existing = self.list_existing_promotion_facts()?;
+        let plan = plan_promotion_apply(&existing, facts);
+        let mut snapshots = BTreeMap::<String, Option<String>>::new();
+        let mut persisted_uris = Vec::<AxiomUri>::new();
+
+        for candidate in &plan.candidates {
+            let uri = match self.persist_promotion_candidate(candidate, Some(&mut snapshots)) {
+                Ok(uri) => uri,
+                Err(err) => {
+                    restore_promotion_snapshots(self, &snapshots)?;
+                    return Err(err);
+                }
+            };
+            if !persisted_uris.iter().any(|item| item == &uri) {
+                persisted_uris.push(uri);
+            }
+        }
+
+        if let Err(reindex_err) = self.reindex_memory_uris(&persisted_uris) {
+            self.record_memory_dedup_fallback("promotion_reindex", &reindex_err.to_string());
+            let rollback_err = restore_promotion_snapshots(self, &snapshots).err();
+            let rollback_reindex_err = if rollback_err.is_none() {
+                self.reindex_memory_uris(&persisted_uris).err()
+            } else {
+                None
+            };
+            let rollback_status = rollback_err
+                .as_ref()
+                .map_or_else(|| "ok".to_string(), |err| format!("err:{err}"));
+            let rollback_reindex_status = rollback_reindex_err
+                .as_ref()
+                .map_or_else(|| "ok_or_skipped".to_string(), |err| format!("err:{err}"));
+            return Err(AxiomError::Internal(format!(
+                "promotion all_or_nothing reindex failed: {reindex_err}; rollback={rollback_status}; rollback_reindex={rollback_reindex_status}",
+            )));
+        }
+
+        Ok(MemoryPromotionResult {
+            session_id: self.session_id.clone(),
+            checkpoint_id: checkpoint_id.to_string(),
+            accepted: facts.len(),
+            persisted: plan.candidates.len(),
+            skipped_duplicates: plan.skipped_duplicates,
+            rejected: 0,
+        })
+    }
+
+    fn apply_promotion_best_effort(
+        &self,
+        checkpoint_id: &str,
+        facts: &[MemoryPromotionFact],
+    ) -> Result<MemoryPromotionResult> {
+        let mut rejected = 0usize;
+        let mut valid = Vec::<MemoryPromotionFact>::new();
+        for fact in facts {
+            if validate_promotion_fact_semantics(fact).is_ok() {
+                valid.push(fact.clone());
+            } else {
+                rejected = rejected.saturating_add(1);
+            }
+        }
+
+        let existing = self.list_existing_promotion_facts()?;
+        let plan = plan_promotion_apply(&existing, &valid);
+
+        let mut persisted = 0usize;
+        let mut persisted_uris = Vec::<AxiomUri>::new();
+        let mut snapshots = BTreeMap::<String, Option<String>>::new();
+        for candidate in &plan.candidates {
+            match self.persist_promotion_candidate(candidate, Some(&mut snapshots)) {
+                Ok(uri) => {
+                    if !persisted_uris.iter().any(|item| item == &uri) {
+                        persisted_uris.push(uri);
+                    }
+                    persisted = persisted.saturating_add(1);
+                }
+                Err(_) => {
+                    rejected = rejected.saturating_add(1);
+                }
+            }
+        }
+        if let Err(reindex_err) = self.reindex_memory_uris(&persisted_uris) {
+            self.record_memory_dedup_fallback("promotion_reindex", &reindex_err.to_string());
+            let rollback_err = restore_promotion_snapshots(self, &snapshots).err();
+            let rollback_reindex_err = if rollback_err.is_none() {
+                self.reindex_memory_uris(&persisted_uris).err()
+            } else {
+                None
+            };
+            let rollback_status = rollback_err
+                .as_ref()
+                .map_or_else(|| "ok".to_string(), |err| format!("err:{err}"));
+            let rollback_reindex_status = rollback_reindex_err
+                .as_ref()
+                .map_or_else(|| "ok_or_skipped".to_string(), |err| format!("err:{err}"));
+            return Err(AxiomError::Internal(format!(
+                "promotion best_effort reindex failed: {reindex_err}; rollback={rollback_status}; rollback_reindex={rollback_reindex_status}",
+            )));
+        }
+
+        Ok(MemoryPromotionResult {
+            session_id: self.session_id.clone(),
+            checkpoint_id: checkpoint_id.to_string(),
+            accepted: valid.len(),
+            persisted,
+            skipped_duplicates: plan.skipped_duplicates,
+            rejected,
+        })
+    }
+
+    fn list_existing_promotion_facts(&self) -> Result<Vec<ExistingPromotionFact>> {
+        let categories = [
+            "profile",
+            "preferences",
+            "entities",
+            "events",
+            "cases",
+            "patterns",
+        ];
+        let mut out = Vec::<ExistingPromotionFact>::new();
+        for category in categories {
+            let uris = self.list_memory_document_uris(category)?;
+            for uri in uris {
+                let content = self.fs.read(&uri)?;
+                let entries = parse_memory_entries(&content);
+                for entry in entries {
+                    let text = normalize_memory_text(&entry.text);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    out.push(ExistingPromotionFact {
+                        category: category.to_string(),
+                        text,
+                    });
+                }
+            }
+        }
+        out.sort_by(|left, right| {
+            left.category
+                .cmp(&right.category)
+                .then_with(|| left.text.cmp(&right.text))
+        });
+        Ok(out)
+    }
+
+    fn persist_promotion_candidate(
+        &self,
+        candidate: &ResolvedMemoryCandidate,
+        snapshots: Option<&mut BTreeMap<String, Option<String>>>,
+    ) -> Result<AxiomUri> {
+        let uri = if let Some(target_uri) = candidate.target_uri.as_ref() {
+            target_uri.clone()
+        } else {
+            memory_uri_for_category_key(&candidate.category, &candidate.key)?
+        };
+
+        let path = self.fs.resolve_uri(&uri);
+        if let Some(existing_snapshots) = snapshots {
+            let key = uri.to_string();
+            if let std::collections::btree_map::Entry::Vacant(entry) = existing_snapshots.entry(key)
+            {
+                let previous = if path.exists() {
+                    Some(fs::read_to_string(&path)?)
+                } else {
+                    None
+                };
+                entry.insert(previous);
+            }
+        }
+
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut merged = if path.exists() {
+            fs::read_to_string(&path)?
+        } else {
+            String::new()
+        };
+        for source_message_id in dedup_source_ids(&candidate.source_message_ids) {
+            let source = MemorySource {
+                session_id: self.session_id.clone(),
+                message_id: source_message_id.clone(),
+            };
+            let memory_candidate = MemoryCandidate {
+                category: candidate.category.clone(),
+                key: candidate.key.clone(),
+                text: candidate.text.clone(),
+                source_message_id,
+            };
+            merged = merge_memory_markdown(&merged, &memory_candidate, &source);
+        }
+        fs::write(path, merged)?;
+        Ok(uri)
     }
 
     fn resolve_memory_candidates(
@@ -398,7 +776,7 @@ impl Session {
 
     fn record_memory_extractor_fallback(&self, mode_requested: &str, error: &str) {
         let uri = format!("axiom://session/{}", self.session_id);
-        if let Ok(event_id) = self.state.enqueue(
+        let _ = self.state.enqueue_dead_letter(
             "memory_extract_fallback",
             &uri,
             serde_json::json!({
@@ -406,14 +784,12 @@ impl Session {
                 "mode_requested": mode_requested,
                 "error": error,
             }),
-        ) {
-            let _ = self.state.mark_outbox_status(event_id, "dead_letter", true);
-        }
+        );
     }
 
     fn record_memory_dedup_fallback(&self, mode_requested: &str, error: &str) {
         let uri = format!("axiom://session/{}", self.session_id);
-        if let Ok(event_id) = self.state.enqueue(
+        let _ = self.state.enqueue_dead_letter(
             "memory_dedup_fallback",
             &uri,
             serde_json::json!({
@@ -421,9 +797,7 @@ impl Session {
                 "mode_requested": mode_requested,
                 "error": error,
             }),
-        ) {
-            let _ = self.state.mark_outbox_status(event_id, "dead_letter", true);
-        }
+        );
     }
 
     fn reindex_memory_uris(&self, uris: &[AxiomUri]) -> Result<()> {
@@ -463,6 +837,249 @@ impl Session {
         drop(index);
         Ok(())
     }
+}
+
+fn validate_promotion_request_bounds(request: &MemoryPromotionRequest) -> Result<()> {
+    if request.facts.len() > PROMOTION_MAX_FACTS {
+        return Err(AxiomError::Validation(format!(
+            "facts exceeds max limit: {} > {}",
+            request.facts.len(),
+            PROMOTION_MAX_FACTS
+        )));
+    }
+    for (index, fact) in request.facts.iter().enumerate() {
+        if fact.text.chars().count() > PROMOTION_MAX_TEXT_CHARS {
+            return Err(AxiomError::Validation(format!(
+                "fact[{index}].text exceeds max chars: {} > {}",
+                fact.text.chars().count(),
+                PROMOTION_MAX_TEXT_CHARS
+            )));
+        }
+        if fact.source_message_ids.len() > PROMOTION_MAX_SOURCE_IDS_PER_FACT {
+            return Err(AxiomError::Validation(format!(
+                "fact[{index}].source_message_ids exceeds max count: {} > {}",
+                fact.source_message_ids.len(),
+                PROMOTION_MAX_SOURCE_IDS_PER_FACT
+            )));
+        }
+        if fact.confidence_milli > PROMOTION_MAX_CONFIDENCE_MILLI {
+            return Err(AxiomError::Validation(format!(
+                "fact[{index}].confidence_milli out of range: {} > {}",
+                fact.confidence_milli, PROMOTION_MAX_CONFIDENCE_MILLI
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn promotion_apply_input_from_request(
+    request: &MemoryPromotionRequest,
+) -> Result<PromotionApplyInput> {
+    validate_promotion_request_bounds(request)?;
+    let facts = dedup_promotion_facts(&normalize_promotion_facts(&request.facts));
+    let request_json = canonical_promotion_request_json(
+        request.session_id.as_str(),
+        request.checkpoint_id.as_str(),
+        request.apply_mode,
+        &facts,
+    )?;
+    let request_hash = blake3::hash(request_json.as_bytes()).to_hex().to_string();
+    Ok(PromotionApplyInput {
+        request_hash,
+        request_json,
+        apply_mode: request.apply_mode,
+        facts,
+    })
+}
+
+fn promotion_apply_input_from_checkpoint_json(
+    request_json: &str,
+    expected_session_id: &str,
+    expected_checkpoint_id: &str,
+) -> Result<PromotionApplyInput> {
+    let request: MemoryPromotionRequest = serde_json::from_str(request_json).map_err(|error| {
+        AxiomError::Validation(format!("invalid checkpoint request_json: {error}"))
+    })?;
+    if request.session_id.trim() != expected_session_id {
+        return Err(AxiomError::Validation(format!(
+            "checkpoint request_json session_id mismatch: expected {expected_session_id}, got {}",
+            request.session_id
+        )));
+    }
+    if request.checkpoint_id.trim() != expected_checkpoint_id {
+        return Err(AxiomError::Validation(format!(
+            "checkpoint request_json checkpoint_id mismatch: expected {expected_checkpoint_id}, got {}",
+            request.checkpoint_id
+        )));
+    }
+    validate_promotion_request_bounds(&request)?;
+    let facts = dedup_promotion_facts(&normalize_promotion_facts(&request.facts));
+    Ok(PromotionApplyInput {
+        request_hash: blake3::hash(request_json.as_bytes()).to_hex().to_string(),
+        request_json: request_json.to_string(),
+        apply_mode: request.apply_mode,
+        facts,
+    })
+}
+
+fn validate_promotion_fact_semantics(fact: &MemoryPromotionFact) -> Result<()> {
+    if normalize_memory_text(&fact.text).is_empty() {
+        return Err(AxiomError::Validation(
+            "promotion fact text must not be empty".to_string(),
+        ));
+    }
+    if dedup_source_ids(&fact.source_message_ids).is_empty() {
+        return Err(AxiomError::Validation(
+            "promotion fact source_message_ids must not be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_promotion_facts(facts: &[MemoryPromotionFact]) -> Vec<MemoryPromotionFact> {
+    let mut out = facts
+        .iter()
+        .map(|fact| MemoryPromotionFact {
+            category: fact.category,
+            text: normalize_memory_text(&fact.text),
+            source_message_ids: dedup_source_ids(&fact.source_message_ids),
+            source: fact
+                .source
+                .as_ref()
+                .map(|value| normalize_memory_text(value))
+                .filter(|value| !value.is_empty()),
+            confidence_milli: fact.confidence_milli.min(PROMOTION_MAX_CONFIDENCE_MILLI),
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|left, right| {
+        left.category
+            .as_str()
+            .cmp(right.category.as_str())
+            .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.source_message_ids.cmp(&right.source_message_ids))
+    });
+    out
+}
+
+fn dedup_promotion_facts(facts: &[MemoryPromotionFact]) -> Vec<MemoryPromotionFact> {
+    let mut out = Vec::<MemoryPromotionFact>::new();
+    for fact in facts {
+        if let Some(existing) = out.iter_mut().find(|item| {
+            item.category == fact.category
+                && normalize_memory_text(&item.text) == normalize_memory_text(&fact.text)
+        }) {
+            existing
+                .source_message_ids
+                .extend(fact.source_message_ids.clone());
+            existing.source_message_ids = dedup_source_ids(&existing.source_message_ids);
+            if existing.source.is_none() {
+                existing.source = fact.source.clone();
+            }
+            existing.confidence_milli = existing.confidence_milli.max(fact.confidence_milli);
+        } else {
+            out.push(fact.clone());
+        }
+    }
+    out.sort_by(|left, right| {
+        left.category
+            .as_str()
+            .cmp(right.category.as_str())
+            .then_with(|| left.text.cmp(&right.text))
+            .then_with(|| left.source_message_ids.cmp(&right.source_message_ids))
+    });
+    out
+}
+
+fn canonical_promotion_request_json(
+    session_id: &str,
+    checkpoint_id: &str,
+    apply_mode: PromotionApplyMode,
+    facts: &[MemoryPromotionFact],
+) -> Result<String> {
+    let facts_json = facts
+        .iter()
+        .map(|fact| {
+            serde_json::json!({
+                "category": fact.category.as_str(),
+                "text": fact.text,
+                "source_message_ids": fact.source_message_ids,
+                "source": fact.source,
+                "confidence_milli": fact.confidence_milli,
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "checkpoint_id": checkpoint_id,
+        "apply_mode": promotion_apply_mode_label(apply_mode),
+        "facts": facts_json,
+    });
+    Ok(serde_json::to_string(&payload)?)
+}
+
+const fn promotion_apply_mode_label(mode: PromotionApplyMode) -> &'static str {
+    match mode {
+        PromotionApplyMode::AllOrNothing => "all_or_nothing",
+        PromotionApplyMode::BestEffort => "best_effort",
+    }
+}
+
+fn plan_promotion_apply(
+    existing: &[ExistingPromotionFact],
+    incoming: &[MemoryPromotionFact],
+) -> PromotionApplyPlan {
+    let mut seen = existing
+        .iter()
+        .map(|fact| format!("{}|{}", fact.category, normalize_memory_text(&fact.text)))
+        .collect::<HashSet<_>>();
+    let mut skipped_duplicates = 0usize;
+    let mut candidates = Vec::<ResolvedMemoryCandidate>::new();
+
+    for fact in incoming {
+        let text = normalize_memory_text(&fact.text);
+        let category = fact.category.as_str().to_string();
+        let dedup_key = format!("{category}|{text}");
+        if !seen.insert(dedup_key) {
+            skipped_duplicates = skipped_duplicates.saturating_add(1);
+            continue;
+        }
+        candidates.push(ResolvedMemoryCandidate {
+            category: category.clone(),
+            key: build_memory_key(&category, &text),
+            text,
+            source_message_ids: dedup_source_ids(&fact.source_message_ids),
+            target_uri: None,
+        });
+    }
+
+    PromotionApplyPlan {
+        candidates,
+        skipped_duplicates,
+    }
+}
+
+fn restore_promotion_snapshots(
+    session: &Session,
+    snapshots: &BTreeMap<String, Option<String>>,
+) -> Result<()> {
+    for (uri_raw, content) in snapshots {
+        let uri = AxiomUri::parse(uri_raw)?;
+        let path = session.fs.resolve_uri(&uri);
+        match content {
+            Some(previous) => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(&path, previous)?;
+            }
+            None => {
+                if path.exists() {
+                    fs::remove_file(path)?;
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn memory_category_path(category: &str) -> Result<(Scope, &'static str, bool)> {

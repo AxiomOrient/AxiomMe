@@ -231,7 +231,7 @@ async fn web_preview_sanitizes_unsafe_html_and_links() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn web_markdown_save_reindex_failure_returns_500_with_rollback_details() {
+async fn web_markdown_save_ignores_unrelated_invalid_sibling_path() {
     let harness = TestHarness::setup();
     let root_uri = AxiomUri::parse("axiom://resources/web-editor").expect("root parse");
     let bad_path = harness
@@ -270,9 +270,22 @@ async fn web_markdown_save_reindex_failure_returns_500_with_rollback_details() {
         .await
         .expect("save response");
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let payload: serde_json::Value = decode_json(response).await;
-    assert_eq!(payload["code"], "INTERNAL_ERROR");
-    assert!(payload["details"]["rollback_write"].is_string());
-    assert!(payload["details"]["rollback_reindex"].is_string());
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: MarkdownSaveResult = decode_json(response).await;
+    assert_eq!(payload.uri, harness.uri);
+
+    let reloaded = harness
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/markdown?uri={}", harness.uri))
+                .body(Body::empty())
+                .expect("reload request"),
+        )
+        .await
+        .expect("reload response");
+    assert_eq!(reloaded.status(), StatusCode::OK);
+    let loaded_after: MarkdownDocument = decode_json(reloaded).await;
+    assert!(loaded_after.content.contains("must_fail"));
 }

@@ -644,9 +644,9 @@ impl Session {
             "om_failure_kind": failure_kind,
             "om_failure_source": failure_source,
         });
-        if let Ok(event_id) = self.state.enqueue("om_observer_failed", &uri, payload) {
-            let _ = self.state.mark_outbox_status(event_id, "dead_letter", true);
-        }
+        let _ = self
+            .state
+            .enqueue_dead_letter("om_observer_failed", &uri, payload);
     }
 }
 

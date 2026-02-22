@@ -1,4 +1,4 @@
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::Connection;
 
 use crate::error::{AxiomError, Result};
 
@@ -164,6 +164,19 @@ const MIGRATION_SCHEMA_SQL: &str = r"
         updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS memory_promotion_checkpoints (
+        session_id TEXT NOT NULL,
+        checkpoint_id TEXT NOT NULL,
+        request_hash TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK(phase IN ('pending', 'applying', 'applied')),
+        result_json TEXT,
+        applied_at TEXT,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, checkpoint_id)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_search_docs_uri ON search_docs(uri);
     CREATE INDEX IF NOT EXISTS idx_search_docs_parent_uri ON search_docs(parent_uri);
     CREATE INDEX IF NOT EXISTS idx_search_docs_mime ON search_docs(mime);
@@ -177,6 +190,8 @@ const MIGRATION_SCHEMA_SQL: &str = r"
     ON om_scope_sessions(scope_key, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_om_thread_states_scope_updated_at
     ON om_thread_states(scope_key, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_memory_promotion_checkpoints_session
+    ON memory_promotion_checkpoints(session_id, updated_at DESC);
 ";
 
 impl SqliteStateStore {
@@ -228,30 +243,7 @@ impl SqliteStateStore {
             "reflector_trigger_count_total",
             "unsupported om_records schema: reflector_trigger_count_total is missing; reset workspace state database",
         )?;
-        if !has_table(&conn, "search_docs_fts")? {
-            conn.execute(
-                r"
-                CREATE VIRTUAL TABLE search_docs_fts
-                USING fts5(
-                    name,
-                    abstract_text,
-                    content,
-                    tags_text,
-                    tokenize='unicode61 remove_diacritics 2',
-                    prefix='2 3'
-                )
-                ",
-                [],
-            )?;
-            conn.execute(
-                r"
-                INSERT INTO search_docs_fts(rowid, name, abstract_text, content, tags_text)
-                SELECT id, name, abstract_text, content, tags_text
-                FROM search_docs
-                ",
-                [],
-            )?;
-        }
+        conn.execute("DROP TABLE IF EXISTS search_docs_fts", [])?;
         drop(conn);
         Ok(())
     }
@@ -266,18 +258,6 @@ fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
         }
     }
     Ok(false)
-}
-
-fn has_table(conn: &Connection, table: &str) -> Result<bool> {
-    let exists = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
-            params![table],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
-    Ok(exists)
 }
 
 fn ensure_required_column(

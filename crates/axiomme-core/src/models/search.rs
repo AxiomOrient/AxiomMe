@@ -34,7 +34,7 @@ pub struct FindResult {
     pub memories: Vec<ContextHit>,
     pub resources: Vec<ContextHit>,
     pub skills: Vec<ContextHit>,
-    pub query_plan: serde_json::Value,
+    pub query_plan: QueryPlan,
     pub query_results: Vec<ContextHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace: Option<RetrievalTrace>,
@@ -129,10 +129,13 @@ pub struct SearchBudget {
 }
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QueryPlan {
+    #[serde(default)]
     pub scopes: Vec<String>,
+    #[serde(default)]
     pub keywords: Vec<String>,
     #[serde(default)]
     pub typed_queries: Vec<TypedQueryPlan>,
+    #[serde(default)]
     pub notes: Vec<String>,
 }
 
@@ -166,6 +169,25 @@ pub struct SearchRequest {
     pub filter: Option<MetadataFilter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<SearchBudget>,
+    #[serde(default)]
+    pub runtime_hints: Vec<RuntimeHint>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeHintKind {
+    Observation,
+    CurrentTask,
+    SuggestedResponse,
+    External,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeHint {
+    pub kind: RuntimeHintKind,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -178,5 +200,72 @@ pub struct EmbeddingBackendStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackendStatus {
     pub local_records: usize,
+    pub retrieval_backend: String,
+    pub retrieval_backend_policy: String,
     pub embedding: EmbeddingBackendStatus,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{QueryPlan, SearchRequest, TypedQueryPlan};
+
+    #[test]
+    fn query_plan_serialization_snapshot_is_stable() {
+        let plan = QueryPlan {
+            scopes: vec!["resources".to_string()],
+            keywords: vec!["oauth".to_string()],
+            typed_queries: vec![
+                TypedQueryPlan {
+                    kind: "primary".to_string(),
+                    query: "oauth".to_string(),
+                    scopes: vec!["resources".to_string()],
+                    priority: 1,
+                },
+                TypedQueryPlan {
+                    kind: "session_recent".to_string(),
+                    query: "oauth hint".to_string(),
+                    scopes: vec!["session".to_string()],
+                    priority: 2,
+                },
+            ],
+            notes: vec!["backend:memory".to_string(), "budget_nodes:10".to_string()],
+        };
+
+        let encoded = serde_json::to_value(&plan).expect("serialize query plan");
+        assert_eq!(
+            encoded,
+            serde_json::json!({
+                "scopes": ["resources"],
+                "keywords": ["oauth"],
+                "typed_queries": [
+                    {
+                        "kind": "primary",
+                        "query": "oauth",
+                        "scopes": ["resources"],
+                        "priority": 1
+                    },
+                    {
+                        "kind": "session_recent",
+                        "query": "oauth hint",
+                        "scopes": ["session"],
+                        "priority": 2
+                    }
+                ],
+                "notes": ["backend:memory", "budget_nodes:10"]
+            })
+        );
+    }
+
+    #[test]
+    fn runtime_hint_serde_backward_compat() {
+        let payload = serde_json::json!({
+            "query": "oauth",
+            "target_uri": "axiom://resources",
+            "session": "s-1",
+            "limit": 5
+        });
+        let decoded: SearchRequest =
+            serde_json::from_value(payload).expect("deserialize search request");
+        assert!(decoded.runtime_hints.is_empty());
+    }
 }

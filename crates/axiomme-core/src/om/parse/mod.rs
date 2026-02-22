@@ -286,23 +286,44 @@ pub fn aggregate_multi_thread_observer_sections(
     let primary = primary_thread_id.and_then(|id| {
         sections
             .iter()
+            .rev()
             .find(|section| section.thread_id.trim() == id)
     });
 
     let current_task = primary
-        .and_then(|section| section.current_task.as_ref())
+        .and_then(|section| {
+            section
+                .current_task
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
         .or_else(|| {
-            sections
-                .iter()
-                .find_map(|section| section.current_task.as_ref())
+            sections.iter().rev().find_map(|section| {
+                section
+                    .current_task
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            })
         })
         .map(ToString::to_string);
     let suggested_response = primary
-        .and_then(|section| section.suggested_response.as_ref())
+        .and_then(|section| {
+            section
+                .suggested_response
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })
         .or_else(|| {
-            sections
-                .iter()
-                .find_map(|section| section.suggested_response.as_ref())
+            sections.iter().rev().find_map(|section| {
+                section
+                    .suggested_response
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+            })
         })
         .map(ToString::to_string);
 

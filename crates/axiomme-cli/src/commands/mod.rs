@@ -1,4 +1,4 @@
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::{fs, io};
 
@@ -7,23 +7,26 @@ use axiomme_core::models::{
     AddResourceIngestOptions, MetadataFilter, ReconcileOptions, SearchBudget, SearchRequest,
 };
 use axiomme_core::{AxiomMe, Scope};
-use axiomme_web::{render_markdown_preview, serve_web};
 
-use crate::cli::{Commands, DocumentMode, QueueCommand};
+use crate::cli::{BenchmarkCommand, Commands, DocumentMode, QueueCommand, ReleaseCommand};
 
 mod handlers;
 mod queue;
+mod web;
 
 use self::handlers::{
     handle_benchmark, handle_eval, handle_release, handle_security, handle_session, handle_trace,
 };
 use self::queue::{run_queue_daemon, run_queue_worker};
+use self::web::{WebServeOptions, render_preview_html, serve};
 
 #[expect(
     clippy::too_many_lines,
     reason = "explicit top-level CLI dispatch keeps command wiring easy to audit"
 )]
 pub fn run(app: &AxiomMe, root: &Path, command: Commands) -> Result<()> {
+    validate_command_preflight(&command)?;
+
     if command_needs_runtime_prepare(app, &command) {
         app.prepare_runtime()?;
     } else {
@@ -107,7 +110,7 @@ pub fn run(app: &AxiomMe, root: &Path, command: Commands) -> Result<()> {
                 stdin,
             } => {
                 let content = read_preview_content(app, uri, content, from, stdin)?;
-                println!("{}", render_markdown_preview(&content));
+                println!("{}", render_preview_html(&content));
             }
             crate::cli::DocumentCommand::Save {
                 uri,
@@ -152,6 +155,7 @@ pub fn run(app: &AxiomMe, root: &Path, command: Commands) -> Result<()> {
                 min_match_tokens: args.min_match_tokens,
                 filter: None::<MetadataFilter>,
                 budget,
+                runtime_hints: Vec::new(),
             })?;
             print_json(&result)?;
         }
@@ -260,7 +264,13 @@ pub fn run(app: &AxiomMe, root: &Path, command: Commands) -> Result<()> {
             println!("{out}");
         }
         Commands::Web(args) => {
-            serve_web(app.clone(), &args.host, args.port)?;
+            serve(
+                app,
+                WebServeOptions {
+                    host: &args.host,
+                    port: args.port,
+                },
+            )?;
         }
     }
 
@@ -273,6 +283,7 @@ const fn command_needs_runtime(command: &Commands) -> bool {
         | Commands::Overview(_)
         | Commands::Find(_)
         | Commands::Search(_)
+        | Commands::Backend
         | Commands::Release(_)
         | Commands::Web(_) => true,
         Commands::Trace(args) => matches!(args.command, crate::cli::TraceCommand::Replay { .. }),
@@ -293,8 +304,94 @@ fn command_needs_runtime_prepare(app: &AxiomMe, command: &Commands) -> bool {
     command_needs_runtime(command)
 }
 
+fn validate_command_preflight(command: &Commands) -> Result<()> {
+    match command {
+        Commands::Add(args) => {
+            validate_add_ingest_flags(args.markdown_only, args.include_hidden, &args.exclude)
+        }
+        Commands::Benchmark(args) => validate_benchmark_command(&args.command),
+        Commands::Release(args) => validate_release_command(&args.command),
+        Commands::Reconcile(args) => {
+            let _ = parse_scope_args(&args.scopes)?;
+            Ok(())
+        }
+        Commands::Document(args) => validate_document_command(&args.command),
+        _ => Ok(()),
+    }
+}
+
+fn validate_document_command(command: &crate::cli::DocumentCommand) -> Result<()> {
+    match command {
+        crate::cli::DocumentCommand::Load { .. } => Ok(()),
+        crate::cli::DocumentCommand::Preview {
+            uri,
+            content,
+            from,
+            stdin,
+        } => validate_document_preview_source_selection(
+            uri.as_deref(),
+            content.as_deref(),
+            from.as_deref(),
+            *stdin,
+        ),
+        crate::cli::DocumentCommand::Save {
+            content,
+            from,
+            stdin,
+            ..
+        } => validate_document_save_source_selection(content.as_deref(), from.as_deref(), *stdin),
+    }
+}
+
+fn validate_benchmark_command(command: &BenchmarkCommand) -> Result<()> {
+    match command {
+        BenchmarkCommand::Gate {
+            window_size,
+            required_passes,
+            ..
+        } => validate_gate_window_requirements(
+            *window_size,
+            *required_passes,
+            "--window-size",
+            "--required-passes",
+        ),
+        _ => Ok(()),
+    }
+}
+
+fn validate_release_command(command: &ReleaseCommand) -> Result<()> {
+    match command {
+        ReleaseCommand::Pack {
+            benchmark_window_size,
+            benchmark_required_passes,
+            ..
+        } => validate_gate_window_requirements(
+            *benchmark_window_size,
+            *benchmark_required_passes,
+            "--benchmark-window-size",
+            "--benchmark-required-passes",
+        ),
+    }
+}
+
+fn validate_gate_window_requirements(
+    window_size: usize,
+    required_passes: usize,
+    window_flag: &str,
+    required_flag: &str,
+) -> Result<()> {
+    if required_passes > window_size {
+        anyhow::bail!(
+            "{required_flag} ({required_passes}) cannot exceed {window_flag} ({window_size})"
+        );
+    }
+    Ok(())
+}
+
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
-    println!("{}", serde_json::to_string_pretty(value)?);
+    let mut stdout = io::stdout().lock();
+    serde_json::to_writer_pretty(&mut stdout, value)?;
+    writeln!(stdout)?;
     Ok(())
 }
 
@@ -318,12 +415,7 @@ fn build_add_ingest_options(
     include_hidden: bool,
     exclude: &[String],
 ) -> Result<AddResourceIngestOptions> {
-    if include_hidden && !markdown_only {
-        anyhow::bail!("--include-hidden requires --markdown-only");
-    }
-    if !exclude.is_empty() && !markdown_only {
-        anyhow::bail!("--exclude requires --markdown-only");
-    }
+    validate_add_ingest_flags(markdown_only, include_hidden, exclude)?;
 
     if !markdown_only {
         return Ok(AddResourceIngestOptions::default());
@@ -341,6 +433,20 @@ fn build_add_ingest_options(
     options.exclude_globs.sort();
     options.exclude_globs.dedup();
     Ok(options)
+}
+
+fn validate_add_ingest_flags(
+    markdown_only: bool,
+    include_hidden: bool,
+    exclude: &[String],
+) -> Result<()> {
+    if include_hidden && !markdown_only {
+        anyhow::bail!("--include-hidden requires --markdown-only");
+    }
+    if !exclude.is_empty() && !markdown_only {
+        anyhow::bail!("--exclude requires --markdown-only");
+    }
+    Ok(())
 }
 
 const fn parse_search_budget(
@@ -364,27 +470,7 @@ fn read_document_content(
     from: Option<std::path::PathBuf>,
     stdin: bool,
 ) -> Result<String> {
-    let mut selected = 0u8;
-    if inline.is_some() {
-        selected += 1;
-    }
-    if from.is_some() {
-        selected += 1;
-    }
-    if stdin {
-        selected += 1;
-    }
-
-    if selected == 0 {
-        anyhow::bail!(
-            "document save content source is required: use one of --content, --from <path>, --stdin"
-        );
-    }
-    if selected > 1 {
-        anyhow::bail!(
-            "document save accepts exactly one content source: choose one of --content, --from, --stdin"
-        );
-    }
+    validate_document_save_source_selection(inline.as_deref(), from.as_deref(), stdin)?;
 
     if let Some(content) = inline {
         return Ok(content);
@@ -405,30 +491,12 @@ fn read_preview_content(
     from: Option<std::path::PathBuf>,
     stdin: bool,
 ) -> Result<String> {
-    let mut selected = 0u8;
-    if uri.is_some() {
-        selected += 1;
-    }
-    if inline.is_some() {
-        selected += 1;
-    }
-    if from.is_some() {
-        selected += 1;
-    }
-    if stdin {
-        selected += 1;
-    }
-
-    if selected == 0 {
-        anyhow::bail!(
-            "document preview source is required: use one of --uri, --content, --from <path>, --stdin"
-        );
-    }
-    if selected > 1 {
-        anyhow::bail!(
-            "document preview accepts exactly one source: choose one of --uri, --content, --from, --stdin"
-        );
-    }
+    validate_document_preview_source_selection(
+        uri.as_deref(),
+        inline.as_deref(),
+        from.as_deref(),
+        stdin,
+    )?;
 
     if let Some(uri) = uri {
         let document = app.load_markdown(&uri)?;
@@ -444,6 +512,55 @@ fn read_preview_content(
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
     Ok(buffer)
+}
+
+fn validate_document_save_source_selection(
+    inline: Option<&str>,
+    from: Option<&std::path::Path>,
+    stdin: bool,
+) -> Result<()> {
+    let selected =
+        bool_to_count(inline.is_some()) + bool_to_count(from.is_some()) + bool_to_count(stdin);
+    ensure_single_source_selection(
+        selected,
+        "document save content source is required: use one of --content, --from <path>, --stdin",
+        "document save accepts exactly one content source: choose one of --content, --from, --stdin",
+    )
+}
+
+fn validate_document_preview_source_selection(
+    uri: Option<&str>,
+    inline: Option<&str>,
+    from: Option<&std::path::Path>,
+    stdin: bool,
+) -> Result<()> {
+    let selected = bool_to_count(uri.is_some())
+        + bool_to_count(inline.is_some())
+        + bool_to_count(from.is_some())
+        + bool_to_count(stdin);
+    ensure_single_source_selection(
+        selected,
+        "document preview source is required: use one of --uri, --content, --from <path>, --stdin",
+        "document preview accepts exactly one source: choose one of --uri, --content, --from, --stdin",
+    )
+}
+
+const fn bool_to_count(value: bool) -> u8 {
+    if value { 1 } else { 0 }
+}
+
+fn ensure_single_source_selection(
+    selected: u8,
+    missing_message: &str,
+    multiple_message: &str,
+) -> Result<()> {
+    if selected == 0 {
+        anyhow::bail!("{missing_message}");
+    }
+    if selected > 1 {
+        anyhow::bail!("{multiple_message}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -134,7 +134,7 @@ fn format_observer_messages_for_prompt_normalizes_role_and_formats_timestamp() {
         text: "hello".to_string(),
         created_at_rfc3339: Some("2026-02-14T08:30:00Z".to_string()),
     }]);
-    assert!(formatted.contains("**User (Feb 14, 2026, 8:30 AM):**"));
+    assert!(formatted.contains("**User (Feb 14, 2026, 8:30 AM) [id:m1]:**"));
     assert!(formatted.contains("hello"));
 }
 
@@ -146,5 +146,5 @@ fn format_observer_messages_for_prompt_uses_unknown_role_and_skips_invalid_times
         text: "hello".to_string(),
         created_at_rfc3339: Some("not-a-timestamp".to_string()),
     }]);
-    assert_eq!(formatted, "**Unknown:**\nhello");
+    assert_eq!(formatted, "**Unknown [id:m1]:**\nhello");
 }

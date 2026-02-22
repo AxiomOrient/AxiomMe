@@ -1,28 +1,27 @@
 use chrono::{DateTime, Utc};
-use serde_json::json;
+use std::fs;
+use std::path::Path;
 use tempfile::{TempDir, tempdir};
 
-use crate::config::RetrievalBackend;
 use crate::models::{
-    ContextHit, FindResult, IndexRecord, SearchBudget, SearchOptions, SearchRequest,
+    ContextHit, FindResult, IndexRecord, QueryPlan, RuntimeHint, RuntimeHintKind, SearchBudget,
+    SearchOptions, SearchRequest,
 };
 use crate::om::{OmOriginType, OmRecord, OmScope, build_scope_key};
 
 use super::reranker::{RerankerMode, resolve_reranker_mode};
 use super::{
     AxiomMe, OmHintPolicy, merge_observation_hint_with_suggested_response,
-    merge_recent_and_om_hints,
+    merge_recent_and_om_hints, merge_runtime_om_recent_hints, normalize_runtime_hints,
 };
 
 #[test]
-fn reranker_mode_parser_defaults_to_doc_aware() {
-    assert_eq!(resolve_reranker_mode(None), RerankerMode::DocAwareV1);
+fn reranker_mode_parser_defaults_to_off() {
+    assert_eq!(resolve_reranker_mode(None), RerankerMode::Off);
+    assert_eq!(resolve_reranker_mode(Some("unknown")), RerankerMode::Off);
+    assert_eq!(resolve_reranker_mode(Some("doc-aware")), RerankerMode::Off);
     assert_eq!(
-        resolve_reranker_mode(Some("unknown")),
-        RerankerMode::DocAwareV1
-    );
-    assert_eq!(
-        resolve_reranker_mode(Some("doc-aware")),
+        resolve_reranker_mode(Some("doc-aware-v1")),
         RerankerMode::DocAwareV1
     );
     assert_eq!(resolve_reranker_mode(Some("OFF")), RerankerMode::Off);
@@ -87,30 +86,17 @@ fn search_with_budget_propagates_budget_notes() {
                 max_nodes: Some(1),
                 max_depth: Some(3),
             }),
+            runtime_hints: Vec::new(),
         })
         .expect("search with budget");
 
-    let notes = result
-        .query_plan
-        .get("notes")
-        .and_then(|value| value.as_array())
-        .expect("notes");
-    assert!(
-        notes
-            .iter()
-            .filter_map(|x| x.as_str())
-            .any(|x| x == "budget_nodes:1")
-    );
-    assert!(
-        notes
-            .iter()
-            .filter_map(|x| x.as_str())
-            .any(|x| x == "budget_depth:3")
-    );
+    let notes = &result.query_plan.notes;
+    assert!(notes.iter().any(|x| x == "budget_nodes:1"));
+    assert!(notes.iter().any(|x| x == "budget_depth:3"));
 }
 
 #[test]
-fn sqlite_backend_reads_state_without_memory_index() {
+fn memory_backend_reads_in_memory_index() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app");
     app.initialize().expect("init");
@@ -131,26 +117,27 @@ fn sqlite_backend_reads_state_without_memory_index() {
     app.state
         .upsert_search_document(&record)
         .expect("upsert search document");
+    {
+        let mut index = app.index.write().expect("index write");
+        index.upsert(record.clone());
+    }
 
     let result = app
-        .run_retrieval_with_backend_mode(
-            &SearchOptions {
-                query: "sqlite".to_string(),
-                target_uri: Some(
-                    crate::uri::AxiomUri::parse("axiom://resources").expect("target parse"),
-                ),
-                session: None,
-                session_hints: Vec::new(),
-                budget: None,
-                limit: 5,
-                score_threshold: None,
-                min_match_tokens: None,
-                filter: None,
-                request_type: "search".to_string(),
-            },
-            RetrievalBackend::Sqlite,
-        )
-        .expect("sqlite retrieval");
+        .run_retrieval_memory_only(&SearchOptions {
+            query: "sqlite".to_string(),
+            target_uri: Some(
+                crate::uri::AxiomUri::parse("axiom://resources").expect("target parse"),
+            ),
+            session: None,
+            session_hints: Vec::new(),
+            budget: None,
+            limit: 5,
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: None,
+            request_type: "search".to_string(),
+        })
+        .expect("memory retrieval");
 
     assert!(
         result
@@ -158,6 +145,60 @@ fn sqlite_backend_reads_state_without_memory_index() {
             .iter()
             .any(|x| x.uri == "axiom://resources/sqlite-only.md")
     );
+}
+
+#[test]
+fn memory_backend_returns_hits_for_in_memory_records() {
+    let (_temp, app) = setup_test_app();
+    upsert_records(
+        &app,
+        &[
+            resources_root_record("root-fail-fast"),
+            resources_leaf_record(
+                "leaf-fail-fast",
+                "fail-fast.md",
+                "memory retrieval",
+                "memory retrieval returns in-memory hits",
+                &["memory"],
+            ),
+        ],
+    );
+
+    let result = app
+        .run_retrieval_memory_only(&search_options("memory"))
+        .expect("memory retrieval");
+    assert!(!result.query_results.is_empty());
+}
+
+#[test]
+fn memory_backend_policy_note_is_explicit() {
+    let (_temp, app) = setup_test_app();
+    upsert_records(
+        &app,
+        &[
+            resources_root_record("root-fallback"),
+            resources_leaf_record(
+                "leaf-fallback",
+                "fallback.md",
+                "fallback memory",
+                "memory retrieval policy note",
+                &["fallback"],
+            ),
+        ],
+    );
+
+    let result = app
+        .run_retrieval_memory_only(&search_options("fallback"))
+        .expect("memory retrieval");
+    assert!(
+        result
+            .query_results
+            .iter()
+            .any(|x| x.uri == "axiom://resources/fallback.md")
+    );
+    let notes = &result.query_plan.notes;
+    assert!(notes.iter().any(|x| x == "backend_policy:memory_only"));
+    assert!(notes.iter().any(|x| x == "backend:memory"));
 }
 
 #[test]
@@ -214,13 +255,8 @@ fn doc_aware_reranker_prioritizes_config_documents() {
         result.query_results[0].uri,
         "axiom://resources/app/settings.toml"
     );
-    let notes = result.query_plan["notes"].as_array().expect("notes");
-    assert!(
-        notes
-            .iter()
-            .filter_map(|x| x.as_str())
-            .any(|x| x == "reranker:doc-aware-v1")
-    );
+    let notes = &result.query_plan.notes;
+    assert!(notes.iter().any(|x| x == "reranker:doc-aware-v1"));
 }
 
 #[test]
@@ -270,17 +306,15 @@ fn search_injects_om_hint_and_records_om_metrics_in_request_log() {
             None,
         )
         .expect("search");
-    let notes = result.query_plan["notes"].as_array().expect("notes");
+    let notes = &result.query_plan.notes;
     assert!(
         notes
             .iter()
-            .filter_map(|value| value.as_str())
             .any(|value| value.starts_with("om_hint_applied:1"))
     );
     assert!(
         notes
             .iter()
-            .filter_map(|value| value.as_str())
             .any(|value| value.starts_with("om_hint_policy:"))
     );
 
@@ -415,6 +449,18 @@ fn search_with_session_context_always_records_om_metrics_without_om_record() {
     assert!(details.get("session_hint_count_final").is_some());
     assert!(details.get("om_filtered_message_count").is_some());
     assert!(details.get("om_hint_policy").is_some());
+    assert_eq!(
+        details
+            .get("retrieval_backend")
+            .and_then(serde_json::Value::as_str),
+        Some("memory")
+    );
+    assert_eq!(
+        details
+            .get("retrieval_backend_policy")
+            .and_then(serde_json::Value::as_str),
+        Some("memory_only")
+    );
 }
 
 #[test]
@@ -625,6 +671,162 @@ fn merge_recent_and_om_hints_without_om_uses_total_limit() {
 }
 
 #[test]
+fn normalize_runtime_hints_trims_dedups_and_caps_chars() {
+    let hints = vec![
+        RuntimeHint {
+            kind: RuntimeHintKind::Observation,
+            text: "  alpha   beta  ".to_string(),
+            source: Some("episodic".to_string()),
+        },
+        RuntimeHint {
+            kind: RuntimeHintKind::CurrentTask,
+            text: "alpha beta".to_string(),
+            source: Some("episodic".to_string()),
+        },
+        RuntimeHint {
+            kind: RuntimeHintKind::SuggestedResponse,
+            text: "0123456789".to_string(),
+            source: None,
+        },
+    ];
+
+    let normalized = normalize_runtime_hints(&hints, 2, 5);
+    assert_eq!(normalized, vec!["alpha".to_string(), "01234".to_string()]);
+}
+
+#[test]
+fn merge_runtime_om_recent_hints_preserves_om_slot_and_recent_reservation() {
+    let runtime = vec![
+        "runtime-1".to_string(),
+        "runtime-2".to_string(),
+        "runtime-3".to_string(),
+    ];
+    let recent = vec![
+        "recent-1".to_string(),
+        "recent-2".to_string(),
+        "recent-3".to_string(),
+    ];
+    let policy = OmHintPolicy {
+        context_max_archives: 2,
+        context_max_messages: 8,
+        recent_hint_limit: 3,
+        total_hint_limit: 4,
+        keep_recent_with_om: 1,
+    };
+
+    let merged = merge_runtime_om_recent_hints(&runtime, Some("om: compact"), &recent, policy, 256);
+    assert_eq!(
+        merged,
+        vec![
+            "recent-1".to_string(),
+            "om: compact".to_string(),
+            "runtime-1".to_string(),
+            "runtime-2".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn search_with_runtime_hints_has_no_message_or_outbox_side_effect() {
+    let (temp, app) = setup_test_app();
+    upsert_records(
+        &app,
+        &[
+            resources_root_record("root-runtime-hint"),
+            resources_leaf_record(
+                "leaf-runtime-hint",
+                "runtime-hint.md",
+                "runtime hint",
+                "context from runtime hint",
+                &["runtime"],
+            ),
+        ],
+    );
+    let before_outbox = app
+        .state
+        .fetch_outbox("new", 100)
+        .expect("outbox before")
+        .len();
+
+    let result = app
+        .search_with_request(SearchRequest {
+            query: "runtime".to_string(),
+            target_uri: Some("axiom://resources".to_string()),
+            session: None,
+            limit: Some(5),
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: None,
+            budget: None,
+            runtime_hints: vec![RuntimeHint {
+                kind: RuntimeHintKind::Observation,
+                text: "ephemeral runtime hint".to_string(),
+                source: Some("episodic".to_string()),
+            }],
+        })
+        .expect("search");
+    assert!(!result.query_results.is_empty());
+
+    let after_outbox = app
+        .state
+        .fetch_outbox("new", 100)
+        .expect("outbox after")
+        .len();
+    assert_eq!(before_outbox, after_outbox);
+
+    assert_eq!(
+        count_session_message_files(temp.path()),
+        0,
+        "runtime hints should not create session message files"
+    );
+}
+
+#[test]
+fn search_with_runtime_hints_without_session_uses_runtime_query_not_memory_focus() {
+    let (_temp, app) = setup_test_app();
+    upsert_records(
+        &app,
+        &[
+            resources_root_record("root-runtime-plan"),
+            resources_leaf_record(
+                "leaf-runtime-plan",
+                "runtime-plan.md",
+                "runtime plan",
+                "runtime hints must not imply session memory focus",
+                &["runtime"],
+            ),
+        ],
+    );
+
+    let result = app
+        .search_with_request(SearchRequest {
+            query: "runtime".to_string(),
+            target_uri: None,
+            session: None,
+            limit: Some(5),
+            score_threshold: None,
+            min_match_tokens: None,
+            filter: None,
+            budget: None,
+            runtime_hints: vec![RuntimeHint {
+                kind: RuntimeHintKind::Observation,
+                text: "ephemeral preference hint".to_string(),
+                source: Some("episodic".to_string()),
+            }],
+        })
+        .expect("search");
+
+    let kinds = result
+        .query_plan
+        .typed_queries
+        .iter()
+        .map(|query| query.kind.as_str())
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&"runtime_hints"));
+    assert!(!kinds.contains(&"memory_focus"));
+}
+
+#[test]
 fn merge_observation_hint_with_suggested_response_appends_next_hint() {
     let merged = merge_observation_hint_with_suggested_response(
         Some("om: latest observation".to_string()),
@@ -648,6 +850,42 @@ fn merge_observation_hint_with_suggested_response_uses_next_only_when_base_missi
         merged.as_deref(),
         Some("om: next: continue with migration step")
     );
+}
+
+fn count_session_message_files(root: &Path) -> usize {
+    let session_root = root.join("session");
+    if !session_root.exists() {
+        return 0;
+    }
+    let mut count = 0usize;
+    let Ok(entries) = fs::read_dir(&session_root) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        if !entry.path().is_dir() {
+            continue;
+        }
+        let messages_path = entry.path().join("messages.jsonl");
+        if messages_path.exists() {
+            count = count.saturating_add(1);
+        }
+    }
+    count
+}
+
+fn search_options(query: &str) -> SearchOptions {
+    SearchOptions {
+        query: query.to_string(),
+        target_uri: Some(crate::uri::AxiomUri::root(crate::uri::Scope::Resources)),
+        session: None,
+        session_hints: Vec::new(),
+        budget: None,
+        limit: 5,
+        score_threshold: None,
+        min_match_tokens: None,
+        filter: None,
+        request_type: "search".to_string(),
+    }
 }
 
 fn setup_test_app() -> (TempDir, AxiomMe) {
@@ -759,7 +997,7 @@ fn sample_find_result(hits: Vec<ContextHit>) -> FindResult {
         memories: Vec::new(),
         resources: hits.clone(),
         skills: Vec::new(),
-        query_plan: json!({"notes": []}),
+        query_plan: QueryPlan::default(),
         query_results: hits,
         trace: None,
         trace_uri: None,

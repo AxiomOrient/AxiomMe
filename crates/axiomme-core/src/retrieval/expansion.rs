@@ -6,8 +6,9 @@ use uuid::Uuid;
 
 use crate::index::{InMemoryIndex, ScoredRecord};
 use crate::models::{
-    ContextHit, RetrievalStep, RetrievalTrace, SearchFilter, SearchOptions, TracePoint, TraceStats,
+    ContextHit, RetrievalStep, RetrievalTrace, SearchOptions, TracePoint, TraceStats,
 };
+use crate::uri::AxiomUri;
 
 use super::budget::ResolvedBudget;
 use super::config::DrrConfig;
@@ -25,6 +26,7 @@ struct QueryInitialization {
     frontier: BinaryHeap<Node>,
     score_map: HashMap<String, f32>,
     global_rank: Vec<ScoredRecord>,
+    filter_projection: Option<HashSet<String>>,
 }
 
 struct FinalizeSingleQueryInput<'a> {
@@ -56,7 +58,8 @@ struct ExpansionLoopInput<'a> {
     index: &'a InMemoryIndex,
     planned: &'a PlannedQuery,
     budget: ResolvedBudget,
-    filter: Option<&'a SearchFilter>,
+    target: Option<&'a AxiomUri>,
+    filter_projection: Option<&'a HashSet<String>>,
     limit: usize,
     score_map: &'a HashMap<String, f32>,
     frontier: BinaryHeap<Node>,
@@ -75,19 +78,20 @@ pub(super) fn run_single_query(
     let query = planned.query.clone();
     let limit = options.limit.max(1);
     let target = options.target_uri.clone();
-    let filter = options.filter.as_ref();
     let QueryInitialization {
         trace_start,
         frontier,
         score_map,
         global_rank,
+        filter_projection,
     } = initialize_query_frontier(config, index, options, planned, budget, &query, limit);
     let loop_state = execute_expansion_loop(ExpansionLoopInput {
         config,
         index,
         planned,
         budget,
-        filter,
+        target: target.as_ref(),
+        filter_projection: filter_projection.as_ref(),
         limit,
         score_map: &score_map,
         frontier,
@@ -117,7 +121,8 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
         index,
         planned,
         budget,
-        filter,
+        target,
+        filter_projection,
         limit,
         score_map,
         mut frontier,
@@ -159,9 +164,9 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
         let mut children_selected = 0usize;
 
         for child in children {
-            if !uri_in_scopes(&child.uri, &planned.scopes)
+            if !uri_matches_query_bounds(&child.uri, planned, target)
                 || child.depth > budget.depth
-                || !index.record_matches_filter(&child, filter)
+                || !uri_matches_filter_projection(&child.uri, filter_projection)
             {
                 continue;
             }
@@ -217,6 +222,30 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
     }
 }
 
+fn uri_matches_query_bounds(uri: &str, planned: &PlannedQuery, target: Option<&AxiomUri>) -> bool {
+    if !uri_in_scopes(uri, &planned.scopes) {
+        return false;
+    }
+    uri_in_target(uri, target)
+}
+
+fn uri_matches_filter_projection(uri: &str, filter_projection: Option<&HashSet<String>>) -> bool {
+    match filter_projection {
+        Some(allowed_uris) => allowed_uris.contains(uri),
+        None => true,
+    }
+}
+
+fn uri_in_target(uri: &str, target: Option<&AxiomUri>) -> bool {
+    let Some(target) = target else {
+        return true;
+    };
+    let Ok(parsed) = AxiomUri::parse(uri) else {
+        return false;
+    };
+    parsed.starts_with(target)
+}
+
 fn update_convergence_state(
     selected: &HashMap<String, ContextHit>,
     limit: usize,
@@ -252,17 +281,28 @@ fn initialize_query_frontier(
 ) -> QueryInitialization {
     let target = options.target_uri.clone();
     let filter = options.filter.as_ref();
-    let root_records = index
-        .scope_roots(&planned.scopes)
-        .into_iter()
-        .filter(|record| {
-            record.depth <= budget.depth && index.record_matches_filter(record, filter)
-        })
-        .collect::<Vec<_>>();
+    let filter_projection = index.filter_projection_uris(filter);
+    let root_records = if let Some(target_uri) = target.as_ref() {
+        index
+            .get(&target_uri.to_string())
+            .into_iter()
+            .filter(|record| record.depth <= budget.depth)
+            .filter(|record| uri_matches_filter_projection(&record.uri, filter_projection.as_ref()))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        index
+            .scope_roots(&planned.scopes)
+            .into_iter()
+            .filter(|record| record.depth <= budget.depth)
+            .filter(|record| uri_matches_filter_projection(&record.uri, filter_projection.as_ref()))
+            .collect::<Vec<_>>()
+    };
     let mut global_dirs =
         index.search_directories(query, target.as_ref(), config.global_topk, filter);
     global_dirs.retain(|x| {
-        uri_in_scopes(&x.record.uri, &planned.scopes) && x.record.depth <= budget.depth
+        uri_matches_query_bounds(&x.record.uri, planned, target.as_ref())
+            && x.record.depth <= budget.depth
     });
 
     let mut global_rank = index.search(
@@ -273,7 +313,8 @@ fn initialize_query_frontier(
         filter,
     );
     global_rank.retain(|x| {
-        uri_in_scopes(&x.record.uri, &planned.scopes) && x.record.depth <= budget.depth
+        uri_matches_query_bounds(&x.record.uri, planned, target.as_ref())
+            && x.record.depth <= budget.depth
     });
 
     let score_map = global_rank
@@ -315,6 +356,7 @@ fn initialize_query_frontier(
         frontier,
         score_map,
         global_rank,
+        filter_projection,
     }
 }
 

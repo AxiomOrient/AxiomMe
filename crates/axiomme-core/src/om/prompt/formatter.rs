@@ -26,6 +26,7 @@ pub fn format_observer_messages_for_prompt(messages: &[OmPendingMessage]) -> Str
         .iter()
         .map(|message| {
             let role = normalize_role(&message.role);
+            let id = message.id.trim();
             let text = message.text.trim();
             let timestamp = message
                 .created_at_rfc3339
@@ -34,7 +35,12 @@ pub fn format_observer_messages_for_prompt(messages: &[OmPendingMessage]) -> Str
             let timestamp_suffix = timestamp
                 .map(|value| format!(" ({value})"))
                 .unwrap_or_default();
-            format!("**{role}{timestamp_suffix}:**\n{text}")
+            let id_suffix = if id.is_empty() {
+                String::new()
+            } else {
+                format!(" [id:{id}]")
+            };
+            format!("**{role}{timestamp_suffix}{id_suffix}:**\n{text}")
         })
         .collect::<Vec<_>>()
         .join("\n\n---\n\n")

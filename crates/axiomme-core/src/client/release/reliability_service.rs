@@ -156,7 +156,9 @@ impl AxiomMe {
         let source_path_str = source_path.to_string_lossy().to_string();
         fs::write(&source_path, format!("{query}\n"))?;
 
-        let queued_root_uri = AxiomUri::root(Scope::Temp)
+        // Reliability evidence requires replay/restart search visibility, so probe data must
+        // live in an indexed scope. It is still cleaned up immediately after report generation.
+        let queued_root_uri = AxiomUri::root(Scope::Resources)
             .join("reliability")?
             .join("evidence")?
             .join(report_id)?;

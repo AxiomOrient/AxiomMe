@@ -1,5 +1,7 @@
 use clap::{Args, Subcommand};
 
+use super::parsers::{parse_min_one_usize, parse_non_negative_f32, parse_unit_interval_f32};
+
 #[derive(Debug, Args)]
 pub struct BenchmarkArgs {
     #[command(subcommand)]
@@ -52,19 +54,19 @@ pub enum BenchmarkCommand {
     Gate {
         #[arg(long, default_value_t = 600)]
         threshold_p95_ms: u128,
-        #[arg(long, default_value_t = 0.75)]
+        #[arg(long, default_value_t = 0.75, value_parser = parse_unit_interval_f32)]
         min_top1_accuracy: f32,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_unit_interval_f32)]
         min_stress_top1_accuracy: Option<f32>,
         #[arg(long, default_value = "custom")]
         gate_profile: String,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_non_negative_f32)]
         max_p95_regression_pct: Option<f32>,
-        #[arg(long)]
+        #[arg(long, value_parser = parse_non_negative_f32)]
         max_top1_regression_pct: Option<f32>,
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = parse_min_one_usize)]
         window_size: usize,
-        #[arg(long, default_value_t = 1)]
+        #[arg(long, default_value_t = 1, value_parser = parse_min_one_usize)]
         required_passes: usize,
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         record: bool,

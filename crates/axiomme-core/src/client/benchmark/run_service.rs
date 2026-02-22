@@ -8,7 +8,10 @@ use crate::models::{
     BenchmarkAmortizedReport, BenchmarkAmortizedRunSummary, BenchmarkCaseResult, BenchmarkReport,
     BenchmarkRunOptions, EvalQueryCase,
 };
-use crate::quality::{build_benchmark_acceptance_result, build_benchmark_query_set_metadata};
+use crate::quality::{
+    build_benchmark_acceptance_result, build_benchmark_query_set_metadata, duration_to_latency_ms,
+    duration_to_latency_us,
+};
 use crate::uri::uri_equivalent;
 
 use super::{
@@ -20,7 +23,9 @@ use super::{
 struct BenchmarkCaseMeasurement {
     result: BenchmarkCaseResult,
     find_latency_ms: u128,
+    find_latency_us: u128,
     search_latency_ms: u128,
+    search_latency_us: u128,
     has_expectation: bool,
     recall_hit: bool,
     ndcg_gain: f32,
@@ -30,7 +35,9 @@ struct BenchmarkCaseMeasurement {
 struct BenchmarkEvaluation {
     results: Vec<BenchmarkCaseResult>,
     find_latencies: Vec<u128>,
+    find_latencies_us: Vec<u128>,
     search_latencies: Vec<u128>,
+    search_latencies_us: Vec<u128>,
     passed: usize,
     failed: usize,
     graded_cases: usize,
@@ -57,6 +64,7 @@ impl AxiomMe {
         let wall_started = Instant::now();
         let mut runs = Vec::<BenchmarkAmortizedRunSummary>::with_capacity(iterations);
         let mut p95_samples = Vec::<u128>::with_capacity(iterations);
+        let mut p95_samples_us = Vec::<u128>::with_capacity(iterations);
         let mut executed_cases_total = 0usize;
         let mut top1_total = 0.0f32;
         let mut ndcg_total = 0.0f32;
@@ -69,6 +77,9 @@ impl AxiomMe {
             ndcg_total += report.ndcg_at_10;
             recall_total += report.recall_at_10;
             p95_samples.push(report.p95_latency_ms);
+            if let Some(p95_latency_us) = report.p95_latency_us {
+                p95_samples_us.push(p95_latency_us);
+            }
             runs.push(BenchmarkAmortizedRunSummary {
                 iteration: iteration + 1,
                 run_id: report.run_id,
@@ -78,6 +89,7 @@ impl AxiomMe {
                 ndcg_at_10: report.ndcg_at_10,
                 recall_at_10: report.recall_at_10,
                 p95_latency_ms: report.p95_latency_ms,
+                p95_latency_us: report.p95_latency_us,
                 report_uri: report.report_uri,
             });
         }
@@ -85,7 +97,13 @@ impl AxiomMe {
         p95_samples.sort_unstable();
         let median_idx = p95_samples.len() / 2;
         let p95_latency_ms_median = p95_samples.get(median_idx).copied().unwrap_or(0);
-        let wall_total_ms = wall_started.elapsed().as_millis();
+        p95_samples_us.sort_unstable();
+        let p95_latency_us_median = if p95_samples_us.is_empty() {
+            None
+        } else {
+            Some(p95_samples_us[p95_samples_us.len() / 2])
+        };
+        let wall_total_ms = duration_to_latency_ms(wall_started.elapsed());
 
         Ok(BenchmarkAmortizedReport {
             mode: "in_process_amortized".to_string(),
@@ -104,6 +122,7 @@ impl AxiomMe {
             ndcg_at_10_avg: safe_ratio_f32(ndcg_total, iterations),
             recall_at_10_avg: safe_ratio_f32(recall_total, iterations),
             p95_latency_ms_median,
+            p95_latency_us_median,
             runs,
         })
     }
@@ -172,10 +191,14 @@ impl AxiomMe {
         let case_set_uri = self.write_benchmark_case_set(&run.run_id, &query_cases)?;
         let evaluation = self.evaluate_benchmark_cases(&query_cases, run.search_limit)?;
         let find_summary = summarize_latencies(&evaluation.find_latencies);
+        let find_summary_us = summarize_latencies(&evaluation.find_latencies_us);
         let search_summary = summarize_latencies(&evaluation.search_latencies);
+        let search_summary_us = summarize_latencies(&evaluation.search_latencies_us);
 
-        let commit_latencies = self.measure_benchmark_commit_latencies(5)?;
+        let (commit_latencies, commit_latencies_us) =
+            self.measure_benchmark_commit_latencies_with_units(5)?;
         let commit_summary = summarize_latencies(&commit_latencies);
+        let commit_summary_us = summarize_latencies(&commit_latencies_us);
         let environment = self.collect_benchmark_environment_metadata();
 
         let executed_cases = evaluation.results.len();
@@ -210,14 +233,23 @@ impl AxiomMe {
             p50_latency_ms: find_summary.p50,
             p95_latency_ms: find_summary.p95,
             p99_latency_ms: find_summary.p99,
+            p50_latency_us: Some(find_summary_us.p50),
+            p95_latency_us: Some(find_summary_us.p95),
+            p99_latency_us: Some(find_summary_us.p99),
             avg_latency_ms: find_summary.avg,
             search_p50_latency_ms: search_summary.p50,
             search_p95_latency_ms: search_summary.p95,
             search_p99_latency_ms: search_summary.p99,
+            search_p50_latency_us: Some(search_summary_us.p50),
+            search_p95_latency_us: Some(search_summary_us.p95),
+            search_p99_latency_us: Some(search_summary_us.p99),
             search_avg_latency_ms: search_summary.avg,
             commit_p50_latency_ms: commit_summary.p50,
             commit_p95_latency_ms: commit_summary.p95,
             commit_p99_latency_ms: commit_summary.p99,
+            commit_p50_latency_us: Some(commit_summary_us.p50),
+            commit_p95_latency_us: Some(commit_summary_us.p95),
+            commit_p99_latency_us: Some(commit_summary_us.p99),
             commit_avg_latency_ms: commit_summary.avg,
             error_rate,
             environment,
@@ -244,8 +276,14 @@ impl AxiomMe {
             let measurement = self.measure_benchmark_case(case, search_limit)?;
             evaluation.find_latencies.push(measurement.find_latency_ms);
             evaluation
+                .find_latencies_us
+                .push(measurement.find_latency_us);
+            evaluation
                 .search_latencies
                 .push(measurement.search_latency_ms);
+            evaluation
+                .search_latencies_us
+                .push(measurement.search_latency_us);
             if measurement.result.passed {
                 evaluation.passed += 1;
             } else {
@@ -275,7 +313,9 @@ impl AxiomMe {
             search_limit,
             "benchmark_find",
         )?;
-        let find_latency_ms = started_find.elapsed().as_millis();
+        let find_elapsed = started_find.elapsed();
+        let find_latency_ms = duration_to_latency_ms(find_elapsed);
+        let find_latency_us = duration_to_latency_us(find_elapsed);
 
         let started_search = Instant::now();
         let _ = self.eval_result_uris(
@@ -284,7 +324,9 @@ impl AxiomMe {
             search_limit,
             "benchmark_search",
         )?;
-        let search_latency_ms = started_search.elapsed().as_millis();
+        let search_elapsed = started_search.elapsed();
+        let search_latency_ms = duration_to_latency_ms(search_elapsed);
+        let search_latency_us = duration_to_latency_us(search_elapsed);
 
         let actual_top_uri = find_uris.first().cloned();
         let expected_rank = case
@@ -316,11 +358,14 @@ impl AxiomMe {
                 actual_top_uri,
                 expected_rank,
                 latency_ms: find_latency_ms,
+                latency_us: Some(find_latency_us),
                 passed: case_passed,
                 source: case.source.clone(),
             },
             find_latency_ms,
+            find_latency_us,
             search_latency_ms,
+            search_latency_us,
             has_expectation,
             recall_hit,
             ndcg_gain,

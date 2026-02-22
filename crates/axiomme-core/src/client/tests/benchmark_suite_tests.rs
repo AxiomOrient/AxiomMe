@@ -40,6 +40,9 @@ fn benchmark_suite_generates_report_and_artifacts() {
         .expect("benchmark");
     assert!(report.executed_cases >= 1);
     assert!(report.p95_latency_ms >= report.p50_latency_ms);
+    let find_p95_us = report.p95_latency_us.expect("find p95 us");
+    let find_p50_us = report.p50_latency_us.expect("find p50 us");
+    assert!(find_p95_us >= find_p50_us);
 
     let report_uri = AxiomUri::parse(&report.report_uri).expect("report uri");
     let markdown_uri = AxiomUri::parse(&report.markdown_report_uri).expect("markdown uri");
@@ -92,7 +95,7 @@ fn benchmark_report_includes_protocol_metadata_and_acceptance_mapping() {
     assert!(!report.environment.cpu_model.trim().is_empty());
     assert!(!report.environment.os_version.trim().is_empty());
     assert!(!report.environment.rustc_version.trim().is_empty());
-    assert_eq!(report.environment.retrieval_backend, "sqlite");
+    assert_eq!(report.environment.retrieval_backend, "memory");
     assert_eq!(report.environment.reranker_profile, "doc-aware-v1");
     assert!(report.corpus.snapshot_id.starts_with("resources-"));
     assert!(report.query_set.version.starts_with("qset-v1-"));
@@ -105,6 +108,17 @@ fn benchmark_report_includes_protocol_metadata_and_acceptance_mapping() {
     assert!(report.p99_latency_ms >= report.p95_latency_ms);
     assert!(report.search_p99_latency_ms >= report.search_p95_latency_ms);
     assert!(report.commit_p99_latency_ms >= report.commit_p95_latency_ms);
+    assert!(
+        report.p99_latency_us.expect("find p99 us") >= report.p95_latency_us.expect("find p95 us")
+    );
+    assert!(
+        report.search_p99_latency_us.expect("search p99 us")
+            >= report.search_p95_latency_us.expect("search p95 us")
+    );
+    assert!(
+        report.commit_p99_latency_us.expect("commit p99 us")
+            >= report.commit_p95_latency_us.expect("commit p95 us")
+    );
 }
 
 #[test]
@@ -494,6 +508,7 @@ fn benchmark_list_and_trend_return_recent_reports() {
     assert!(trend.latest.is_some());
     assert!(trend.previous.is_some());
     assert!(trend.delta_p95_latency_ms.is_some());
+    assert!(trend.delta_p95_latency_us.is_some());
     assert!(trend.delta_top1_accuracy.is_some());
 }
 
@@ -1239,4 +1254,5 @@ fn benchmark_amortized_mode_runs_multiple_iterations_in_process() {
     assert_eq!(report.runs.len(), 3);
     assert!(report.executed_cases_total >= 3);
     assert!(report.wall_total_ms >= report.p95_latency_ms_median);
+    assert!(report.p95_latency_us_median.is_some());
 }

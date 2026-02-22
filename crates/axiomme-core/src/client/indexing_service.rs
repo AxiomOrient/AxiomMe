@@ -9,7 +9,6 @@ use crate::config::{InternalTierPolicy, TierSynthesisMode, should_persist_scope_
 use crate::config::{resolve_internal_tier_policy, resolve_tier_synthesis_mode};
 use crate::context_ops::{RecordInput, build_record, classify_context, infer_tags};
 use crate::error::{AxiomError, Result};
-use crate::index::InMemoryIndex;
 use crate::models::IndexRecord;
 use crate::uri::{AxiomUri, Scope};
 
@@ -126,18 +125,26 @@ impl AxiomMe {
         hash: &str,
         mtime: i64,
         outbox_kind: &str,
-        index: &mut InMemoryIndex,
     ) -> Result<()> {
         let uri = record.uri.clone();
         let current_state = self.state.get_index_state(&uri)?;
         let state_changed = index_state_changed(current_state.as_ref(), hash, mtime);
-        let needs_upsert = state_changed || index.get(&uri).is_none();
+        let index_missing = self
+            .index
+            .read()
+            .map_err(|_| AxiomError::lock_poisoned("index"))?
+            .get(&uri)
+            .is_none();
+        let needs_upsert = state_changed || index_missing;
         if !needs_upsert {
             return Ok(());
         }
 
         self.state.upsert_search_document(&record)?;
-        index.upsert(record);
+        self.index
+            .write()
+            .map_err(|_| AxiomError::lock_poisoned("index"))?
+            .upsert(record);
 
         if state_changed {
             self.state
@@ -177,7 +184,6 @@ impl AxiomMe {
         path: &Path,
         internal_policy: InternalTierPolicy,
         tier_mode: TierSynthesisMode,
-        index: &mut InMemoryIndex,
     ) -> Result<()> {
         let (abstract_text, overview_text) =
             self.load_directory_tiers_for_index(uri, path, internal_policy, tier_mode)?;
@@ -193,15 +199,10 @@ impl AxiomMe {
         });
         let hash = blake3::hash(record.content.as_bytes()).to_hex().to_string();
         let mtime = path_mtime_nanos(path);
-        self.maybe_upsert_index_record(record, &hash, mtime, "dir", index)
+        self.maybe_upsert_index_record(record, &hash, mtime, "dir")
     }
 
-    fn index_file_entry(
-        &self,
-        uri: &AxiomUri,
-        path: &Path,
-        index: &mut InMemoryIndex,
-    ) -> Result<()> {
+    fn index_file_entry(&self, uri: &AxiomUri, path: &Path) -> Result<()> {
         let name = path
             .file_name()
             .and_then(|segment| segment.to_str())
@@ -263,10 +264,13 @@ impl AxiomMe {
         } else {
             blake3::hash(&content).to_hex().to_string()
         };
-        self.maybe_upsert_index_record(record, &hash, mtime, "file", index)
+        self.maybe_upsert_index_record(record, &hash, mtime, "file")
     }
 
     pub(super) fn reindex_uri_tree(&self, root_uri: &AxiomUri) -> Result<()> {
+        if root_uri.scope().is_internal() {
+            return Ok(());
+        }
         let root_path = self.fs.resolve_uri(root_uri);
         if !root_path.exists() {
             return Ok(());
@@ -277,10 +281,6 @@ impl AxiomMe {
         if should_persist_scope_tiers(root_uri.scope(), internal_policy) {
             self.ensure_tiers_recursive(root_uri)?;
         }
-        let mut index = self
-            .index
-            .write()
-            .map_err(|_| AxiomError::lock_poisoned("index"))?;
 
         for entry in WalkDir::new(&root_path).follow_links(false) {
             let entry = entry.map_err(|e| AxiomError::Validation(e.to_string()))?;
@@ -291,13 +291,43 @@ impl AxiomMe {
             let uri = self.fs.uri_from_path(path)?;
 
             if entry.file_type().is_dir() {
-                self.index_directory_entry(&uri, path, internal_policy, tier_mode, &mut index)?;
+                self.index_directory_entry(&uri, path, internal_policy, tier_mode)?;
                 continue;
             }
 
-            self.index_file_entry(&uri, path, &mut index)?;
+            self.index_file_entry(&uri, path)?;
         }
-        drop(index);
+
+        Ok(())
+    }
+
+    pub(super) fn reindex_document_with_ancestors(&self, leaf_uri: &AxiomUri) -> Result<()> {
+        if leaf_uri.scope().is_internal() {
+            return Ok(());
+        }
+        let Some(parent_uri) = leaf_uri.parent() else {
+            return Err(AxiomError::Validation(format!(
+                "targeted reindex requires non-root document uri: {leaf_uri}"
+            )));
+        };
+        let leaf_path = self.fs.resolve_uri(leaf_uri);
+        if !leaf_path.exists() || !leaf_path.is_file() {
+            return Err(AxiomError::Validation(format!(
+                "targeted reindex requires existing file target: {leaf_uri}"
+            )));
+        }
+
+        let internal_policy = self.config.indexing.internal_tier_policy;
+        let tier_mode = self.config.indexing.tier_synthesis_mode;
+        self.index_file_entry(leaf_uri, &leaf_path)?;
+
+        for dir_uri in directory_ancestor_chain(&parent_uri) {
+            let dir_path = self.fs.resolve_uri(&dir_uri);
+            if !dir_path.exists() || !dir_path.is_dir() {
+                continue;
+            }
+            self.index_directory_entry(&dir_uri, &dir_path, internal_policy, tier_mode)?;
+        }
 
         Ok(())
     }
@@ -332,4 +362,14 @@ impl AxiomMe {
         }
         Ok(())
     }
+}
+
+fn directory_ancestor_chain(start: &AxiomUri) -> Vec<AxiomUri> {
+    let mut out = Vec::<AxiomUri>::new();
+    let mut cursor = Some(start.clone());
+    while let Some(uri) = cursor {
+        out.push(uri.clone());
+        cursor = uri.parent();
+    }
+    out
 }

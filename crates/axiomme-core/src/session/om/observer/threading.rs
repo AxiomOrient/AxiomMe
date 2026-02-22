@@ -16,6 +16,8 @@ use super::llm::send_observer_llm_request;
 use super::parsing::{parse_llm_observer_response, parse_observer_usage_from_value};
 use super::record::{normalize_observation_text, normalize_text, truncate_chars};
 
+const MAX_OBSERVER_BATCH_PARALLELISM: usize = 4;
+
 pub(in crate::session::om) fn build_observer_thread_messages_for_scope(
     scope: OmScope,
     bounded_selected: &[OmObserverMessageCandidate],
@@ -220,7 +222,8 @@ pub(in crate::session::om) fn run_observer_batch_tasks(
     skip_continuation_hints: bool,
     tasks: Vec<ObserverBatchTask>,
 ) -> Result<Vec<ObserverBatchResult>> {
-    if tasks.len() <= 1 {
+    let parallelism = observer_batch_parallelism(tasks.len());
+    if parallelism <= 1 {
         let mut out = Vec::<ObserverBatchResult>::new();
         for task in tasks {
             out.push(execute_observer_batch_task(
@@ -237,38 +240,53 @@ pub(in crate::session::om) fn run_observer_batch_tasks(
     }
 
     let endpoint = endpoint.clone();
-    let mut results = std::thread::scope(|scope| {
-        let handles = tasks
-            .into_iter()
-            .map(|task| {
-                let client = client.clone();
-                let endpoint = endpoint.clone();
-                let config = config.clone();
-                scope.spawn(move || {
-                    execute_observer_batch_task(
-                        &client,
-                        &endpoint,
-                        &config,
-                        active_observations,
-                        current_session_id,
-                        skip_continuation_hints,
-                        task,
-                    )
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let mut out = Vec::<ObserverBatchResult>::new();
-        for handle in handles {
-            let joined = handle.join().map_err(|_| {
-                AxiomError::Internal("observer multi-thread batch worker panicked".to_string())
-            })?;
-            out.push(joined?);
+    let mut results = Vec::<ObserverBatchResult>::with_capacity(tasks.len());
+    let mut pending = tasks.into_iter();
+    loop {
+        let batch = pending.by_ref().take(parallelism).collect::<Vec<_>>();
+        if batch.is_empty() {
+            break;
         }
-        Ok::<Vec<ObserverBatchResult>, AxiomError>(out)
-    })?;
+
+        let mut batch_results = std::thread::scope(|scope| {
+            let handles = batch
+                .into_iter()
+                .map(|task| {
+                    let client = client.clone();
+                    let endpoint = endpoint.clone();
+                    let config = config.clone();
+                    scope.spawn(move || {
+                        execute_observer_batch_task(
+                            &client,
+                            &endpoint,
+                            &config,
+                            active_observations,
+                            current_session_id,
+                            skip_continuation_hints,
+                            task,
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            let mut out = Vec::<ObserverBatchResult>::with_capacity(handles.len());
+            for handle in handles {
+                let joined = handle.join().map_err(|_| {
+                    AxiomError::Internal("observer multi-thread batch worker panicked".to_string())
+                })?;
+                out.push(joined?);
+            }
+            Ok::<Vec<ObserverBatchResult>, AxiomError>(out)
+        })?;
+        results.append(&mut batch_results);
+    }
+
     results.sort_by_key(|item| item.index);
     Ok(results)
+}
+
+fn observer_batch_parallelism(task_count: usize) -> usize {
+    task_count.clamp(1, MAX_OBSERVER_BATCH_PARALLELISM)
 }
 
 pub(in crate::session::om) fn build_observer_thread_known_ids(
@@ -457,4 +475,18 @@ pub(in crate::session::om) fn parse_llm_multi_thread_observer_response(
         },
         thread_states,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::observer_batch_parallelism;
+
+    #[test]
+    fn observer_batch_parallelism_is_bounded_and_explicit() {
+        assert_eq!(observer_batch_parallelism(0), 1);
+        assert_eq!(observer_batch_parallelism(1), 1);
+        assert_eq!(observer_batch_parallelism(2), 2);
+        assert_eq!(observer_batch_parallelism(4), 4);
+        assert_eq!(observer_batch_parallelism(8), 4);
+    }
 }

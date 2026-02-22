@@ -1,17 +1,21 @@
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
+use rusqlite::{Connection, params};
 use tempfile::tempdir;
 
 use crate::fs::LocalContextFs;
 use crate::index::InMemoryIndex;
-use crate::models::Message;
+use crate::models::{
+    CommitMode, MemoryCategory, MemoryPromotionFact, MemoryPromotionRequest, Message,
+    PromotionApplyMode,
+};
 use crate::om::{OmOriginType, OmRecord, OmScope, build_scope_key};
-use crate::state::SqliteStateStore;
+use crate::state::{PromotionCheckpointPhase, SqliteStateStore};
 use crate::uri::AxiomUri;
 use crate::{
-    AxiomError,
+    AxiomError, AxiomMe,
     error::{OmInferenceFailureKind, OmInferenceSource},
 };
 
@@ -62,6 +66,921 @@ fn commit_extracts_preference_memory() {
         .parent()
         .unwrap_or_else(|| AxiomUri::parse("axiom://user/memories/preferences").expect("uri2"));
     assert!(fs.exists(&pref_parent));
+}
+
+#[test]
+fn commit_mode_archive_only_skips_auto_extraction() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+
+    let session = Session::new("s-archive-only", fs.clone(), state, index);
+    session.load().expect("load failed");
+    session
+        .add_message("user", "I prefer archive-only checkpoint flow.")
+        .expect("append failed");
+
+    let result = session
+        .commit_with_mode(CommitMode::ArchiveOnly)
+        .expect("commit archive only");
+    assert!(result.archived);
+    assert_eq!(result.memories_extracted, 0);
+
+    let preferences_uri =
+        AxiomUri::parse("axiom://user/memories/preferences").expect("preferences uri");
+    assert!(
+        !fs.exists(&preferences_uri),
+        "archive-only should not extract durable memories"
+    );
+}
+
+fn promotion_request(
+    session_id: &str,
+    checkpoint_id: &str,
+    apply_mode: PromotionApplyMode,
+    facts: Vec<MemoryPromotionFact>,
+) -> MemoryPromotionRequest {
+    MemoryPromotionRequest {
+        session_id: session_id.to_string(),
+        checkpoint_id: checkpoint_id.to_string(),
+        apply_mode,
+        facts,
+    }
+}
+
+fn promotion_fact(
+    category: MemoryCategory,
+    text: &str,
+    source_ids: &[&str],
+) -> MemoryPromotionFact {
+    MemoryPromotionFact {
+        category,
+        text: text.to_string(),
+        source_message_ids: source_ids.iter().copied().map(str::to_string).collect(),
+        source: Some("episodic".to_string()),
+        confidence_milli: 800,
+    }
+}
+
+fn promotion_checkpoint_payload(request: &MemoryPromotionRequest) -> (String, String) {
+    let facts_json = request
+        .facts
+        .iter()
+        .map(|fact| {
+            serde_json::json!({
+                "category": fact.category.as_str(),
+                "text": fact.text,
+                "source_message_ids": fact.source_message_ids,
+                "source": fact.source,
+                "confidence_milli": fact.confidence_milli,
+            })
+        })
+        .collect::<Vec<_>>();
+    let payload = serde_json::json!({
+        "session_id": request.session_id,
+        "checkpoint_id": request.checkpoint_id,
+        "apply_mode": match request.apply_mode {
+            PromotionApplyMode::AllOrNothing => "all_or_nothing",
+            PromotionApplyMode::BestEffort => "best_effort",
+        },
+        "facts": facts_json,
+    });
+    let request_json = serde_json::to_string(&payload).expect("serialize request payload");
+    let request_hash = blake3::hash(request_json.as_bytes()).to_hex().to_string();
+    (request_json, request_hash)
+}
+
+#[test]
+fn promotion_rejects_invalid_category_and_empty_text() {
+    let invalid_payload = serde_json::json!({
+        "session_id": "s-invalid-category",
+        "checkpoint_id": "cp-invalid-category",
+        "apply_mode": "all_or_nothing",
+        "facts": [
+            {
+                "category": "unsupported",
+                "text": "invalid category",
+                "source_message_ids": ["m-1"],
+                "source": "episodic",
+                "confidence_milli": 700
+            }
+        ]
+    });
+    let decoded = serde_json::from_value::<MemoryPromotionRequest>(invalid_payload);
+    assert!(decoded.is_err(), "invalid category must fail deserialize");
+
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-empty-text", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-empty-text",
+        "cp-empty-text",
+        PromotionApplyMode::AllOrNothing,
+        vec![MemoryPromotionFact {
+            category: MemoryCategory::Preferences,
+            text: "   ".to_string(),
+            source_message_ids: vec!["m-1".to_string()],
+            source: Some("episodic".to_string()),
+            confidence_milli: 700,
+        }],
+    );
+    let err = session
+        .promote_memories(&request)
+        .expect_err("empty text must fail validation");
+    assert!(matches!(err, AxiomError::Validation(_)));
+}
+
+#[test]
+fn promotion_idempotent_on_same_checkpoint_and_same_facts() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-idempotent", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-idempotent",
+        "cp-idempotent",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Preferences,
+            "Always keep promotion idempotent",
+            &["m-1"],
+        )],
+    );
+    let first = session.promote_memories(&request).expect("first promotion");
+    let second = session
+        .promote_memories(&request)
+        .expect("second promotion");
+    assert_eq!(first, second);
+    assert_eq!(second.persisted, 1);
+}
+
+#[test]
+fn promotion_all_or_nothing_restores_snapshots_on_in_process_write_failure() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-rollback", fs.clone(), state, index);
+    session.load().expect("load");
+
+    let success_text = "alpha rollback candidate";
+    let fail_text = "zeta rollback blocker";
+    let success_suffix = stable_text_key(success_text);
+    let fail_suffix = stable_text_key(fail_text);
+    let success_uri = AxiomUri::parse(&format!(
+        "axiom://agent/memories/patterns/pattern-{success_suffix}.md"
+    ))
+    .expect("success uri");
+    let fail_uri = AxiomUri::parse(&format!(
+        "axiom://agent/memories/patterns/pattern-{fail_suffix}.md"
+    ))
+    .expect("fail uri");
+    let success_path = fs.resolve_uri(&success_uri);
+    let fail_path = fs.resolve_uri(&fail_uri);
+
+    std::fs::create_dir_all(&fail_path).expect("create blocking directory");
+    assert!(fail_path.is_dir(), "blocking path must be a directory");
+
+    let request = promotion_request(
+        "s-promote-rollback",
+        "cp-rollback",
+        PromotionApplyMode::AllOrNothing,
+        vec![
+            promotion_fact(MemoryCategory::Patterns, success_text, &["m-1"]),
+            promotion_fact(MemoryCategory::Patterns, fail_text, &["m-2"]),
+        ],
+    );
+    let err = session
+        .promote_memories(&request)
+        .expect_err("second write must fail");
+    assert!(matches!(err, AxiomError::Io(_)));
+    assert!(
+        !success_path.exists(),
+        "successful first write must be rolled back after second write failure"
+    );
+
+    let checkpoint = session
+        .state
+        .get_promotion_checkpoint("s-promote-rollback", "cp-rollback")
+        .expect("read checkpoint")
+        .expect("checkpoint must exist");
+    assert_eq!(checkpoint.phase, PromotionCheckpointPhase::Pending);
+}
+
+#[test]
+fn promotion_same_checkpoint_same_hash_returns_cached_result() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-cached", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-cached",
+        "cp-1",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Preferences,
+            "Always use deterministic CI gates",
+            &["m-1"],
+        )],
+    );
+    let first = session.promote_memories(&request).expect("first promotion");
+    let second = session
+        .promote_memories(&request)
+        .expect("second promotion");
+    assert_eq!(first, second);
+    assert_eq!(second.persisted, 1);
+}
+
+#[test]
+fn promotion_same_checkpoint_different_hash_rejected() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-conflict", fs, state, index);
+    session.load().expect("load");
+
+    let first = promotion_request(
+        "s-promote-conflict",
+        "cp-conflict",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Events,
+            "Phase one finished on Tuesday",
+            &["m-1"],
+        )],
+    );
+    session.promote_memories(&first).expect("first promotion");
+
+    let second = promotion_request(
+        "s-promote-conflict",
+        "cp-conflict",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Events,
+            "Phase two finished on Wednesday",
+            &["m-2"],
+        )],
+    );
+    let err = session
+        .promote_memories(&second)
+        .expect_err("second must conflict");
+    assert!(matches!(err, AxiomError::Validation(_)));
+}
+
+#[test]
+fn promotion_same_checkpoint_same_hash_pending_reconciles_and_applies_once() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-pending", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-pending",
+        "cp-pending",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Events,
+            "Pending checkpoint is replayed exactly once",
+            &["m-1"],
+        )],
+    );
+    let (request_json, request_hash) = promotion_checkpoint_payload(&request);
+    session
+        .state
+        .insert_promotion_checkpoint_pending(
+            "s-promote-pending",
+            "cp-pending",
+            request_hash.as_str(),
+            request_json.as_str(),
+        )
+        .expect("insert pending");
+
+    let first = session
+        .promote_memories(&request)
+        .expect("first reconcile apply");
+    let second = session
+        .promote_memories(&request)
+        .expect("second replay from applied checkpoint");
+    assert_eq!(first, second);
+    assert_eq!(first.persisted, 1);
+
+    let checkpoint = session
+        .state
+        .get_promotion_checkpoint("s-promote-pending", "cp-pending")
+        .expect("load checkpoint")
+        .expect("checkpoint record");
+    assert_eq!(checkpoint.phase, PromotionCheckpointPhase::Applied);
+    assert_eq!(
+        checkpoint.attempt_count, 1,
+        "pending checkpoint should transition to applying once"
+    );
+}
+
+#[test]
+fn promotion_pending_checkpoint_replay_detects_request_json_hash_mismatch() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-replay-guard", fs, state, index);
+    session.load().expect("load");
+
+    let incoming = promotion_request(
+        "s-promote-replay-guard",
+        "cp-replay-guard",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Events,
+            "incoming request payload",
+            &["m-1"],
+        )],
+    );
+    let (_, incoming_hash) = promotion_checkpoint_payload(&incoming);
+
+    let tampered = promotion_request(
+        "s-promote-replay-guard",
+        "cp-replay-guard",
+        PromotionApplyMode::BestEffort,
+        vec![promotion_fact(
+            MemoryCategory::Events,
+            "tampered checkpoint payload",
+            &["m-2"],
+        )],
+    );
+    let (tampered_json, _) = promotion_checkpoint_payload(&tampered);
+
+    session
+        .state
+        .insert_promotion_checkpoint_pending(
+            "s-promote-replay-guard",
+            "cp-replay-guard",
+            incoming_hash.as_str(),
+            tampered_json.as_str(),
+        )
+        .expect("insert pending checkpoint");
+
+    let err = session
+        .promote_memories(&incoming)
+        .expect_err("must detect checkpoint request_json/hash mismatch");
+    match err {
+        AxiomError::Internal(message) => {
+            assert!(message.contains("request_json hash mismatch"));
+        }
+        other => panic!("expected internal mismatch error, got {other}"),
+    }
+}
+
+#[test]
+fn promotion_request_hash_canonicalization_is_order_independent() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-order", fs, state, index);
+    session.load().expect("load");
+
+    let request_a = promotion_request(
+        "s-promote-order",
+        "cp-order",
+        PromotionApplyMode::AllOrNothing,
+        vec![
+            promotion_fact(MemoryCategory::Cases, "Root cause captured", &["m-a"]),
+            promotion_fact(MemoryCategory::Patterns, "Run benchmark gate", &["m-b"]),
+        ],
+    );
+    let request_b = promotion_request(
+        "s-promote-order",
+        "cp-order",
+        PromotionApplyMode::AllOrNothing,
+        vec![
+            promotion_fact(MemoryCategory::Patterns, "Run benchmark gate", &["m-b"]),
+            promotion_fact(MemoryCategory::Cases, "Root cause captured", &["m-a"]),
+        ],
+    );
+
+    let first = session.promote_memories(&request_a).expect("first");
+    let second = session.promote_memories(&request_b).expect("second");
+    assert_eq!(first, second);
+}
+
+#[test]
+fn promotion_rejects_out_of_bounds_facts_before_apply() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-bounds", fs, state, index);
+    session.load().expect("load");
+
+    let oversized = "x".repeat(513);
+    let request = promotion_request(
+        "s-promote-bounds",
+        "cp-bounds",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Preferences,
+            oversized.as_str(),
+            &["m-1"],
+        )],
+    );
+    let err = session
+        .promote_memories(&request)
+        .expect_err("must reject oversized text");
+    assert!(matches!(err, AxiomError::Validation(_)));
+}
+
+#[test]
+fn promotion_rejects_empty_text_in_all_or_nothing() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-empty", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-empty",
+        "cp-empty",
+        PromotionApplyMode::AllOrNothing,
+        vec![MemoryPromotionFact {
+            category: MemoryCategory::Preferences,
+            text: "    ".to_string(),
+            source_message_ids: vec!["m-1".to_string()],
+            source: Some("episodic".to_string()),
+            confidence_milli: 700,
+        }],
+    );
+    let err = session
+        .promote_memories(&request)
+        .expect_err("must reject empty text");
+    assert!(matches!(err, AxiomError::Validation(_)));
+}
+
+#[test]
+fn promotion_best_effort_persists_valid_and_reports_rejected() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-best-effort", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-best-effort",
+        "cp-best-effort",
+        PromotionApplyMode::BestEffort,
+        vec![
+            promotion_fact(
+                MemoryCategory::Patterns,
+                "Always run deterministic smoke tests first",
+                &["m-valid"],
+            ),
+            MemoryPromotionFact {
+                category: MemoryCategory::Patterns,
+                text: " ".to_string(),
+                source_message_ids: vec!["m-invalid".to_string()],
+                source: Some("episodic".to_string()),
+                confidence_milli: 600,
+            },
+        ],
+    );
+    let result = session
+        .promote_memories(&request)
+        .expect("best effort promotion");
+    assert_eq!(result.accepted, 1);
+    assert_eq!(result.persisted, 1);
+    assert_eq!(result.rejected, 1);
+}
+
+#[test]
+fn promotion_all_or_nothing_reindex_failure_rolls_back_and_stays_pending() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new(
+        "s-promote-aon-reindex-fail",
+        fs.clone(),
+        state,
+        Arc::clone(&index),
+    );
+    session.load().expect("load");
+
+    let text = "All or nothing reindex rollback target";
+    let suffix = stable_text_key(text);
+    let uri = AxiomUri::parse(&format!(
+        "axiom://agent/memories/patterns/pattern-{suffix}.md"
+    ))
+    .expect("uri");
+    let path = fs.resolve_uri(&uri);
+
+    let poisoned = std::thread::spawn(move || {
+        let _guard = index.write().expect("lock");
+        panic!("poison index lock for reindex failure");
+    })
+    .join();
+    assert!(poisoned.is_err());
+
+    let request = promotion_request(
+        "s-promote-aon-reindex-fail",
+        "cp-aon-reindex-fail",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(MemoryCategory::Patterns, text, &["m-1"])],
+    );
+
+    let err = session
+        .promote_memories(&request)
+        .expect_err("reindex failure must error");
+    match err {
+        AxiomError::Internal(message) => {
+            assert!(message.contains("all_or_nothing reindex failed"));
+        }
+        other => panic!("expected internal reindex error, got {other}"),
+    }
+    assert!(!path.exists(), "rollback must remove persisted file");
+
+    let checkpoint = session
+        .state
+        .get_promotion_checkpoint("s-promote-aon-reindex-fail", "cp-aon-reindex-fail")
+        .expect("read checkpoint")
+        .expect("checkpoint");
+    assert_eq!(checkpoint.phase, PromotionCheckpointPhase::Pending);
+}
+
+#[test]
+fn promotion_best_effort_reindex_failure_rolls_back_and_stays_pending() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new(
+        "s-promote-best-effort-reindex-fail",
+        fs.clone(),
+        state,
+        Arc::clone(&index),
+    );
+    session.load().expect("load");
+
+    let valid_text = "Always run deterministic smoke tests first";
+    let valid_suffix = stable_text_key(valid_text);
+    let valid_uri = AxiomUri::parse(&format!(
+        "axiom://agent/memories/patterns/pattern-{valid_suffix}.md"
+    ))
+    .expect("valid uri");
+    let valid_path = fs.resolve_uri(&valid_uri);
+
+    let poisoned = std::thread::spawn(move || {
+        let _guard = index.write().expect("lock");
+        panic!("poison index lock for reindex failure");
+    })
+    .join();
+    assert!(poisoned.is_err());
+
+    let request = promotion_request(
+        "s-promote-best-effort-reindex-fail",
+        "cp-best-effort-reindex-fail",
+        PromotionApplyMode::BestEffort,
+        vec![
+            promotion_fact(MemoryCategory::Patterns, valid_text, &["m-valid"]),
+            MemoryPromotionFact {
+                category: MemoryCategory::Patterns,
+                text: " ".to_string(),
+                source_message_ids: vec!["m-invalid".to_string()],
+                source: Some("episodic".to_string()),
+                confidence_milli: 600,
+            },
+        ],
+    );
+
+    let err = session
+        .promote_memories(&request)
+        .expect_err("reindex failure must error");
+    match err {
+        AxiomError::Internal(message) => {
+            assert!(message.contains("best_effort reindex failed"));
+        }
+        other => panic!("expected internal reindex error, got {other}"),
+    }
+    assert!(
+        !valid_path.exists(),
+        "best-effort rollback must remove persisted file on reindex failure"
+    );
+
+    let checkpoint = session
+        .state
+        .get_promotion_checkpoint(
+            "s-promote-best-effort-reindex-fail",
+            "cp-best-effort-reindex-fail",
+        )
+        .expect("read checkpoint")
+        .expect("checkpoint");
+    assert_eq!(checkpoint.phase, PromotionCheckpointPhase::Pending);
+}
+
+#[test]
+fn promotion_all_or_nothing_counts_persisted_facts_even_for_single_target_file() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-profile-count", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-profile-count",
+        "cp-profile-count",
+        PromotionApplyMode::AllOrNothing,
+        vec![
+            promotion_fact(MemoryCategory::Profile, "Primary role: operator", &["m-1"]),
+            promotion_fact(
+                MemoryCategory::Profile,
+                "Primary preference: explicit checkpoints",
+                &["m-2"],
+            ),
+        ],
+    );
+    let result = session
+        .promote_memories(&request)
+        .expect("all-or-nothing promotion");
+    assert_eq!(result.accepted, 2);
+    assert_eq!(result.persisted, 2);
+    assert_eq!(result.rejected, 0);
+}
+
+#[test]
+fn promotion_same_checkpoint_same_hash_applying_returns_retryable_busy() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-applying", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-applying",
+        "cp-applying",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Events,
+            "Apply in progress checkpoint",
+            &["m-1"],
+        )],
+    );
+    let (request_json, request_hash) = promotion_checkpoint_payload(&request);
+    session
+        .state
+        .insert_promotion_checkpoint_pending(
+            "s-promote-applying",
+            "cp-applying",
+            request_hash.as_str(),
+            request_json.as_str(),
+        )
+        .expect("insert pending");
+    assert!(
+        session
+            .state
+            .claim_promotion_checkpoint_applying(
+                "s-promote-applying",
+                "cp-applying",
+                request_hash.as_str(),
+            )
+            .expect("claim applying")
+    );
+
+    let err = session
+        .promote_memories(&request)
+        .expect_err("must report checkpoint busy");
+    match err {
+        AxiomError::Conflict(message) => {
+            assert!(message.contains("checkpoint_busy"));
+        }
+        other => panic!("expected conflict, got {other}"),
+    }
+}
+
+#[test]
+fn promotion_concurrent_claim_has_single_cas_winner() {
+    let temp = tempdir().expect("tempdir");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(temp.path().join("state.db")).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-claim", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-claim",
+        "cp-claim",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Cases,
+            "single winner for pending->applying",
+            &["m-1"],
+        )],
+    );
+    let (request_json, request_hash) = promotion_checkpoint_payload(&request);
+    session
+        .state
+        .insert_promotion_checkpoint_pending(
+            "s-promote-claim",
+            "cp-claim",
+            request_hash.as_str(),
+            request_json.as_str(),
+        )
+        .expect("insert pending");
+
+    assert!(
+        session
+            .state
+            .claim_promotion_checkpoint_applying(
+                "s-promote-claim",
+                "cp-claim",
+                request_hash.as_str()
+            )
+            .expect("first claim")
+    );
+    assert!(
+        !session
+            .state
+            .claim_promotion_checkpoint_applying(
+                "s-promote-claim",
+                "cp-claim",
+                request_hash.as_str()
+            )
+            .expect("second claim"),
+        "only one claimant can transition pending->applying"
+    );
+}
+
+#[test]
+#[ignore = "manual benchmark gate; run explicitly for perf baseline verification"]
+fn promotion_and_commit_latency_regression_within_budget() {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .expect("resolve repo root");
+    let script_path = repo_root.join("scripts/perf_regression_gate.sh");
+    let status = std::process::Command::new("bash")
+        .arg(&script_path)
+        .args([
+            "--window-size",
+            "1",
+            "--required-passes",
+            "1",
+            "--min-cases",
+            "12",
+        ])
+        .status()
+        .expect("run performance gate script");
+    assert!(
+        status.success(),
+        "performance gate command failed: {}",
+        script_path.display()
+    );
+}
+
+#[test]
+fn promotion_stale_applying_reconcile_replays_deterministically() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let fs = LocalContextFs::new(temp.path());
+    fs.initialize().expect("init failed");
+    let state = SqliteStateStore::open(&db_path).expect("state open failed");
+    let index = Arc::new(RwLock::new(InMemoryIndex::new()));
+    let session = Session::new("s-promote-stale", fs, state, index);
+    session.load().expect("load");
+
+    let request = promotion_request(
+        "s-promote-stale",
+        "cp-stale",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Cases,
+            "Stale checkpoint should replay exactly once",
+            &["m-1"],
+        )],
+    );
+    let (request_json, request_hash) = promotion_checkpoint_payload(&request);
+    session
+        .state
+        .insert_promotion_checkpoint_pending(
+            "s-promote-stale",
+            "cp-stale",
+            request_hash.as_str(),
+            request_json.as_str(),
+        )
+        .expect("insert pending");
+    assert!(
+        session
+            .state
+            .claim_promotion_checkpoint_applying(
+                "s-promote-stale",
+                "cp-stale",
+                request_hash.as_str()
+            )
+            .expect("claim applying")
+    );
+
+    let stale_time = (Utc::now() - Duration::seconds(180)).to_rfc3339();
+    let conn = Connection::open(&db_path).expect("open sqlite");
+    conn.execute(
+        r"
+        UPDATE memory_promotion_checkpoints
+        SET updated_at = ?1
+        WHERE session_id = ?2 AND checkpoint_id = ?3
+        ",
+        params![stale_time, "s-promote-stale", "cp-stale"],
+    )
+    .expect("mark stale");
+
+    let result = session
+        .promote_memories(&request)
+        .expect("replay stale checkpoint");
+    assert_eq!(result.persisted, 1);
+
+    let checkpoint = session
+        .state
+        .get_promotion_checkpoint("s-promote-stale", "cp-stale")
+        .expect("load checkpoint")
+        .expect("checkpoint record");
+    assert_eq!(checkpoint.phase, PromotionCheckpointPhase::Applied);
+}
+
+#[test]
+fn delete_session_cleans_promotion_checkpoints() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    app.initialize().expect("init");
+
+    let session = app.session(Some("s-delete-promotion"));
+    session.load().expect("load");
+    let first_message = session
+        .add_message("user", "checkpoint cleanup validation")
+        .expect("add message");
+    let first = promotion_request(
+        "s-delete-promotion",
+        "cp-cleanup",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Preferences,
+            "Remember delete cleanup contract",
+            &[first_message.id.as_str()],
+        )],
+    );
+    app.promote_session_memories(&first)
+        .expect("first promotion");
+
+    assert!(app.delete("s-delete-promotion").expect("delete session"));
+
+    let session = app.session(Some("s-delete-promotion"));
+    session.load().expect("reload");
+    let second_message = session
+        .add_message("user", "new lifecycle after delete")
+        .expect("add message");
+    let second = promotion_request(
+        "s-delete-promotion",
+        "cp-cleanup",
+        PromotionApplyMode::AllOrNothing,
+        vec![promotion_fact(
+            MemoryCategory::Preferences,
+            "Checkpoint rows were removed on delete",
+            &[second_message.id.as_str()],
+        )],
+    );
+    let replay = app
+        .promote_session_memories(&second)
+        .expect("promotion should not conflict after delete");
+    assert_eq!(replay.persisted, 1);
 }
 
 #[test]

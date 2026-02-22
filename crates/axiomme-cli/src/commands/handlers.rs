@@ -3,11 +3,13 @@ use axiomme_core::AxiomMe;
 use axiomme_core::client::BenchmarkFixtureCreateOptions;
 use axiomme_core::models::{
     BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, ReleaseGatePackOptions,
+    ReleaseSecurityAuditMode,
 };
 
 use crate::cli::{
     BenchmarkCommand, BenchmarkFixtureCommand, EvalCommand, EvalGoldenCommand, ReleaseCommand,
-    SecurityCommand, SessionCommand, TraceCommand,
+    ReleaseSecurityAuditModeArg, SecurityAuditModeArg, SecurityCommand, SessionCommand,
+    TraceCommand,
 };
 
 use super::print_json;
@@ -275,7 +277,11 @@ pub(super) fn handle_security(app: &AxiomMe, command: SecurityCommand) -> Result
             mode,
             enforce,
         } => {
-            let report = app.run_security_audit_with_mode(workspace_dir.as_deref(), Some(&mode))?;
+            let mode = match mode {
+                SecurityAuditModeArg::Offline => "offline",
+                SecurityAuditModeArg::Strict => "strict",
+            };
+            let report = app.run_security_audit_with_mode(workspace_dir.as_deref(), Some(mode))?;
             print_json(&report)?;
             if enforce && !report.passed {
                 anyhow::bail!("security audit failed");
@@ -308,6 +314,10 @@ pub(super) fn handle_release(app: &AxiomMe, command: ReleaseCommand) -> Result<(
             security_audit_mode,
             enforce,
         } => {
+            let security_audit_mode = match security_audit_mode {
+                ReleaseSecurityAuditModeArg::Offline => ReleaseSecurityAuditMode::Offline,
+                ReleaseSecurityAuditModeArg::Strict => ReleaseSecurityAuditMode::Strict,
+            };
             let report = app.collect_release_gate_pack(&ReleaseGatePackOptions {
                 workspace_dir,
                 replay_limit,

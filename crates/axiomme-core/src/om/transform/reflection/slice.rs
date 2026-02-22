@@ -7,7 +7,7 @@ pub fn plan_buffered_reflection_slice(
     reflection_threshold: u32,
     buffer_activation: f32,
 ) -> BufferedReflectionSlicePlan {
-    let all_lines = full_observations.split('\n').collect::<Vec<_>>();
+    let all_lines = full_observations.lines().collect::<Vec<_>>();
     let total_lines = all_lines.len();
     let total_lines_u32 = saturating_usize_to_u32(total_lines);
     let avg_tokens_per_line = if total_lines_u32 == 0 {

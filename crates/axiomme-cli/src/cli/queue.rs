@@ -1,5 +1,7 @@
 use clap::{Args, Subcommand};
 
+use super::parsers::parse_min_one_u32;
+
 #[derive(Debug, Args)]
 pub struct QueueArgs {
     #[command(subcommand)]
@@ -41,7 +43,7 @@ pub enum QueueCommand {
         include_dead_letter: bool,
         #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
         stop_when_idle: bool,
-        #[arg(long, default_value_t = 3)]
+        #[arg(long, default_value_t = 3, value_parser = parse_min_one_u32)]
         idle_cycles: u32,
     },
     Evidence {

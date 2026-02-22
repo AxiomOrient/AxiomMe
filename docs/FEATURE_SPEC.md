@@ -49,11 +49,11 @@ The runtime is standalone and self-contained: no external OM engine repository d
 
 - `find(query, target_uri?, limit?, score_threshold?, filter?)`
 - `search(query, target_uri?, session?, limit?, score_threshold?, filter?)`
-- Lexical retrieval normalizes query terms with optional alias/transliteration expansion (`AXIOMME_QUERY_NORMALIZER`, default on).
+- Retrieval tokenization is deterministic and backend-invariant.
 - Budget knobs are supported per request: `max_ms`, `max_nodes`, `max_depth`.
 - Every retrieval returns ranked hits and trace metadata.
-- Post-retrieval reranking supports document-type-aware profile (`AXIOMME_RERANKER=doc-aware-v1|off`).
-- Retrieval backend policy stays explicit and operator-controlled via `AXIOMME_RETRIEVAL_BACKEND=sqlite|memory`.
+- Post-retrieval reranking is off by default; document-type-aware profile is opt-in (`AXIOMME_RERANKER=doc-aware-v1`).
+- Retrieval backend is memory-only (`AXIOMME_RETRIEVAL_BACKEND=memory`).
 - Invalid `AXIOMME_RETRIEVAL_BACKEND` value fails fast as runtime configuration error.
 
 ### FR-005 Session and Memory
@@ -61,6 +61,19 @@ The runtime is standalone and self-contained: no external OM engine repository d
 - Expose session create/load, message append, usage updates.
 - `commit` archives active messages and extracts memory categories.
 - Updated memory is searchable after indexing.
+- Session commit mode supports explicit `archive_only` to archive without auto extraction.
+- Explicit checkpoint promotion API supports typed facts (`profile|preferences|entities|events|cases|patterns`).
+- Promotion apply mode supports `all_or_nothing` and `best_effort`.
+
+### FR-012 Boundary-Preserving Runtime vs Durable Memory
+
+- Runtime hints are request-scoped only and must not be persisted.
+- Runtime hints must not mutate session messages, OM outbox, or commit extraction inputs.
+- Durable memory creation in boundary-safe flow occurs only through explicit promotion APIs.
+- Promotion idempotency key is `(session_id, checkpoint_id)` and must enforce hash conflict detection.
+- Promotion checkpoint state machine must use `pending -> applying -> applied`.
+- Stale `applying` checkpoints must be demoted/replayed deterministically.
+- Session deletion must remove corresponding promotion checkpoint rows.
 
 ### FR-006 Package Interop
 

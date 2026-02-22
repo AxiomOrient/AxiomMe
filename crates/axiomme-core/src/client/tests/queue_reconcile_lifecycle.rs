@@ -185,11 +185,10 @@ fn run_scope_om_lifecycle_with_search_hint(
             None,
         )
         .expect("search");
-    let notes = search.query_plan["notes"].as_array().expect("search notes");
+    let notes = &search.query_plan.notes;
     assert!(
         notes
             .iter()
-            .filter_map(|value| value.as_str())
             .any(|value| value.starts_with("om_hint_applied:1"))
     );
 
@@ -231,6 +230,75 @@ fn replay_outbox_marks_event_done() {
         app.state.get_checkpoint("replay").expect("checkpoint"),
         Some(id)
     );
+}
+
+#[test]
+fn replay_outbox_recovers_stale_processing_event() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let event_id = app
+        .state
+        .enqueue(
+            "upsert",
+            "axiom://resources/stale-processing",
+            serde_json::json!({ "kind": "file" }),
+        )
+        .expect("enqueue failed");
+    app.state
+        .mark_outbox_status(event_id, "processing", true)
+        .expect("mark processing");
+    let stale_at = (chrono::Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
+    app.state
+        .set_outbox_next_attempt_at_for_test(event_id, &stale_at)
+        .expect("set stale next-at");
+
+    let report = app.replay_outbox(10, false).expect("replay failed");
+    assert_eq!(report.fetched, 1);
+    assert_eq!(report.done, 1);
+    assert_eq!(report.dead_letter, 0);
+
+    let event = app
+        .state
+        .get_outbox_event(event_id)
+        .expect("event lookup")
+        .expect("event missing");
+    assert_eq!(event.status, "done");
+}
+
+#[test]
+fn replay_outbox_dead_letters_unknown_event_type() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let event_id = app
+        .state
+        .enqueue(
+            "unknown_event_type",
+            "axiom://resources/ghost",
+            serde_json::json!({}),
+        )
+        .expect("enqueue failed");
+
+    let report = app.replay_outbox(10, false).expect("replay failed");
+    assert_eq!(report.fetched, 1);
+    assert_eq!(report.processed, 1);
+    assert_eq!(report.done, 0);
+    assert_eq!(report.dead_letter, 1);
+    assert_eq!(
+        app.state.get_checkpoint("replay").expect("checkpoint"),
+        Some(event_id)
+    );
+
+    let event = app
+        .state
+        .get_outbox_event(event_id)
+        .expect("event lookup")
+        .expect("event missing");
+    assert_eq!(event.status, "dead_letter");
+    assert_eq!(event.attempt_count, 1);
 }
 
 #[test]
