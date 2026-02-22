@@ -1,160 +1,137 @@
 # AxiomMe
 
-Local-first context runtime for deterministic retrieval, explicit memory evolution, and
-release-grade operability checks.
+AxiomMe is a local-first context runtime for building deterministic agent systems.
+It treats data as the primary concern: explicit URI-addressed content, explicit queue/state
+transitions, and explicit retrieval/memory workflows.
 
-The repository is intentionally concrete:
-- data model first (`axiom://` URI + scoped filesystem + SQLite state + in-memory index)
-- pure transforms where possible (`om/`, retrieval planner/scoring)
-- side effects isolated to explicit service boundaries (`client/*`, `state/*`, `fs`, `pack`)
+This README explains the project itself. Detailed API and policy contracts live in `docs/`.
 
-## What You Can Build With It
+## What Problem This Project Solves
 
-- Ingest local files/dirs or HTTP(S) text into URI-scoped context trees.
-- Search and retrieve context with trace artifacts (`find` / `search`).
-- Run session memory extraction and explicit memory promotion/checkpoint flows.
-- Recover from drift/failure via queue replay and reconcile.
-- Export/import context trees safely as ovpack archives.
-- Serve a local web editor for markdown/document/fs operations with security guards.
-- Produce release gate evidence (`G0..G8`) and enforce CI-quality constraints.
+Most agent runtimes hide state transitions behind framework abstractions. That makes behavior hard
+to debug, tune, and trust in production.
 
-## Workspace Layout
+AxiomMe focuses on:
+- deterministic local execution by default
+- visible and queryable data model
+- recoverable queue/state lifecycle
+- measurable quality and release gates
 
-- `crates/axiomme-core`
-  - runtime and domain engine
-  - filesystem model, URI model, queue/state, indexing/retrieval
-  - session/OM flows and release/evidence pipelines
-- `crates/axiomme-cli`
-  - command surface and process contracts
-- `crates/axiomme-web`
-  - local web server/editor and HTTP API
-- `docs`
-  - canonical spec/contract set
+## Core Ideas
 
-## Data Model (Primary)
+### 1) Data Is Primary
 
-### URI and Scope
-
-All content is addressed by:
+All content is addressed with a canonical URI:
 
 `axiom://{scope}/{path}`
 
 Scopes:
-- external: `resources`, `user`, `agent`, `session`
-- internal: `temp`, `queue`
+- External scopes: `resources`, `user`, `agent`, `session`
+- Internal scopes: `temp`, `queue`
 
-Hard invariants:
-- traversal and root escape are rejected
-- internal scope writes are restricted
-- `queue` is read-only for non-system mutations
+The URI model is the center of the system. Filesystem layout, indexing, queue payloads, and
+retrieval boundaries all follow this model.
 
-### Durable and Ephemeral State
+### 2) Pure Transformations, Explicit Effects
 
-- durable:
-  - scoped files under workspace root
-  - `.axiomme_state.sqlite3` for queue/index/search/trace/checkpoint metadata
-- ephemeral:
-  - in-memory search index (`InMemoryIndex`)
-  - request-scoped runtime hints for search
+- Pure logic lives in parser/retrieval/OM transform modules.
+- Side effects are isolated in explicit services:
+  - filesystem writes
+  - sqlite persistence
+  - queue replay
+  - network calls
 
-### Queue Semantics
+### 3) Mechanical Sympathy
 
-Outbox rows have explicit lifecycle states:
-- `new`
-- `processing`
-- `done`
-- `dead_letter`
+The runtime is designed to make cost visible:
+- queue statuses are explicit (`new`, `processing`, `done`, `dead_letter`)
+- retries use deterministic backoff
+- retrieval/index behavior is measurable and testable
+- release gates enforce operational quality before shipping
 
-Runtime behavior:
-- replay consumes `new` due events
-- stale `processing` rows are explicitly recovered back to `new` before replay
-- retry/backoff policy is deterministic and bounded
+## Architecture Overview
 
-## Runtime Lifecycle
+The workspace is split by responsibility:
+
+- `crates/axiomme-core`
+  - runtime engine and domain model
+  - URI/scopes, fs safety, sqlite state, in-memory index
+  - ingest, replay/reconcile, retrieval, session memory, release evidence
+- `crates/axiomme-cli`
+  - command surface and process contracts
+- `crates/axiomme-web`
+  - local web editor/API on top of `axiomme-core`
+
+Canonical spec and contract docs:
+- `docs/README.md`
+- `docs/FEATURE_SPEC.md`
+- `docs/API_CONTRACT.md`
+
+## Runtime Model
+
+### Lifecycle
 
 1. `AxiomMe::new(root)`
 2. `bootstrap()`
 3. `prepare_runtime()`
-4. `initialize()` (runtime-ready alias of `prepare_runtime`)
+4. `initialize()` (runtime-ready alias)
 
-`prepare_runtime()` does only three things:
-- ensure scope tiers
-- initialize or restore index state
-- validate runtime config invariants
+### Durable vs Ephemeral State
 
-## Main Execution Flows
+- Durable state:
+  - scoped files in workspace
+  - sqlite state store (`.axiomme_state.sqlite3`)
+- Ephemeral state:
+  - in-memory search index
+  - request-scoped runtime hints
 
-### Ingest and Index
+### Queue and Recovery
 
-1. `add_resource(...)`
-2. stage in `temp`
-3. finalize to target URI tree
-4. enqueue semantic scan/reindex events
-5. `replay_outbox(...)`
-6. `reindex_uri_tree(...)`
+Queue events are stored durably and replayed explicitly. Replay/reconcile flows are first-class.
+This allows predictable recovery after process restarts or partial failures.
 
-### Retrieval
+## What You Can Build With AxiomMe
 
-- `find`: deterministic memory-backend retrieval and trace output
-- `search`: same retrieval path + session/OM hint composition
+- local and remote resource ingestion pipelines
+- searchable context corpora with traceable retrieval
+- session memory extraction and promotion workflows
+- reliability/operability/security evidence generation
+- release gating workflow for production readiness
+- local web-based document/markdown editing with safe defaults
 
-Both return:
-- ranked hits
-- query plan notes
-- trace metadata URI
+## Repository Map
 
-### Session and Memory
-
-- session append -> commit
-- archive active messages
-- extract categorized memories
-- optional explicit promotion checkpoint flow for durable writes
+- `crates/axiomme-core/src/client/*`: orchestration services
+- `crates/axiomme-core/src/state/*`: sqlite schema and persistence
+- `crates/axiomme-core/src/retrieval/*`: planner/engine/scoring
+- `crates/axiomme-core/src/session/*`: session and memory lifecycle
+- `crates/axiomme-core/src/om/*`: OM transforms, parsing, and pipeline
+- `crates/axiomme-cli/src/*`: CLI arguments and command handlers
+- `crates/axiomme-web/src/*`: HTTP handlers, DTOs, security, UI assets
 
 ## Quickstart
 
 ```bash
-# 1) show CLI surface
+# 1) Inspect commands
 cargo run -p axiomme-cli -- --help
 
-# 2) initialize runtime at current workspace
+# 2) Initialize runtime in current workspace
 cargo run -p axiomme-cli -- init
 
-# 3) ingest and process
+# 3) Ingest content
 cargo run -p axiomme-cli -- add ./README.md --target axiom://resources/repo --wait true
 
-# 4) retrieve
-cargo run -p axiomme-cli -- find "release gate"
+# 4) Retrieve context
+cargo run -p axiomme-cli -- find "context runtime"
 ```
 
-## Web Editor
+Run web editor:
 
 ```bash
 cargo run -p axiomme-cli -- web --host 127.0.0.1 --port 8787
 ```
 
-Behavioral notes:
-- startup performs scoped reconcile before serving
-- markdown/document saves are full-replace only
-- etag conflicts return `409`
-- in-flight save lock returns `423`
-- preview sanitizes unsafe HTML and URL schemes
-
-## Configuration (Key Environment Variables)
-
-- retrieval:
-  - `AXIOMME_RETRIEVAL_BACKEND=memory`
-  - invalid backend token fails fast
-- embedding:
-  - `AXIOMME_EMBEDDER=semantic-lite|hash|semantic-model-http`
-  - `AXIOMME_EMBEDDER_MODEL_ENDPOINT`
-  - `AXIOMME_EMBEDDER_MODEL_NAME`
-  - `AXIOMME_EMBEDDER_MODEL_TIMEOUT_MS`
-  - `AXIOMME_EMBEDDER_STRICT`
-- indexing/search behavior:
-  - `AXIOMME_TIER_SYNTHESIS`
-  - `AXIOMME_RERANKER`
-
-## Development Checks
+## Development Workflow
 
 ```bash
 cargo fmt --all --check
@@ -162,7 +139,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Repository convenience script:
+Convenience script:
 
 ```bash
 bash scripts/quality_gates.sh
@@ -170,37 +147,31 @@ bash scripts/quality_gates.sh
 
 ## Release Workflow
 
-For local release-grade validation:
+Run release gate pack locally:
 
 ```bash
 cargo run -p axiomme-cli -- release pack --workspace-dir .
 ```
 
-The pack evaluates gates `G0..G8` and writes a report under:
+Gate pack evaluates the full readiness sequence (`G0..G8`) and writes an evidence report
+under `axiom://queue/release/packs/`.
 
-- `axiom://queue/release/packs/{pack_id}.json`
+## Configuration (High-Level)
 
-Gate focus:
-- contract integrity
-- build quality
-- reliability evidence
-- eval quality
-- session memory quality
-- security audit
-- benchmark gate
-- operability evidence
-- blocker rollup
+Important environment families:
+- retrieval backend policy
+- embedding provider/runtime
+- indexing and reranking behavior
 
-## Design Principles
-
-- Keep data visible and explicit.
-- Prefer pure transforms and deterministic behavior.
-- Isolate effects (filesystem, sqlite, network, subprocess).
-- Make performance costs obvious (lock scope, allocations, queue/backoff policy).
-- Avoid accidental abstraction and hidden indirection.
-
-## Canonical Docs
-
-- `docs/README.md`
-- `docs/FEATURE_SPEC.md`
+For exact variable names and semantics, use:
 - `docs/API_CONTRACT.md`
+- `docs/FEATURE_SPEC.md`
+
+## Project Principles
+
+- Data model first, URI model explicit
+- Pure transforms where possible
+- Side effects isolated and auditable
+- No accidental abstraction
+- Performance characteristics made explicit
+- Operational correctness verified by tests and gates
