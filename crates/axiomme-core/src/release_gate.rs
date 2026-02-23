@@ -526,17 +526,12 @@ fn run_ontology_contract_probe(
     let command_probe =
         CommandProbeResult::from_test_run(ONTOLOGY_CONTRACT_PROBE_TEST_NAME, probe.0, probe.1);
 
-    let parsed =
-        match crate::ontology::parse_schema_v1(crate::ontology::DEFAULT_ONTOLOGY_SCHEMA_V1_JSON) {
-            Ok(value) => value,
-            Err(err) => {
-                return OntologyContractProbeResult::from_error(
-                    format!("ontology_schema_parse_failed: {err}"),
-                    command_probe,
-                    schema_uri,
-                );
-            }
-        };
+    let parsed = match load_bootstrapped_ontology_schema(policy.schema_uri.as_str()) {
+        Ok(value) => value,
+        Err(error) => {
+            return OntologyContractProbeResult::from_error(error, command_probe, schema_uri);
+        }
+    };
     let schema_version = parsed.version;
     let schema_version_ok = schema_version == policy.required_schema_version;
     if !schema_version_ok {
@@ -591,6 +586,24 @@ fn run_ontology_contract_probe(
         invariant_check_passed: invariant_report.passed,
         invariant_check_failed: invariant_report.failed,
     }
+}
+
+fn load_bootstrapped_ontology_schema(
+    schema_uri: &str,
+) -> std::result::Result<crate::ontology::OntologySchemaV1, String> {
+    let probe_root = std::env::temp_dir().join(format!(
+        "axiomme-ontology-contract-probe-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let app = crate::AxiomMe::new(&probe_root)
+        .map_err(|err| format!("ontology_probe_app_new_failed: {err}"))?;
+    let loaded = (|| -> Result<crate::ontology::OntologySchemaV1> {
+        app.bootstrap()?;
+        let raw = app.read(schema_uri)?;
+        crate::ontology::parse_schema_v1(&raw)
+    })();
+    let _ = fs::remove_dir_all(&probe_root);
+    loaded.map_err(|err| format!("ontology_probe_schema_load_failed: {err}"))
 }
 
 fn run_episodic_semver_probe(workspace_dir: &Path) -> EpisodicSemverProbeResult {
