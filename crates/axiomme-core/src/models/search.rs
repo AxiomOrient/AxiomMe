@@ -9,6 +9,12 @@ use crate::uri::AxiomUri;
 pub struct RelationSummary {
     pub uri: String,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_object_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_object_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -35,11 +35,12 @@ pub use release::{
     BenchmarkGateDetails, BlockerRollupGateDetails, BuildQualityGateDetails, CommandProbeResult,
     ContractIntegrityGateDetails, DependencyAuditStatus, DependencyAuditSummary,
     DependencyInventorySummary, EpisodicSemverPolicy, EpisodicSemverProbeResult,
-    EvalQualityGateDetails, EvidenceStatus, OperabilityEvidenceCheck, OperabilityEvidenceReport,
-    OperabilityGateDetails, ReleaseCheckDocument, ReleaseGateDecision, ReleaseGateDetails,
-    ReleaseGateId, ReleaseGatePackReport, ReleaseGateStatus, ReliabilityEvidenceCheck,
-    ReliabilityEvidenceReport, ReliabilityGateDetails, SecurityAuditCheck,
-    SecurityAuditGateDetails, SecurityAuditReport, SessionMemoryGateDetails,
+    EvalQualityGateDetails, EvidenceStatus, OntologyContractPolicy, OntologyContractProbeResult,
+    OperabilityEvidenceCheck, OperabilityEvidenceReport, OperabilityGateDetails,
+    ReleaseCheckDocument, ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId,
+    ReleaseGatePackReport, ReleaseGateStatus, ReliabilityEvidenceCheck, ReliabilityEvidenceReport,
+    ReliabilityGateDetails, SecurityAuditCheck, SecurityAuditGateDetails, SecurityAuditReport,
+    SessionMemoryGateDetails,
 };
 pub use search::{
     BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, IndexRecord, MetadataFilter,

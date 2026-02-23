@@ -1,6 +1,7 @@
 use crate::error::{AxiomError, Result};
+use crate::llm_io::parse_env_bool;
 
-use super::env::{read_env_usize, read_non_empty_env};
+use super::env::{read_env_usize, read_non_empty_env, read_raw_env};
 
 const ENV_RETRIEVAL_BACKEND: &str = "AXIOMME_RETRIEVAL_BACKEND";
 const ENV_RERANKER: &str = "AXIOMME_RERANKER";
@@ -12,6 +13,7 @@ const ENV_OM_KEEP_RECENT_WITH_OM: &str = "AXIOMME_OM_KEEP_RECENT_WITH_OM";
 const ENV_OM_HINT_MAX_LINES: &str = "AXIOMME_OM_HINT_MAX_LINES";
 const ENV_OM_HINT_MAX_CHARS: &str = "AXIOMME_OM_HINT_MAX_CHARS";
 const ENV_OM_HINT_SUGGESTED_MAX_CHARS: &str = "AXIOMME_OM_HINT_SUGGESTED_MAX_CHARS";
+const ENV_SEARCH_TYPED_EDGE_ENRICHMENT: &str = "AXIOMME_SEARCH_TYPED_EDGE_ENRICHMENT";
 pub(crate) const RETRIEVAL_BACKEND_MEMORY: &str = "memory";
 pub(crate) const RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY: &str = "memory_only";
 pub(crate) const QUERY_PLAN_BACKEND_POLICY_MEMORY_ONLY: &str = "backend_policy:memory_only";
@@ -30,6 +32,7 @@ pub(crate) struct SearchConfig {
     pub(crate) reranker: Option<String>,
     pub(crate) om_hint_policy: OmHintPolicy,
     pub(crate) om_hint_bounds: OmHintBounds,
+    pub(crate) typed_edge_enrichment: bool,
 }
 
 impl SearchConfig {
@@ -39,8 +42,16 @@ impl SearchConfig {
             reranker: read_non_empty_env(ENV_RERANKER),
             om_hint_policy: OmHintPolicy::from_env(),
             om_hint_bounds: OmHintBounds::from_env(),
+            typed_edge_enrichment: parse_typed_edge_enrichment(
+                read_raw_env(ENV_SEARCH_TYPED_EDGE_ENRICHMENT).as_deref(),
+            ),
         })
     }
+}
+
+#[must_use]
+fn parse_typed_edge_enrichment(raw: Option<&str>) -> bool {
+    parse_env_bool(raw)
 }
 
 fn validate_retrieval_backend(raw: Option<&str>) -> Result<()> {
@@ -149,7 +160,7 @@ impl OmHintBounds {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_retrieval_backend;
+    use super::{parse_typed_edge_enrichment, validate_retrieval_backend};
 
     #[test]
     fn retrieval_backend_validation_accepts_unset() {
@@ -167,5 +178,20 @@ mod tests {
         assert!(validate_retrieval_backend(Some("invalid-backend")).is_err());
         assert!(validate_retrieval_backend(Some("bm25")).is_err());
         assert!(validate_retrieval_backend(Some("")).is_err());
+    }
+
+    #[test]
+    fn typed_edge_enrichment_defaults_disabled() {
+        assert!(!parse_typed_edge_enrichment(None));
+        assert!(!parse_typed_edge_enrichment(Some("0")));
+        assert!(!parse_typed_edge_enrichment(Some("false")));
+    }
+
+    #[test]
+    fn typed_edge_enrichment_accepts_true_tokens() {
+        assert!(parse_typed_edge_enrichment(Some("1")));
+        assert!(parse_typed_edge_enrichment(Some("true")));
+        assert!(parse_typed_edge_enrichment(Some("yes")));
+        assert!(parse_typed_edge_enrichment(Some("on")));
     }
 }

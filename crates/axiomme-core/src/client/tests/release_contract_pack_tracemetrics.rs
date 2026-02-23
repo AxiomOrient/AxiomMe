@@ -254,6 +254,19 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
                 true,
                 "test client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok",
             ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    "ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable",
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "test ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok",
+            ),
         ],
         || app.collect_release_gate_pack(&options),
     )
@@ -286,6 +299,29 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
             .passed,
         "G0 should pass when contract execution probe is mocked to succeed"
     );
+    match &report
+        .decisions
+        .iter()
+        .find(|decision| decision.gate_id == ReleaseGateId::ContractIntegrity)
+        .expect("G0 decision")
+        .details
+    {
+        ReleaseGateDetails::ContractIntegrity(details) => {
+            assert!(
+                details
+                    .ontology_policy
+                    .as_ref()
+                    .is_some_and(|policy| policy.required_schema_version == 1)
+            );
+            assert!(
+                details
+                    .ontology_probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.passed)
+            );
+        }
+        other => panic!("expected contract_integrity details, got {other:?}"),
+    }
     assert!(
         report
             .decisions

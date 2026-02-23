@@ -25,8 +25,8 @@ mod reranker;
 mod result;
 
 use result::{
-    annotate_trace_relation_metrics, append_query_plan_note, budget_to_json,
-    metadata_filter_to_search_filter, normalize_budget,
+    annotate_trace_relation_metrics, annotate_typed_edge_query_plan_visibility,
+    append_query_plan_note, budget_to_json, metadata_filter_to_search_filter, normalize_budget,
 };
 
 const DEFAULT_OM_SCOPE_LOOKUP_FALLBACK_LIMIT: usize = 4;
@@ -89,6 +89,7 @@ impl AxiomMe {
         let target_raw = target_uri.map(ToString::to_string);
         let requested_limit = limit.unwrap_or(10);
         let budget = normalize_budget(budget);
+        let typed_edge_enrichment = self.config.search.typed_edge_enrichment;
 
         let output = (|| -> Result<FindResult> {
             validate_filter(filter.as_ref())?;
@@ -108,8 +109,9 @@ impl AxiomMe {
             );
 
             let mut result = self.run_retrieval_memory_only(&options)?;
-            self.enrich_find_result_relations(&mut result, 5)?;
+            self.enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
             annotate_trace_relation_metrics(&mut result);
+            annotate_typed_edge_query_plan_visibility(&mut result, typed_edge_enrichment);
             self.persist_trace_result(&mut result)?;
             Ok(result)
         })();
@@ -124,6 +126,7 @@ impl AxiomMe {
                     "budget": budget_to_json(budget.as_ref()),
                     "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
                     "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
+                    "typed_edge_enrichment": typed_edge_enrichment,
                 });
                 self.try_log_request(&RequestLogEntry {
                     request_id,
@@ -156,6 +159,7 @@ impl AxiomMe {
                         "budget": budget_to_json(budget.as_ref()),
                         "retrieval_backend": RETRIEVAL_BACKEND_MEMORY,
                         "retrieval_backend_policy": RETRIEVAL_BACKEND_POLICY_MEMORY_ONLY,
+                        "typed_edge_enrichment": typed_edge_enrichment,
                     })),
                 });
                 Err(err)
@@ -272,6 +276,7 @@ impl AxiomMe {
         let budget = normalize_budget(budget);
         let hint_policy = self.config.search.om_hint_policy;
         let hint_bounds = self.config.search.om_hint_bounds;
+        let typed_edge_enrichment = self.config.search.typed_edge_enrichment;
         let mut om_metrics = OmSearchMetrics::default();
 
         let output = (|| -> Result<FindResult> {
@@ -324,8 +329,9 @@ impl AxiomMe {
             );
 
             let mut result = self.run_retrieval_memory_only(&options)?;
-            self.enrich_find_result_relations(&mut result, 5)?;
+            self.enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
             annotate_trace_relation_metrics(&mut result);
+            annotate_typed_edge_query_plan_visibility(&mut result, typed_edge_enrichment);
             annotate_om_query_plan_visibility(&mut result, &om_metrics, hint_policy);
             self.persist_trace_result(&mut result)?;
             Ok(result)
@@ -343,6 +349,7 @@ impl AxiomMe {
                     min_match_tokens,
                     om_metrics,
                     hint_policy,
+                    typed_edge_enrichment,
                     Some(result.query_results.len()),
                 );
                 self.try_log_request(&RequestLogEntry {
@@ -369,6 +376,7 @@ impl AxiomMe {
                     min_match_tokens,
                     om_metrics,
                     hint_policy,
+                    typed_edge_enrichment,
                     None,
                 );
                 self.try_log_request(&RequestLogEntry {
@@ -793,6 +801,7 @@ fn search_request_details(
     min_match_tokens: Option<usize>,
     metrics: OmSearchMetrics,
     hint_policy: OmHintPolicy,
+    typed_edge_enrichment: bool,
     result_count: Option<usize>,
 ) -> serde_json::Value {
     let mut details = serde_json::json!({
@@ -814,6 +823,7 @@ fn search_request_details(
         "session_hint_count_final": metrics.session_hint_count_final,
         "om_filtered_message_count": metrics.om_filtered_message_count,
         "om_hint_policy": hint_policy_to_json(hint_policy),
+        "typed_edge_enrichment": typed_edge_enrichment,
     });
     if let Some(result_count) = result_count {
         details["result_count"] = serde_json::json!(result_count);

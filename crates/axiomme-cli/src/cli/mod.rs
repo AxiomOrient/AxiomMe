@@ -6,6 +6,7 @@ mod args;
 mod benchmark;
 mod document;
 mod eval;
+mod ontology;
 mod parsers;
 mod queue;
 mod release;
@@ -23,6 +24,7 @@ pub use args::{
 pub use benchmark::{BenchmarkArgs, BenchmarkCommand, BenchmarkFixtureCommand};
 pub use document::{DocumentArgs, DocumentCommand, DocumentMode};
 pub use eval::{EvalArgs, EvalCommand, EvalGoldenCommand};
+pub use ontology::{OntologyArgs, OntologyCommand};
 pub use queue::{QueueArgs, QueueCommand};
 pub use release::{ReleaseArgs, ReleaseCommand, ReleaseSecurityAuditModeArg};
 pub use security::{SecurityArgs, SecurityAuditModeArg, SecurityCommand};
@@ -60,6 +62,7 @@ pub enum Commands {
     Queue(QueueArgs),
     Trace(TraceArgs),
     Eval(EvalArgs),
+    Ontology(OntologyArgs),
     Benchmark(BenchmarkArgs),
     Security(SecurityArgs),
     Release(ReleaseArgs),

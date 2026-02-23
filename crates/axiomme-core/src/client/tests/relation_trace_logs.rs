@@ -1,5 +1,10 @@
 use super::*;
 
+fn write_ontology_schema(app: &AxiomMe, schema: &str) {
+    let uri = AxiomUri::parse(crate::ontology::ONTOLOGY_SCHEMA_URI_V1).expect("schema uri parse");
+    app.fs.write(&uri, schema, true).expect("write schema");
+}
+
 #[test]
 fn find_and_search_apply_metadata_filters() {
     let temp = tempdir().expect("tempdir");
@@ -330,6 +335,189 @@ fn relation_api_rejects_queue_scope_write_for_link() {
 }
 
 #[test]
+fn relation_api_enforces_ontology_link_types_when_schema_exists() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    write_ontology_schema(
+        &app,
+        r#"{
+            "version": 1,
+            "object_types": [{
+                "id": "resource_doc",
+                "uri_prefixes": ["axiom://resources/relation-demo"],
+                "allowed_scopes": ["resources"]
+            }],
+            "link_types": [{
+                "id": "auth-security",
+                "from_types": ["resource_doc"],
+                "to_types": ["resource_doc"],
+                "min_arity": 2,
+                "max_arity": 4,
+                "symmetric": true
+            }],
+            "action_types": [],
+            "invariants": []
+        }"#,
+    );
+
+    app.link(
+        "axiom://resources/relation-demo",
+        "auth-security",
+        vec![
+            "axiom://resources/relation-demo/auth".to_string(),
+            "axiom://resources/relation-demo/security".to_string(),
+        ],
+        "typed relation",
+    )
+    .expect("declared link type should pass");
+
+    let err = app
+        .link(
+            "axiom://resources/relation-demo",
+            "undeclared-link",
+            vec![
+                "axiom://resources/relation-demo/auth".to_string(),
+                "axiom://resources/relation-demo/security".to_string(),
+            ],
+            "must fail",
+        )
+        .expect_err("undeclared link type must fail");
+    assert!(matches!(err, AxiomError::OntologyViolation(_)));
+    assert!(err.to_string().contains("not declared"));
+}
+
+#[test]
+fn relation_api_enforces_ontology_object_type_resolution_when_schema_exists() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    write_ontology_schema(
+        &app,
+        r#"{
+            "version": 1,
+            "object_types": [{
+                "id": "resource_doc",
+                "uri_prefixes": ["axiom://resources/relation-demo"],
+                "allowed_scopes": ["resources"]
+            }],
+            "link_types": [{
+                "id": "auth-security",
+                "from_types": ["resource_doc"],
+                "to_types": ["resource_doc"],
+                "min_arity": 2,
+                "max_arity": 4,
+                "symmetric": true
+            }],
+            "action_types": [],
+            "invariants": []
+        }"#,
+    );
+
+    let err = app
+        .link(
+            "axiom://resources/relation-demo",
+            "auth-security",
+            vec![
+                "axiom://resources/relation-demo/auth".to_string(),
+                "axiom://user/notes/security".to_string(),
+            ],
+            "must fail",
+        )
+        .expect_err("endpoint type mismatch must fail");
+    assert!(matches!(err, AxiomError::OntologyViolation(_)));
+    assert!(err.to_string().contains("not resolved"));
+}
+
+#[test]
+fn relation_api_refreshes_ontology_schema_cache_after_schema_update() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    write_ontology_schema(
+        &app,
+        r#"{
+            "version": 1,
+            "object_types": [{
+                "id": "resource_doc",
+                "uri_prefixes": ["axiom://resources/relation-demo"],
+                "allowed_scopes": ["resources"]
+            }],
+            "link_types": [{
+                "id": "auth-security",
+                "from_types": ["resource_doc"],
+                "to_types": ["resource_doc"],
+                "min_arity": 2,
+                "max_arity": 4,
+                "symmetric": true
+            }],
+            "action_types": [],
+            "invariants": []
+        }"#,
+    );
+    app.link(
+        "axiom://resources/relation-demo",
+        "auth-security",
+        vec![
+            "axiom://resources/relation-demo/auth".to_string(),
+            "axiom://resources/relation-demo/security".to_string(),
+        ],
+        "v1 link",
+    )
+    .expect("v1 link should pass");
+
+    write_ontology_schema(
+        &app,
+        r#"{
+            "version": 1,
+            "object_types": [{
+                "id": "resource_doc",
+                "uri_prefixes": ["axiom://resources/relation-demo"],
+                "allowed_scopes": ["resources"]
+            }],
+            "link_types": [{
+                "id": "risk-review",
+                "from_types": ["resource_doc"],
+                "to_types": ["resource_doc"],
+                "min_arity": 2,
+                "max_arity": 8,
+                "symmetric": false
+            }],
+            "action_types": [],
+            "invariants": []
+        }"#,
+    );
+
+    let stale = app
+        .link(
+            "axiom://resources/relation-demo",
+            "auth-security",
+            vec![
+                "axiom://resources/relation-demo/auth".to_string(),
+                "axiom://resources/relation-demo/security".to_string(),
+            ],
+            "old link id should fail after schema update",
+        )
+        .expect_err("old link id must fail");
+    assert!(matches!(stale, AxiomError::OntologyViolation(_)));
+    assert!(stale.to_string().contains("not declared"));
+
+    app.link(
+        "axiom://resources/relation-demo",
+        "risk-review",
+        vec![
+            "axiom://resources/relation-demo/auth".to_string(),
+            "axiom://resources/relation-demo/security".to_string(),
+        ],
+        "v2 link",
+    )
+    .expect("updated link should pass");
+}
+
+#[test]
 fn find_and_search_enrich_hits_with_relations() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app new");
@@ -389,6 +577,11 @@ fn find_and_search_enrich_hits_with_relations() {
                 .iter()
                 .any(|rel| rel.uri.ends_with("security.md"))
     }));
+    assert!(find.query_results.iter().all(|hit| {
+        hit.relations
+            .iter()
+            .all(|relation| relation.relation_type.is_none())
+    }));
     let find_trace = find.trace.as_ref().expect("find trace");
     assert!(find_trace.metrics.typed_query_count >= 1);
     assert!(find_trace.metrics.relation_enriched_hits >= 1);
@@ -413,6 +606,92 @@ fn find_and_search_enrich_hits_with_relations() {
     let search_trace = search.trace.as_ref().expect("search trace");
     assert!(search_trace.metrics.typed_query_count >= 1);
     assert!(search_trace.metrics.relation_enriched_hits >= 1);
+}
+
+#[test]
+fn relation_enrichment_can_attach_typed_edge_metadata_when_enabled() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+    write_ontology_schema(
+        &app,
+        r#"{
+            "version": 1,
+            "object_types": [{
+                "id": "resource_doc",
+                "uri_prefixes": ["axiom://resources/relation-typed-demo"],
+                "allowed_scopes": ["resources"]
+            }],
+            "link_types": [{
+                "id": "auth-security",
+                "from_types": ["resource_doc"],
+                "to_types": ["resource_doc"],
+                "min_arity": 2,
+                "max_arity": 4,
+                "symmetric": true
+            }],
+            "action_types": [],
+            "invariants": []
+        }"#,
+    );
+
+    let corpus_dir = temp.path().join("relation_typed_corpus");
+    fs::create_dir_all(&corpus_dir).expect("mkdir");
+    fs::write(
+        corpus_dir.join("auth.md"),
+        "OAuth auth flow and token rotation",
+    )
+    .expect("write");
+    fs::write(
+        corpus_dir.join("security.md"),
+        "Security baseline and hardening notes",
+    )
+    .expect("write");
+    app.add_resource(
+        corpus_dir.to_str().expect("corpus"),
+        Some("axiom://resources/relation-typed-demo"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add");
+
+    app.link(
+        "axiom://resources/relation-typed-demo",
+        "auth-security",
+        vec![
+            "axiom://resources/relation-typed-demo/auth.md".to_string(),
+            "axiom://resources/relation-typed-demo/security.md".to_string(),
+        ],
+        "Security dependency",
+    )
+    .expect("link");
+
+    let mut result = app
+        .find(
+            "oauth",
+            Some("axiom://resources/relation-typed-demo"),
+            Some(10),
+            None,
+            None,
+        )
+        .expect("find");
+    app.enrich_find_result_relations(&mut result, 5, true)
+        .expect("typed enrich");
+    let relation = result
+        .query_results
+        .iter()
+        .find(|hit| hit.uri.ends_with("auth.md"))
+        .and_then(|hit| {
+            hit.relations
+                .iter()
+                .find(|x| x.uri.ends_with("security.md"))
+        })
+        .expect("typed relation");
+    assert_eq!(relation.relation_type.as_deref(), Some("auth-security"));
+    assert_eq!(relation.source_object_type.as_deref(), Some("resource_doc"));
+    assert_eq!(relation.target_object_type.as_deref(), Some("resource_doc"));
 }
 
 #[test]

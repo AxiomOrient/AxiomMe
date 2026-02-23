@@ -164,11 +164,38 @@ pub struct EpisodicSemverPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OntologyContractPolicy {
+    pub schema_uri: String,
+    pub required_schema_version: u32,
+    pub probe_test_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OntologyContractProbeResult {
+    pub passed: bool,
+    pub error: Option<String>,
+    pub command_probe: CommandProbeResult,
+    pub schema_uri: String,
+    pub schema_version: Option<u32>,
+    pub schema_version_ok: bool,
+    pub object_type_count: usize,
+    pub link_type_count: usize,
+    pub action_type_count: usize,
+    pub invariant_count: usize,
+    pub invariant_check_passed: usize,
+    pub invariant_check_failed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractIntegrityGateDetails {
     pub policy: EpisodicSemverPolicy,
     pub contract_probe: CommandProbeResult,
     pub episodic_api_probe: CommandProbeResult,
     pub episodic_semver_probe: EpisodicSemverProbeResult,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ontology_policy: Option<OntologyContractPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ontology_probe: Option<OntologyContractProbeResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,7 +366,7 @@ impl std::fmt::Display for DependencyAuditStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum ReleaseGateDetails {
-    ContractIntegrity(ContractIntegrityGateDetails),
+    ContractIntegrity(Box<ContractIntegrityGateDetails>),
     BuildQuality(BuildQualityGateDetails),
     ReliabilityEvidence(ReliabilityGateDetails),
     EvalQuality(EvalQualityGateDetails),

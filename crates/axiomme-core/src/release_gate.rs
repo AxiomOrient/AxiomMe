@@ -16,11 +16,11 @@ use crate::host_tools::{HostCommandResult, HostCommandSpec, run_host_command};
 use crate::models::{
     BenchmarkGateDetails, BenchmarkGateResult, BlockerRollupGateDetails, BuildQualityGateDetails,
     CommandProbeResult, ContractIntegrityGateDetails, EpisodicSemverPolicy,
-    EpisodicSemverProbeResult, EvalLoopReport, EvalQualityGateDetails, OperabilityEvidenceReport,
-    OperabilityGateDetails, ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId,
-    ReleaseGatePackReport, ReleaseGateStatus, ReleaseSecurityAuditMode, ReliabilityEvidenceReport,
-    ReliabilityGateDetails, SecurityAuditGateDetails, SecurityAuditReport,
-    SessionMemoryGateDetails,
+    EpisodicSemverProbeResult, EvalLoopReport, EvalQualityGateDetails, OntologyContractPolicy,
+    OntologyContractProbeResult, OperabilityEvidenceReport, OperabilityGateDetails,
+    ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId, ReleaseGatePackReport,
+    ReleaseGateStatus, ReleaseSecurityAuditMode, ReliabilityEvidenceReport, ReliabilityGateDetails,
+    SecurityAuditGateDetails, SecurityAuditReport, SessionMemoryGateDetails,
 };
 use crate::text::{OutputTrimMode, first_non_empty_output, truncate_text};
 use crate::uri::{AxiomUri, Scope};
@@ -30,6 +30,8 @@ const CONTRACT_EXECUTION_TEST_NAME: &str =
     "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms";
 const EPISODIC_API_PROBE_TEST_NAME: &str =
     "client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract";
+const ONTOLOGY_CONTRACT_PROBE_TEST_NAME: &str =
+    "ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable";
 const EPISODIC_DEPENDENCY_NAME: &str = "episodic";
 const EPISODIC_REQUIRED_MAJOR: u64 = 0;
 const EPISODIC_REQUIRED_MINOR: u64 = 1;
@@ -86,6 +88,25 @@ impl EpisodicSemverProbeResult {
             lock_version_ok: None,
             lock_source: None,
             lock_source_ok: None,
+        }
+    }
+}
+
+impl OntologyContractProbeResult {
+    fn from_error(error: String, command_probe: CommandProbeResult, schema_uri: String) -> Self {
+        Self {
+            passed: false,
+            error: Some(error),
+            command_probe,
+            schema_uri,
+            schema_version: None,
+            schema_version_ok: false,
+            object_type_count: 0,
+            link_type_count: 0,
+            action_type_count: 0,
+            invariant_count: 0,
+            invariant_check_passed: 0,
+            invariant_check_failed: 0,
         }
     }
 }
@@ -284,13 +305,20 @@ pub fn evaluate_contract_integrity_gate(workspace_dir: &Path) -> ReleaseGateDeci
     let contract_probe = run_contract_execution_probe(workspace_dir);
     let episodic_semver_probe = run_episodic_semver_probe(workspace_dir);
     let episodic_api_probe = run_episodic_api_probe(workspace_dir);
-    let passed = contract_probe.passed && episodic_semver_probe.passed && episodic_api_probe.passed;
-    let details = ReleaseGateDetails::ContractIntegrity(ContractIntegrityGateDetails {
+    let ontology_policy = ontology_contract_policy();
+    let ontology_probe = run_ontology_contract_probe(workspace_dir, &ontology_policy);
+    let passed = contract_probe.passed
+        && episodic_semver_probe.passed
+        && episodic_api_probe.passed
+        && ontology_probe.passed;
+    let details = ReleaseGateDetails::ContractIntegrity(Box::new(ContractIntegrityGateDetails {
         policy: episodic_semver_policy(),
         contract_probe,
         episodic_api_probe,
         episodic_semver_probe,
-    });
+        ontology_policy: Some(ontology_policy),
+        ontology_probe: Some(ontology_probe),
+    }));
     gate_decision(ReleaseGateId::ContractIntegrity, passed, details, None)
 }
 
@@ -303,6 +331,14 @@ fn episodic_semver_policy() -> EpisodicSemverPolicy {
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
+    }
+}
+
+fn ontology_contract_policy() -> OntologyContractPolicy {
+    OntologyContractPolicy {
+        schema_uri: crate::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string(),
+        required_schema_version: 1,
+        probe_test_name: ONTOLOGY_CONTRACT_PROBE_TEST_NAME.to_string(),
     }
 }
 
@@ -468,6 +504,93 @@ fn run_episodic_api_probe(workspace_dir: &Path) -> CommandProbeResult {
         ],
     );
     CommandProbeResult::from_test_run(EPISODIC_API_PROBE_TEST_NAME, ok, output)
+}
+
+fn run_ontology_contract_probe(
+    workspace_dir: &Path,
+    policy: &OntologyContractPolicy,
+) -> OntologyContractProbeResult {
+    let schema_uri = policy.schema_uri.clone();
+    let probe = run_workspace_command(
+        workspace_dir,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "axiomme-core",
+            ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+            "--",
+            "--exact",
+        ],
+    );
+    let command_probe =
+        CommandProbeResult::from_test_run(ONTOLOGY_CONTRACT_PROBE_TEST_NAME, probe.0, probe.1);
+
+    let parsed =
+        match crate::ontology::parse_schema_v1(crate::ontology::DEFAULT_ONTOLOGY_SCHEMA_V1_JSON) {
+            Ok(value) => value,
+            Err(err) => {
+                return OntologyContractProbeResult::from_error(
+                    format!("ontology_schema_parse_failed: {err}"),
+                    command_probe,
+                    schema_uri,
+                );
+            }
+        };
+    let schema_version = parsed.version;
+    let schema_version_ok = schema_version == policy.required_schema_version;
+    if !schema_version_ok {
+        return OntologyContractProbeResult::from_error(
+            format!(
+                "ontology_schema_version_mismatch: expected={} got={}",
+                policy.required_schema_version, schema_version
+            ),
+            command_probe,
+            schema_uri,
+        );
+    }
+
+    let object_type_count = parsed.object_types.len();
+    let link_type_count = parsed.link_types.len();
+    let action_type_count = parsed.action_types.len();
+    let invariant_count = parsed.invariants.len();
+
+    let compiled = match crate::ontology::compile_schema(parsed) {
+        Ok(value) => value,
+        Err(err) => {
+            return OntologyContractProbeResult::from_error(
+                format!("ontology_schema_compile_failed: {err}"),
+                command_probe,
+                schema_uri,
+            );
+        }
+    };
+    let invariant_report = crate::ontology::evaluate_invariants(&compiled);
+    let invariants_ok = invariant_report.failed == 0;
+    let error = if invariants_ok {
+        None
+    } else {
+        Some(format!(
+            "ontology_invariant_check_failed: failed={} passed={}",
+            invariant_report.failed, invariant_report.passed
+        ))
+    };
+
+    let passed = command_probe.passed && schema_version_ok && invariants_ok;
+    OntologyContractProbeResult {
+        passed,
+        error,
+        command_probe,
+        schema_uri,
+        schema_version: Some(schema_version),
+        schema_version_ok,
+        object_type_count,
+        link_type_count,
+        action_type_count,
+        invariant_count,
+        invariant_check_passed: invariant_report.passed,
+        invariant_check_failed: invariant_report.failed,
+    }
 }
 
 fn run_episodic_semver_probe(workspace_dir: &Path) -> EpisodicSemverProbeResult {
@@ -1099,6 +1222,8 @@ path = "../../../episodic"
         let output = format!("running 1 test\ntest {CONTRACT_EXECUTION_TEST_NAME} ... ok\n");
         let episodic_output =
             format!("running 1 test\ntest {EPISODIC_API_PROBE_TEST_NAME} ... ok\n");
+        let ontology_output =
+            format!("running 1 test\ntest {ONTOLOGY_CONTRACT_PROBE_TEST_NAME} ... ok\n");
         let decision = with_workspace_command_mocks(
             &[
                 (
@@ -1127,6 +1252,19 @@ path = "../../../episodic"
                     true,
                     &episodic_output,
                 ),
+                (
+                    "cargo",
+                    &[
+                        "test",
+                        "-p",
+                        "axiomme-core",
+                        ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                        "--",
+                        "--exact",
+                    ],
+                    true,
+                    &ontology_output,
+                ),
             ],
             || evaluate_contract_integrity_gate(temp.path()),
         );
@@ -1141,6 +1279,18 @@ path = "../../../episodic"
                 );
                 assert!(value.episodic_semver_probe.passed);
                 assert_eq!(value.policy.required_minor, EPISODIC_REQUIRED_MINOR);
+                assert!(
+                    value
+                        .ontology_policy
+                        .as_ref()
+                        .is_some_and(|policy| policy.required_schema_version == 1)
+                );
+                assert!(
+                    value
+                        .ontology_probe
+                        .as_ref()
+                        .is_some_and(|probe| probe.passed)
+                );
             }
             other => panic!("expected contract_integrity details, got {other:?}"),
         }
@@ -1182,6 +1332,19 @@ path = "../../../episodic"
                     ],
                     true,
                     "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+                ),
+                (
+                    "cargo",
+                    &[
+                        "test",
+                        "-p",
+                        "axiomme-core",
+                        ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                        "--",
+                        "--exact",
+                    ],
+                    true,
+                    "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
                 ),
             ],
             || evaluate_contract_integrity_gate(temp.path()),
@@ -1232,6 +1395,19 @@ path = "../../../episodic"
                     ],
                     true,
                     "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+                ),
+                (
+                    "cargo",
+                    &[
+                        "test",
+                        "-p",
+                        "axiomme-core",
+                        ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                        "--",
+                        "--exact",
+                    ],
+                    true,
+                    "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
                 ),
             ],
             || evaluate_contract_integrity_gate(temp.path()),

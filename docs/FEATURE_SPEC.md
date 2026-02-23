@@ -131,6 +131,41 @@ The runtime is standalone at execution boundary, and OM is integrated with `epis
 - Web document endpoint supports editable load/save for `markdown`, `json`, `yaml` using full-replace policy.
 - Web document viewer supports read-only load for `jsonl`, `xml`, and `txt`.
 
+### FR-013 Ontology Contract Layer
+
+- Ontology source of truth is explicit data at `axiom://agent/ontology/schema.v1.json`.
+- Ontology schema must be versioned (`version=1` for current contract) and validated before use.
+- Relation write path must enforce declared link contracts (type/arity/endpoint coverage) when schema is present.
+- Retrieval relation enrichment may include typed-edge metadata only when explicitly enabled:
+  - `AXIOMME_SEARCH_TYPED_EDGE_ENRICHMENT=1|true|yes|on`
+- Release gate contract integrity (`G0`) must include ontology contract probing:
+  - ontology contract probe test execution,
+  - schema parse/compile validation,
+  - schema-version policy check,
+  - invariant evaluation with zero failure count.
+- CLI must expose explicit `v2` escalation pressure report (`axiomme ontology pressure`) with:
+  - policy thresholds (`min_action_types`, `min_invariants`, `min_action_invariant_total`, `min_link_types_per_object_basis_points`),
+  - derived counts and trigger reasons,
+  - deterministic `v2_candidate` decision.
+- CLI/automation must expose trend gate (`axiomme ontology trend`) with explicit policy:
+  - `min_samples` (`>=1`)
+  - `consecutive_v2_candidate` (`>=1`)
+  - deterministic status (`insufficient_samples|monitor|trigger_v2_design`).
+- CLI must expose explicit ontology action contract commands:
+  - `axiomme ontology action-validate` validates `action_id`, `queue_event_type`, and `input` against schema action definitions.
+  - `axiomme ontology action-enqueue` validates first, then enqueues one outbox event with explicit payload contract (`schema_version`, `action_id`, `input`).
+  - action input source must be explicit and bounded (`--input-json` or `--input-file` or `--input-stdin`; at most one).
+  - recognized input contracts are `json-any|json-null|json-boolean|json-number|json-string|json-array|json-object`.
+  - unknown `input_contract` values are schema-compile errors.
+- CLI must expose explicit invariant diagnostics command:
+  - `axiomme ontology invariant-check` returns machine-readable pass/fail report per invariant (`status`, `failure_kind`, `failure_detail`).
+  - `--enforce` must fail command when failed invariant count is non-zero.
+  - executable invariant rule grammar subset is explicit:
+    - `object_type_declared:<object_type_id>`
+    - `link_type_declared:<link_type_id>`
+    - `action_type_declared:<action_type_id>`
+- Schema evolution policy (`v1 -> v2`) must remain explicit and documented in `docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md`.
+
 ## 5. Non-Functional Requirements
 
 - Reliability: replay/reconcile restores consistency after restart.

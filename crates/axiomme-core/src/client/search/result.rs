@@ -101,3 +101,85 @@ pub(super) fn annotate_trace_relation_metrics(result: &mut FindResult) {
     trace.metrics.relation_enriched_hits = relation_enriched_hits;
     trace.metrics.relation_enriched_links = relation_enriched_links;
 }
+
+pub(super) fn annotate_typed_edge_query_plan_visibility(result: &mut FindResult, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    append_query_plan_note(result, "typed_edge_enrichment:1");
+    let typed_edges = result
+        .query_results
+        .iter()
+        .chain(result.memories.iter())
+        .chain(result.resources.iter())
+        .chain(result.skills.iter())
+        .flat_map(|hit| hit.relations.iter())
+        .filter(|relation| relation.relation_type.is_some())
+        .count();
+    append_query_plan_note(result, &format!("typed_edge_links:{typed_edges}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::annotate_typed_edge_query_plan_visibility;
+    use crate::models::{ContextHit, FindResult, QueryPlan, RelationSummary};
+
+    fn hit_with_relation(relation_type: Option<&str>) -> ContextHit {
+        ContextHit {
+            uri: "axiom://resources/demo/a.md".to_string(),
+            score: 0.9,
+            abstract_text: "demo".to_string(),
+            context_type: "resource".to_string(),
+            relations: vec![RelationSummary {
+                uri: "axiom://resources/demo/b.md".to_string(),
+                reason: "depends".to_string(),
+                relation_type: relation_type.map(ToString::to_string),
+                source_object_type: None,
+                target_object_type: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn typed_edge_query_plan_visibility_is_disabled_by_flag() {
+        let mut result = FindResult {
+            memories: Vec::new(),
+            resources: Vec::new(),
+            skills: Vec::new(),
+            query_plan: QueryPlan::default(),
+            query_results: vec![hit_with_relation(Some("depends_on"))],
+            trace: None,
+            trace_uri: None,
+        };
+        annotate_typed_edge_query_plan_visibility(&mut result, false);
+        assert!(result.query_plan.notes.is_empty());
+    }
+
+    #[test]
+    fn typed_edge_query_plan_visibility_reports_typed_link_count() {
+        let mut result = FindResult {
+            memories: vec![hit_with_relation(None)],
+            resources: Vec::new(),
+            skills: Vec::new(),
+            query_plan: QueryPlan::default(),
+            query_results: vec![hit_with_relation(Some("depends_on"))],
+            trace: None,
+            trace_uri: None,
+        };
+        annotate_typed_edge_query_plan_visibility(&mut result, true);
+        assert!(
+            result
+                .query_plan
+                .notes
+                .iter()
+                .any(|value| value == "typed_edge_enrichment:1")
+        );
+        assert!(
+            result
+                .query_plan
+                .notes
+                .iter()
+                .any(|value| value == "typed_edge_links:1")
+        );
+    }
+}
