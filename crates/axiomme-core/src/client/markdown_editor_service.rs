@@ -93,11 +93,11 @@ fn load_editor_document(app: &AxiomMe, uri: &str, mode: EditorMode) -> Result<Ma
     let output = (|| -> Result<MarkdownDocument> {
         let uri = AxiomUri::parse(uri)?;
         validate_editor_target(app, &uri, mode)?;
+        let uri_gate = app.markdown_gate_for_uri(&uri)?;
 
-        let _guard = app
-            .markdown_edit_gate
+        let _guard = uri_gate
             .read()
-            .map_err(|_| AxiomError::lock_poisoned("markdown edit gate"))?;
+            .map_err(|_| AxiomError::lock_poisoned("markdown document edit gate"))?;
 
         let content = app.fs.read(&uri)?;
         let etag = markdown_etag(&content);
@@ -158,11 +158,11 @@ fn save_editor_document(
         let parent_uri = uri.parent().ok_or_else(|| {
             AxiomError::Validation(format!("{} target must not be a scope root", mode.label()))
         })?;
+        let uri_gate = app.markdown_gate_for_uri(&uri)?;
 
-        let _guard = app
-            .markdown_edit_gate
+        let _guard = uri_gate
             .write()
-            .map_err(|_| AxiomError::lock_poisoned("markdown edit gate"))?;
+            .map_err(|_| AxiomError::lock_poisoned("markdown document edit gate"))?;
 
         let previous = app.fs.read(&uri)?;
         let current_etag = markdown_etag(&previous);

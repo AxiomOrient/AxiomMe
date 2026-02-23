@@ -2,7 +2,8 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::{fs, io};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
+use axiomme_core::markdown_preview::render_markdown_html as render_preview_html;
 use axiomme_core::models::{
     AddResourceIngestOptions, MetadataFilter, ReconcileOptions, SearchBudget, SearchRequest,
 };
@@ -18,19 +19,33 @@ use self::handlers::{
     handle_benchmark, handle_eval, handle_release, handle_security, handle_session, handle_trace,
 };
 use self::queue::{run_queue_daemon, run_queue_worker};
-use self::web::{WebServeOptions, render_preview_html, serve};
+use self::web::{WebServeOptions, serve};
+
+pub(crate) fn run_from_root(root: &Path, command: Commands) -> Result<()> {
+    validate_command_preflight(&command)?;
+
+    if let Commands::Web(args) = &command {
+        return run_web_handoff(root, &args.host, args.port);
+    }
+
+    let app = AxiomMe::new(root).context("failed to create app")?;
+    run_validated(&app, root, command)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapMode {
+    BootstrapOnly,
+    PrepareRuntime,
+}
 
 #[expect(
     clippy::too_many_lines,
     reason = "explicit top-level CLI dispatch keeps command wiring easy to audit"
 )]
-pub fn run(app: &AxiomMe, root: &Path, command: Commands) -> Result<()> {
-    validate_command_preflight(&command)?;
-
-    if command_needs_runtime_prepare(app, &command) {
-        app.prepare_runtime()?;
-    } else {
-        app.bootstrap()?;
+fn run_validated(app: &AxiomMe, root: &Path, command: Commands) -> Result<()> {
+    if !matches!(&command, Commands::Web(_)) {
+        let mode = resolve_bootstrap_mode(app, &command);
+        apply_bootstrap_mode(app, mode)?;
     }
 
     match command {
@@ -264,17 +279,36 @@ pub fn run(app: &AxiomMe, root: &Path, command: Commands) -> Result<()> {
             println!("{out}");
         }
         Commands::Web(args) => {
-            serve(
-                app,
-                WebServeOptions {
-                    host: &args.host,
-                    port: args.port,
-                },
-            )?;
+            run_web_handoff(root, &args.host, args.port)?;
         }
     }
 
     Ok(())
+}
+
+fn run_web_handoff(root: &Path, host: &str, port: u16) -> Result<()> {
+    serve(root, WebServeOptions { host, port })
+}
+
+fn resolve_bootstrap_mode(app: &AxiomMe, command: &Commands) -> BootstrapMode {
+    if command_needs_runtime_prepare(app, command) {
+        BootstrapMode::PrepareRuntime
+    } else {
+        BootstrapMode::BootstrapOnly
+    }
+}
+
+fn apply_bootstrap_mode(app: &AxiomMe, mode: BootstrapMode) -> Result<()> {
+    match mode {
+        BootstrapMode::BootstrapOnly => {
+            app.bootstrap()?;
+            Ok(())
+        }
+        BootstrapMode::PrepareRuntime => {
+            app.prepare_runtime()?;
+            Ok(())
+        }
+    }
 }
 
 const fn command_needs_runtime(command: &Commands) -> bool {
@@ -284,8 +318,7 @@ const fn command_needs_runtime(command: &Commands) -> bool {
         | Commands::Find(_)
         | Commands::Search(_)
         | Commands::Backend
-        | Commands::Release(_)
-        | Commands::Web(_) => true,
+        | Commands::Release(_) => true,
         Commands::Trace(args) => matches!(args.command, crate::cli::TraceCommand::Replay { .. }),
         Commands::Eval(args) => matches!(args.command, crate::cli::EvalCommand::Run { .. }),
         Commands::Benchmark(args) => matches!(
@@ -293,6 +326,7 @@ const fn command_needs_runtime(command: &Commands) -> bool {
             crate::cli::BenchmarkCommand::Run { .. }
                 | crate::cli::BenchmarkCommand::Amortized { .. }
         ),
+        Commands::Web(_) => false,
         _ => false,
     }
 }

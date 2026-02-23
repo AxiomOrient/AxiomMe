@@ -52,7 +52,7 @@ impl AxiomMe {
                 self.log_request_status(
                     request_id,
                     "release.pack",
-                    &report.status,
+                    report.status.as_str(),
                     started,
                     None,
                     Some(serde_json::json!({

@@ -78,6 +78,24 @@ fn find_and_search_apply_metadata_filters() {
 }
 
 #[test]
+fn episodic_api_probe_validates_om_contract() {
+    let config = crate::om::resolve_om_config(crate::om::OmConfigInput::default())
+        .expect("resolve om config");
+    assert_eq!(config.scope, crate::om::OmScope::Thread);
+
+    let scope_key =
+        crate::om::build_scope_key(crate::om::OmScope::Thread, None, Some("thread-1"), None)
+            .expect("build scope key");
+    assert_eq!(scope_key, "thread:thread-1");
+
+    let parsed = crate::om::parse_memory_section_xml(
+        "<observations>\nalpha\n</observations>",
+        crate::om::OmParseMode::Strict,
+    );
+    assert_eq!(parsed.observations.trim(), "alpha");
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "contract probe keeps multi-step algorithm verification in a single reproducible flow"

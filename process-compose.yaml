@@ -1,12 +1,6 @@
 version: "0.5"
 
 processes:
-  web:
-    command: >-
-      sh -lc 'echo "[axiomme] web UI: http://127.0.0.1:8787"; mkdir -p logs && cargo run -p axiomme-cli -- --root .axiomme web --host 127.0.0.1 --port 8787 >> logs/web.log 2>&1'
-    availability:
-      restart: on_failure
-
   queue_daemon:
     command: >-
       sh -lc 'mkdir -p logs && cargo run -p axiomme-cli -- --root .axiomme queue daemon --max-cycles 1000000 --sleep-ms 1000 --stop-when-idle=false --idle-cycles 3 >> logs/queue_daemon.log 2>&1'

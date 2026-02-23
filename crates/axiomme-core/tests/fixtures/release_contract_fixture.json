@@ -1,0 +1,146 @@
+{
+  "release_gate_decision_contract_integrity": {
+    "gate_id": "G0",
+    "passed": true,
+    "status": "pass",
+    "details": {
+      "kind": "contract_integrity",
+      "data": {
+        "policy": {
+          "required_major": 0,
+          "required_minor": 1,
+          "required_lock_source_prefix": "registry+https://github.com/rust-lang/crates.io-index",
+          "allowed_manifest_operators": ["exact", "caret", "tilde"]
+        },
+        "contract_probe": {
+          "test_name": "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms",
+          "command_ok": true,
+          "matched": true,
+          "output_excerpt": "probe ok",
+          "passed": true
+        },
+        "episodic_api_probe": {
+          "test_name": "client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract",
+          "command_ok": true,
+          "matched": true,
+          "output_excerpt": "probe ok",
+          "passed": true
+        },
+        "episodic_semver_probe": {
+          "passed": true,
+          "error": null,
+          "manifest_req": "0.1.0",
+          "manifest_req_ok": true,
+          "manifest_uses_path": false,
+          "manifest_uses_git": false,
+          "manifest_source_ok": true,
+          "lock_version": "0.1.0",
+          "lock_version_ok": true,
+          "lock_source": "registry+https://github.com/rust-lang/crates.io-index",
+          "lock_source_ok": true
+        }
+      }
+    }
+  },
+  "release_gate_decision_security_audit": {
+    "gate_id": "G5",
+    "passed": true,
+    "status": "pass",
+    "details": {
+      "kind": "security_audit",
+      "data": {
+        "status": "pass",
+        "mode": "strict",
+        "strict_mode_required": true,
+        "strict_mode": true,
+        "audit_status": "passed",
+        "advisories_found": 0,
+        "packages": 42
+      }
+    },
+    "evidence_uri": "axiom://queue/release/security/sec-1.json"
+  },
+  "release_gate_pack_report": {
+    "pack_id": "pack-1",
+    "created_at": "2026-01-01T00:00:00Z",
+    "workspace_dir": "/tmp/ws",
+    "passed": true,
+    "status": "pass",
+    "unresolved_blockers": 0,
+    "decisions": [
+      {
+        "gate_id": "G0",
+        "passed": true,
+        "status": "pass",
+        "details": {
+          "kind": "contract_integrity",
+          "data": {
+            "policy": {
+              "required_major": 0,
+              "required_minor": 1,
+              "required_lock_source_prefix": "registry+https://github.com/rust-lang/crates.io-index",
+              "allowed_manifest_operators": ["exact", "caret", "tilde"]
+            },
+            "contract_probe": {
+              "test_name": "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms",
+              "command_ok": true,
+              "matched": true,
+              "output_excerpt": "probe ok",
+              "passed": true
+            },
+            "episodic_api_probe": {
+              "test_name": "client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract",
+              "command_ok": true,
+              "matched": true,
+              "output_excerpt": "probe ok",
+              "passed": true
+            },
+            "episodic_semver_probe": {
+              "passed": true,
+              "error": null,
+              "manifest_req": "0.1.0",
+              "manifest_req_ok": true,
+              "manifest_uses_path": false,
+              "manifest_uses_git": false,
+              "manifest_source_ok": true,
+              "lock_version": "0.1.0",
+              "lock_version_ok": true,
+              "lock_source": "registry+https://github.com/rust-lang/crates.io-index",
+              "lock_source_ok": true
+            }
+          }
+        }
+      },
+      {
+        "gate_id": "G5",
+        "passed": true,
+        "status": "pass",
+        "details": {
+          "kind": "security_audit",
+          "data": {
+            "status": "pass",
+            "mode": "strict",
+            "strict_mode_required": true,
+            "strict_mode": true,
+            "audit_status": "passed",
+            "advisories_found": 0,
+            "packages": 42
+          }
+        },
+        "evidence_uri": "axiom://queue/release/security/sec-1.json"
+      },
+      {
+        "gate_id": "G8",
+        "passed": true,
+        "status": "pass",
+        "details": {
+          "kind": "blocker_rollup",
+          "data": {
+            "unresolved_blockers": 0
+          }
+        }
+      }
+    ],
+    "report_uri": "axiom://queue/release/packs/pack-1.json"
+  }
+}

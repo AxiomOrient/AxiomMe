@@ -10,7 +10,7 @@ use crate::config::RETRIEVAL_BACKEND_MEMORY;
 use crate::error::{AxiomError, Result};
 use crate::models::{
     BenchmarkCorpusMetadata, BenchmarkEnvironmentMetadata, BenchmarkGateResult, MetadataFilter,
-    ReleaseCheckDocument,
+    ReleaseCheckDocument, ReleaseGateStatus,
 };
 use crate::quality::{
     command_stdout, duration_to_latency_ms, duration_to_latency_us, infer_corpus_profile,
@@ -183,7 +183,7 @@ impl AxiomMe {
             check_id,
             created_at: Utc::now().to_rfc3339(),
             gate_profile: result.gate_profile.clone(),
-            status: if result.passed { "pass" } else { "fail" }.to_string(),
+            status: ReleaseGateStatus::from_passed(result.passed),
             passed: result.passed,
             reasons: result.reasons.clone(),
             threshold_p95_ms: result.threshold_p95_ms,

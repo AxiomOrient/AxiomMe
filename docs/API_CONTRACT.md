@@ -5,7 +5,8 @@
 - Baseline behavior is defined by this document.
 - Additive extensions are allowed and must be marked as `extension`.
 - Canonical URI protocol is `axiom://`.
-- Runtime is self-contained in this repository; OM domain logic is provided by `axiomme-core::om`.
+- Runtime core contracts are defined in this repository (`axiomme-core`, `axiomme-cli`, `axiomme-mobile-ffi`).
+- Web viewer/server delivery is intentionally externalized and must conform to this contract.
 
 ## 0.1 Document Scope and Governance
 
@@ -51,7 +52,9 @@ Restriction:
 Markdown web editor (`extension`):
 
 - `axiomme web --host 127.0.0.1 --port 8787`
-- Startup gate: web server runs scoped reconciliation (`resources/user/agent/session`) and serves endpoints only on successful recovery.
+- CLI behavior: `axiomme web` performs explicit handoff to an external viewer binary (`AXIOMME_WEB_VIEWER_BIN` override, default `axiomme-webd`).
+- Viewer implementation lives outside this repository and consumes this API contract.
+- Startup gate (viewer): web server runs scoped reconciliation (`resources/user/agent/session`) and serves endpoints only on successful recovery.
 - Web responses include security headers (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`).
 - `GET /api/document?uri=axiom://... -> { uri, content, etag, updated_at, format, editable }`
   - Supported formats: `markdown`, `json`, `jsonl`, `yaml`, `xml`, `text`
@@ -183,7 +186,14 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
 
 - `G0` contract integrity:
   - executable contract probe test must pass (`axiomme-core` release contract probe)
+  - `episodic` API probe test must pass (`axiomme-core` OM contract probe)
+  - `crates/axiomme-core/Cargo.toml`의 `episodic` 의존은 semver `0.1.x` 계약을 유지해야 함
+  - `Cargo.lock`의 `episodic` 엔트리는 crates.io registry source여야 함 (`registry+https://github.com/rust-lang/crates.io-index`)
 - `G1` build quality: `cargo check --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -D warnings`
+  - host command policy:
+    - `AXIOMME_HOST_TOOLS=on|off` overrides host process execution.
+    - default is target-driven (`on` for non-iOS, `off` for iOS).
+    - when disabled, host-command-dependent checks return explicit `host_tools_disabled` failure details.
 - `G2` reliability evidence: replay/recovery checks pass
 - `G3` eval quality: `executed_cases > 0`, `top1_accuracy >= 0.75`, `filter_ignored == 0`, `relation_missing == 0`
 - `G4` session memory: session probe passes with `memory_category_miss == 0`
@@ -195,6 +205,10 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
   - advisory DB resolution order:
     - `AXIOMME_ADVISORY_DB` if set
     - else `<workspace>/.axiomme/advisory-db`
+  - status fields are fixed enums:
+    - `SecurityAuditReport.status`: `pass|fail`
+    - `DependencyAuditSummary.mode`: `offline|strict`
+    - `DependencyAuditSummary.status`: `passed|vulnerabilities_found|tool_missing|error|host_tools_disabled`
 - `G6` benchmark gate: latency/accuracy/regression/quorum checks pass over benchmark history
   - strict release profile (`gate_profile` contains `release` or `write_release_check=true`) additionally requires `embedding_provider=semantic-model-http` and no strict embedding error
 - `G7` operability evidence: trace/request-log evidence checks pass
@@ -314,15 +328,70 @@ Notes:
   - `om_status`: OM record/status counters (`observation_tokens_active`, buffering/reflecting counts, trigger totals)
   - `om_reflection_apply_metrics`: reflection apply counters (`attempts_total`, `stale_generation_total`, `stale_generation_ratio`) and latency (`avg_latency_ms`, `max_latency_ms`)
 
+### ReleaseGateDecision / ReleaseGateDetails (extension)
+
+`ReleaseGateDecision.details` is a tagged union:
+`ReleaseGateDecision.gate_id` is a fixed enum code (`G0`..`G8`), not a free-form string.
+`ReleaseGateDecision.status` and `ReleaseGatePackReport.status` are fixed enum values (`pass|fail`).
+`details.data.audit_status` (`security_audit` kind) is a fixed enum value (`passed|vulnerabilities_found|tool_missing|error|host_tools_disabled`).
+`ReleaseGateDecision.evidence_uri` is optional and omitted when unavailable.
+
+```json
+{
+  "gate_id": "G0",
+  "passed": true,
+  "status": "pass",
+  "details": {
+    "kind": "contract_integrity",
+    "data": {
+      "policy": {
+        "required_major": 0,
+        "required_minor": 1,
+        "required_lock_source_prefix": "registry+https://github.com/rust-lang/crates.io-index",
+        "allowed_manifest_operators": ["exact", "caret", "tilde"]
+      },
+      "contract_probe": {"test_name":"...", "command_ok":true, "matched":true, "output_excerpt":"...", "passed":true},
+      "episodic_api_probe": {"test_name":"...", "command_ok":true, "matched":true, "output_excerpt":"...", "passed":true},
+      "episodic_semver_probe": {
+        "passed": true,
+        "error": null,
+        "manifest_req": "0.1.0",
+        "manifest_req_ok": true,
+        "manifest_uses_path": false,
+        "manifest_uses_git": false,
+        "manifest_source_ok": true,
+        "lock_version": "0.1.0",
+        "lock_version_ok": true,
+        "lock_source": "registry+https://github.com/rust-lang/crates.io-index",
+        "lock_source_ok": true
+      }
+    }
+  },
+  "evidence_uri": null
+}
+```
+
+Supported `details.kind` values:
+
+- `contract_integrity` (`G0`): `{ policy, contract_probe, episodic_api_probe, episodic_semver_probe }`
+- `build_quality` (`G1`): `{ cargo_check, cargo_fmt, cargo_clippy, check_output, fmt_output, clippy_output }`
+- `reliability_evidence` (`G2`): `{ status, replay_done, dead_letter }`
+- `eval_quality` (`G3`): `{ executed_cases, top1_accuracy, min_top1_accuracy, failed, filter_ignored, relation_missing }`
+- `session_memory` (`G4`): `{ base_details, memory_category_miss }`
+- `security_audit` (`G5`): `{ status, mode, strict_mode_required, strict_mode, audit_status, advisories_found, packages }`
+- `benchmark` (`G6`): `{ passed, evaluated_runs, passing_runs, reasons }`
+- `operability_evidence` (`G7`): `{ status, traces_analyzed, request_logs_scanned }`
+- `blocker_rollup` (`G8`): `{ unresolved_blockers }`
+
 ## 3. Error Contract
 
 ```json
 {
   "code": "INVALID_URI",
-  "message": "Invalid axiom URI",
+  "message": "invalid URI: axiom://invalid",
   "operation": "read",
   "uri": "axiom://invalid",
-  "trace_id": "uuid"
+  "trace_id": "uuid-v4"
 }
 ```
 
@@ -342,3 +411,8 @@ Optional fields:
 
 - This is a development-stage contract.
 - Backward compatibility is not guaranteed between internal milestones.
+- Contract fixtures are enforced in:
+  - `crates/axiomme-core/tests/fixtures/core_contract_fixture.json`
+  - `crates/axiomme-core/tests/core_contract_fixture.rs`
+  - `crates/axiomme-core/tests/fixtures/release_contract_fixture.json`
+  - `crates/axiomme-core/tests/release_contract_fixture.rs`

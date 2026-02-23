@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
-use std::process::Command;
 use std::time::Duration;
 
 use chrono::Utc;
 
+use crate::host_tools::{HostCommandResult, HostCommandSpec, run_host_command};
 use crate::models::{
     BenchmarkAcceptanceCheck, BenchmarkAcceptanceMeasured, BenchmarkAcceptanceResult,
     BenchmarkAcceptanceThresholds, BenchmarkQuerySetMetadata, BenchmarkReport, BenchmarkSummary,
@@ -52,12 +52,18 @@ pub fn duration_to_latency_us(duration: Duration) -> u128 {
 }
 
 pub fn command_stdout(cmd: &str, args: &[&str]) -> Option<String> {
-    let output = Command::new(cmd).args(args).output().ok()?;
-    if !output.status.success() {
-        return None;
+    let operation = format!("quality:{cmd}");
+    match run_host_command(HostCommandSpec::new(&operation, cmd, args)) {
+        HostCommandResult::Completed {
+            success: true,
+            stdout,
+            ..
+        } => {
+            let text = stdout.trim().to_string();
+            if text.is_empty() { None } else { Some(text) }
+        }
+        _ => None,
     }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() { None } else { Some(text) }
 }
 
 pub fn infer_corpus_profile(file_count: usize, total_bytes: u64) -> String {

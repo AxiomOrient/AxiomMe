@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::{DependencyAuditStatus, ReleaseGateDetails, ReleaseGateId};
 
 #[test]
 fn security_audit_generates_report_artifact() {
@@ -18,12 +19,14 @@ fn security_audit_generates_report_artifact() {
     let report_uri = AxiomUri::parse(&report.report_uri).expect("uri parse");
     assert!(app.fs.exists(&report_uri));
     assert_eq!(report.dependency_audit.tool, "cargo-audit");
-    assert!(
-        report.dependency_audit.status == "passed"
-            || report.dependency_audit.status == "vulnerabilities_found"
-            || report.dependency_audit.status == "tool_missing"
-            || report.dependency_audit.status == "error"
-    );
+    assert!(matches!(
+        report.dependency_audit.status,
+        DependencyAuditStatus::Passed
+            | DependencyAuditStatus::VulnerabilitiesFound
+            | DependencyAuditStatus::ToolMissing
+            | DependencyAuditStatus::Error
+            | DependencyAuditStatus::HostToolsDisabled
+    ));
     assert!(!report.checks.is_empty());
 }
 
@@ -180,9 +183,14 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
             .join("crates")
             .join("axiomme-core")
             .join("Cargo.toml"),
-        "[package]\nname = \"axiomme-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        "[package]\nname = \"axiomme-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nepisodic = \"0.1.0\"\n",
     )
     .expect("write core Cargo.toml");
+    fs::write(
+        workspace.join("Cargo.lock"),
+        "[[package]]\nname = \"episodic\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+    )
+    .expect("write lockfile");
     let options = crate::models::ReleaseGatePackOptions {
         workspace_dir: Some(workspace.display().to_string()),
         replay_limit: 20,
@@ -233,6 +241,19 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
                 true,
                 "test client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms ... ok",
             ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    "client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract",
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "test client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok",
+            ),
         ],
         || app.collect_release_gate_pack(&options),
     )
@@ -246,20 +267,21 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
     let report_uri = AxiomUri::parse(&report.report_uri).expect("report uri parse");
     assert!(app.fs.exists(&report_uri));
 
-    for gate_id in ["G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8"] {
+    for gate_id in ReleaseGateId::ALL {
         assert!(
             report
                 .decisions
                 .iter()
                 .any(|decision| decision.gate_id == gate_id),
-            "missing gate decision: {gate_id}"
+            "missing gate decision: {}",
+            gate_id.code()
         );
     }
     assert!(
         report
             .decisions
             .iter()
-            .find(|decision| decision.gate_id == "G0")
+            .find(|decision| decision.gate_id == ReleaseGateId::ContractIntegrity)
             .expect("G0 decision")
             .passed,
         "G0 should pass when contract execution probe is mocked to succeed"
@@ -268,7 +290,7 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
         report
             .decisions
             .iter()
-            .find(|decision| decision.gate_id == "G1")
+            .find(|decision| decision.gate_id == ReleaseGateId::BuildQuality)
             .expect("G1 decision")
             .passed,
         "G1 should pass when workspace build commands are mocked to succeed"
@@ -276,12 +298,16 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
     let g5 = report
         .decisions
         .iter()
-        .find(|decision| decision.gate_id == "G5")
+        .find(|decision| decision.gate_id == ReleaseGateId::SecurityAudit)
         .expect("G5 decision");
     assert!(
-        !g5.passed && g5.details.contains("strict_mode=false"),
+        !g5.passed,
         "G5 should fail when security audit mode is offline"
     );
+    match &g5.details {
+        ReleaseGateDetails::SecurityAudit(details) => assert!(!details.strict_mode),
+        other => panic!("expected security_audit details, got {other:?}"),
+    }
     assert!(
         !report.passed,
         "release pack with offline security mode must not pass final blocker gate"
@@ -293,9 +319,17 @@ fn contract_integrity_gate_detects_missing_core_crate() {
     let temp = tempdir().expect("tempdir");
 
     let decision = evaluate_contract_integrity_gate(temp.path());
-    assert_eq!(decision.gate_id, "G0");
+    assert_eq!(decision.gate_id, ReleaseGateId::ContractIntegrity);
     assert!(!decision.passed);
-    assert!(decision.details.contains("missing_axiomme_core_crate"));
+    match &decision.details {
+        ReleaseGateDetails::ContractIntegrity(details) => {
+            assert_eq!(
+                details.episodic_semver_probe.error.as_deref(),
+                Some("missing_axiomme_core_crate")
+            );
+        }
+        other => panic!("expected contract_integrity details, got {other:?}"),
+    }
 }
 
 #[test]

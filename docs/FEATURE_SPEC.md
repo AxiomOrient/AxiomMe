@@ -3,7 +3,7 @@
 ## 1. Objective
 
 Build a Rust-native context system with a stable local-first workflow, deterministic behavior, and measurable quality.
-The runtime is standalone and self-contained: no external OM engine repository dependency.
+The runtime is standalone at execution boundary, and OM is integrated with `episodic` as the default pure engine dependency.
 
 ## 2. Hard Constraints
 
@@ -12,7 +12,7 @@ The runtime is standalone and self-contained: no external OM engine repository d
 - Internal scopes: `temp`, `queue`
 - `queue` is read-only for non-system operations
 - Obsolete naming and obsolete URI protocol tokens are prohibited in docs, code, logs, and tests
-- OM engine is in-repo (`axiomme-core::om`), and runtime integration stays explicit in `axiomme-core`.
+- OM integration is explicit in `axiomme-core::om`, with `episodic` wired as the default transform/model engine.
 
 ## 3. Core User Stories
 

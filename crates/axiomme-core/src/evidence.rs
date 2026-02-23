@@ -1,5 +1,6 @@
 use crate::models::{
-    OperabilityEvidenceCheck, QueueDiagnostics, ReliabilityEvidenceCheck, ReplayReport,
+    EvidenceStatus, OperabilityEvidenceCheck, QueueDiagnostics, ReliabilityEvidenceCheck,
+    ReplayReport,
 };
 
 pub const fn accumulate_replay_report(total: &mut ReplayReport, report: &ReplayReport) {
@@ -132,12 +133,8 @@ pub fn build_reliability_evidence_checks(
     ]
 }
 
-pub fn evidence_status(passed: bool) -> String {
-    if passed {
-        "pass".to_string()
-    } else {
-        "fail".to_string()
-    }
+pub const fn evidence_status(passed: bool) -> EvidenceStatus {
+    EvidenceStatus::from_passed(passed)
 }
 
 #[cfg(test)]
@@ -244,7 +241,7 @@ mod tests {
 
     #[test]
     fn evidence_status_maps_bool_to_expected_string() {
-        assert_eq!(evidence_status(true), "pass");
-        assert_eq!(evidence_status(false), "fail");
+        assert_eq!(evidence_status(true), EvidenceStatus::Pass);
+        assert_eq!(evidence_status(false), EvidenceStatus::Fail);
     }
 }

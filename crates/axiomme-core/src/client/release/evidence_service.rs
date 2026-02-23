@@ -65,7 +65,7 @@ impl AxiomMe {
                 self.log_request_status(
                     request_id,
                     "operability.evidence",
-                    &report.status,
+                    report.status.as_str(),
                     started,
                     None,
                     Some(serde_json::json!({

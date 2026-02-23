@@ -6,7 +6,8 @@ use crate::catalog::security_audit_report_uri;
 use crate::error::Result;
 use crate::evidence::evidence_status;
 use crate::models::{
-    DependencyAuditSummary, DependencyInventorySummary, SecurityAuditCheck, SecurityAuditReport,
+    DependencyAuditSummary, DependencyInventorySummary, EvidenceStatus, SecurityAuditCheck,
+    SecurityAuditReport,
 };
 use crate::release_gate::resolve_workspace_dir;
 use crate::security_audit::{
@@ -22,7 +23,7 @@ struct SecurityAuditRuntimeState {
     dependency_audit: DependencyAuditSummary,
     checks: Vec<SecurityAuditCheck>,
     passed: bool,
-    status: String,
+    status: EvidenceStatus,
 }
 
 impl AxiomMe {
@@ -67,7 +68,7 @@ impl AxiomMe {
                 self.log_request_status(
                     request_id,
                     "security.audit",
-                    &report.status,
+                    report.status.as_str(),
                     started,
                     None,
                     Some(serde_json::json!({

@@ -1,137 +1,109 @@
 # AxiomMe
 
-AxiomMe is a local-first context runtime for building deterministic agent systems.
-It treats data as the primary concern: explicit URI-addressed content, explicit queue/state
-transitions, and explicit retrieval/memory workflows.
+AxiomMe is a local-first context runtime for deterministic agent workflows.
 
-This README explains the project itself. Detailed API and policy contracts live in `docs/`.
+This repository is intentionally focused on three boundaries only:
+- `axiomme-core`: data model + runtime engine
+- `axiomme-cli`: explicit process/automation interface
+- `axiomme-mobile-ffi`: native FFI boundary on top of core
 
-## What Problem This Project Solves
+Web UI delivery is intentionally externalized (see "Companion Projects").
 
-Most agent runtimes hide state transitions behind framework abstractions. That makes behavior hard
-to debug, tune, and trust in production.
+## Repository Scope
 
-AxiomMe focuses on:
-- deterministic local execution by default
-- visible and queryable data model
-- recoverable queue/state lifecycle
-- measurable quality and release gates
+Included in this repository:
+- `crates/axiomme-core`
+- `crates/axiomme-cli`
+- `crates/axiomme-mobile-ffi`
 
-## Core Ideas
+Not included in this repository:
+- Web viewer/server runtime (separate project)
+- iOS/Android application projects (separate project)
 
-### 1) Data Is Primary
+This keeps runtime correctness and packaging boundaries explicit.
 
-All content is addressed with a canonical URI:
+## Data Model (Primary)
+
+All content is addressed by canonical URI:
 
 `axiom://{scope}/{path}`
 
 Scopes:
-- External scopes: `resources`, `user`, `agent`, `session`
-- Internal scopes: `temp`, `queue`
+- external: `resources`, `user`, `agent`, `session`
+- internal: `temp`, `queue`
 
-The URI model is the center of the system. Filesystem layout, indexing, queue payloads, and
-retrieval boundaries all follow this model.
+Everything else derives from this model:
+- filesystem placement
+- indexing/retrieval keys
+- queue payload routing
+- session/memory references
 
-### 2) Pure Transformations, Explicit Effects
+## Runtime Boundaries
 
-- Pure logic lives in parser/retrieval/OM transform modules.
-- Side effects are isolated in explicit services:
-  - filesystem writes
-  - sqlite persistence
-  - queue replay
-  - network calls
+`axiomme-core`:
+- URI model, fs safety, queue/state, retrieval, session memory, release evidence.
+- OM model/transform engine is provided by `episodic` and integrated via `axiomme-core::om`.
+- Pure transformations are preferred; side effects are isolated in explicit modules.
 
-### 3) Mechanical Sympathy
+`axiomme-cli`:
+- deterministic command surface for operators/CI.
+- explicit external handoff for viewer command (`axiomme web`).
 
-The runtime is designed to make cost visible:
-- queue statuses are explicit (`new`, `processing`, `done`, `dead_letter`)
-- retries use deterministic backoff
-- retrieval/index behavior is measurable and testable
-- release gates enforce operational quality before shipping
+`axiomme-mobile-ffi`:
+- `staticlib`/`cdylib` exports for native mobile integration.
+- JSON C-ABI contracts and explicit runtime handle ownership.
 
-## Architecture Overview
+## Side Effects (Explicit)
 
-The workspace is split by responsibility:
+Main side-effect boundaries in core:
+- filesystem read/write
+- sqlite persistence
+- queue replay and reconciliation
+- network calls (embedding, remote resources)
+- optional host tool execution (policy-gated)
 
-- `crates/axiomme-core`
-  - runtime engine and domain model
-  - URI/scopes, fs safety, sqlite state, in-memory index
-  - ingest, replay/reconcile, retrieval, session memory, release evidence
-- `crates/axiomme-cli`
-  - command surface and process contracts
-- `crates/axiomme-web`
-  - local web editor/API on top of `axiomme-core`
+Host command policy:
+- `AXIOMME_HOST_TOOLS=on|off`
+- default is target-driven (`on` for non-iOS targets, `off` for iOS targets)
+- compile-time boundary: `axiomme-core` `host-tools` feature (enabled for CLI, disabled in mobile FFI crate)
 
-Canonical spec and contract docs:
-- `docs/README.md`
-- `docs/FEATURE_SPEC.md`
-- `docs/API_CONTRACT.md`
+## What You Can Build
 
-## Runtime Model
-
-### Lifecycle
-
-1. `AxiomMe::new(root)`
-2. `bootstrap()`
-3. `prepare_runtime()`
-4. `initialize()` (runtime-ready alias)
-
-### Durable vs Ephemeral State
-
-- Durable state:
-  - scoped files in workspace
-  - sqlite state store (`.axiomme_state.sqlite3`)
-- Ephemeral state:
-  - in-memory search index
-  - request-scoped runtime hints
-
-### Queue and Recovery
-
-Queue events are stored durably and replayed explicitly. Replay/reconcile flows are first-class.
-This allows predictable recovery after process restarts or partial failures.
-
-## What You Can Build With AxiomMe
-
-- local and remote resource ingestion pipelines
-- searchable context corpora with traceable retrieval
-- session memory extraction and promotion workflows
-- reliability/operability/security evidence generation
-- release gating workflow for production readiness
-- local web-based document/markdown editing with safe defaults
-
-## Repository Map
-
-- `crates/axiomme-core/src/client/*`: orchestration services
-- `crates/axiomme-core/src/state/*`: sqlite schema and persistence
-- `crates/axiomme-core/src/retrieval/*`: planner/engine/scoring
-- `crates/axiomme-core/src/session/*`: session and memory lifecycle
-- `crates/axiomme-core/src/om/*`: OM transforms, parsing, and pipeline
-- `crates/axiomme-cli/src/*`: CLI arguments and command handlers
-- `crates/axiomme-web/src/*`: HTTP handlers, DTOs, security, UI assets
+- deterministic local ingestion + retrieval pipelines
+- searchable context corpora with traceable query plans
+- session memory extraction/promotion workflows
+- reliability/operability/security evidence pipelines
+- release gate automation (`G0..G8`)
+  - `G0` enforces `episodic` API probe + semver/registry contract in addition to core contract probe
+- native mobile clients via FFI boundary crate
 
 ## Quickstart
 
 ```bash
-# 1) Inspect commands
+# inspect CLI surface
 cargo run -p axiomme-cli -- --help
 
-# 2) Initialize runtime in current workspace
+# initialize runtime in current workspace
 cargo run -p axiomme-cli -- init
 
-# 3) Ingest content
+# ingest content
 cargo run -p axiomme-cli -- add ./README.md --target axiom://resources/repo --wait true
 
-# 4) Retrieve context
+# retrieval
 cargo run -p axiomme-cli -- find "context runtime"
 ```
 
-Run web editor:
+Web viewer handoff:
 
 ```bash
 cargo run -p axiomme-cli -- web --host 127.0.0.1 --port 8787
 ```
 
-## Development Workflow
+Viewer binary resolution order:
+- `AXIOMME_WEB_VIEWER_BIN`
+- `axiomme-webd`
+
+## Development and Verification
 
 ```bash
 cargo fmt --all --check
@@ -145,33 +117,38 @@ Convenience script:
 bash scripts/quality_gates.sh
 ```
 
-## Release Workflow
-
-Run release gate pack locally:
+Release gate pack:
 
 ```bash
 cargo run -p axiomme-cli -- release pack --workspace-dir .
 ```
 
-Gate pack evaluates the full readiness sequence (`G0..G8`) and writes an evidence report
-under `axiom://queue/release/packs/`.
+## Companion Projects
 
-## Configuration (High-Level)
+Recommended split under `/Users/axient/repository`:
+- `/Users/axient/repository/AxiomMe-web`
+  - viewer/server delivery only
+  - depends on stable runtime/API contracts
+- `/Users/axient/repository/AxiomMe-mobile`
+  - iOS/Android app projects
+  - consumes `axiomme-mobile-ffi`
 
-Important environment families:
-- retrieval backend policy
-- embedding provider/runtime
-- indexing and reranking behavior
+This repository stays runtime-focused so release risk and performance behavior stay easy to reason about.
 
-For exact variable names and semantics, use:
-- `docs/API_CONTRACT.md`
+## Documentation
+
+Canonical contracts/specs:
+- `docs/README.md`
 - `docs/FEATURE_SPEC.md`
+- `docs/API_CONTRACT.md`
 
-## Project Principles
+Web split decision and migration notes:
+- `docs/WEB_SPLIT_REVIEW_2026-02-21.md`
 
-- Data model first, URI model explicit
-- Pure transforms where possible
-- Side effects isolated and auditable
-- No accidental abstraction
-- Performance characteristics made explicit
-- Operational correctness verified by tests and gates
+## Principles
+
+- data model first
+- pure transforms where possible
+- explicit side effects
+- concrete structures over clever hierarchies
+- predictable performance and ownership boundaries

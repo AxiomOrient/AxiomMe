@@ -856,14 +856,87 @@ fn markdown_reindex_targeted_vs_full_tree_p95_reference() {
         full_tree_ms.push(started.elapsed().as_millis());
     }
 
-    let targeted_p95 = percentile_p95_ms(&targeted_ms);
-    let full_tree_p95 = percentile_p95_ms(&full_tree_ms);
+    let targeted_p95 = percentile_p95(&targeted_ms);
+    let full_tree_p95 = percentile_p95(&full_tree_ms);
     println!(
         "reindex_perf_reference targeted_p95_ms={targeted_p95} full_tree_p95_ms={full_tree_p95}"
     );
 }
 
-fn percentile_p95_ms(values: &[u128]) -> u128 {
+#[test]
+#[ignore = "manual performance evidence for markdown lock contention under unrelated writes"]
+fn markdown_editor_load_latency_under_unrelated_save_pressure_reference() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let corpus_dir = temp.path().join("markdown_lock_perf_corpus");
+    fs::create_dir_all(&corpus_dir).expect("mkdir corpus");
+    for idx in 0..300 {
+        let file = corpus_dir.join(format!("seed-{idx:03}.md"));
+        fs::write(
+            file,
+            format!("# Seed {idx}\n\nlock benchmark seed token {idx}"),
+        )
+        .expect("write seed file");
+    }
+    fs::write(corpus_dir.join("writer.md"), "# Writer\n\nseed writer").expect("write writer");
+    fs::write(corpus_dir.join("reader.md"), "# Reader\n\nseed reader").expect("write reader");
+
+    app.add_resource(
+        corpus_dir.to_str().expect("corpus str"),
+        Some("axiom://resources/markdown-lock-perf"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add failed");
+
+    let writer_uri = "axiom://resources/markdown-lock-perf/writer.md";
+    let reader_uri = "axiom://resources/markdown-lock-perf/reader.md";
+
+    let load_samples = 80usize;
+    let mut baseline_load_us = Vec::<u128>::with_capacity(load_samples);
+    for _ in 0..load_samples {
+        let started = std::time::Instant::now();
+        app.load_markdown(reader_uri).expect("baseline load");
+        baseline_load_us.push(started.elapsed().as_micros());
+    }
+
+    let writer_iterations = 120usize;
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let writer_barrier = std::sync::Arc::clone(&barrier);
+    let writer_app = app.clone();
+    let writer_handle = std::thread::spawn(move || {
+        writer_barrier.wait();
+        for idx in 0..writer_iterations {
+            let content = format!("# Writer\n\nload contention iteration {idx}");
+            writer_app
+                .save_markdown(writer_uri, &content, None)
+                .expect("writer save");
+        }
+    });
+
+    barrier.wait();
+    let mut contended_load_us = Vec::<u128>::with_capacity(load_samples);
+    for _ in 0..load_samples {
+        let started = std::time::Instant::now();
+        app.load_markdown(reader_uri)
+            .expect("contended reader load");
+        contended_load_us.push(started.elapsed().as_micros());
+    }
+    writer_handle.join().expect("writer join");
+
+    let baseline_p95_us = percentile_p95(&baseline_load_us);
+    let contended_p95_us = percentile_p95(&contended_load_us);
+    let amplification = contended_p95_us as f64 / baseline_p95_us.max(1) as f64;
+    println!(
+        "markdown_lock_contention_reference baseline_load_p95_us={baseline_p95_us} contended_load_p95_us={contended_p95_us} amplification_x={amplification:.2}"
+    );
+}
+
+fn percentile_p95(values: &[u128]) -> u128 {
     if values.is_empty() {
         return 0;
     }

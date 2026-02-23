@@ -1,73 +1,79 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use crate::error::AxiomError;
-use crate::models::{DependencyAuditSummary, DependencyInventorySummary, SecurityAuditCheck};
+use crate::host_tools::{HostCommandResult, HostCommandSpec, run_host_command};
+use crate::models::{
+    DependencyAuditStatus, DependencyAuditSummary, DependencyInventorySummary,
+    ReleaseSecurityAuditMode, SecurityAuditCheck,
+};
 use crate::text::{OutputTrimMode, first_non_empty_output, truncate_text};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecurityAuditMode {
-    Offline,
-    Strict,
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CargoAuditProbe {
+    Available { tool_version: Option<String> },
+    Missing,
+    HostToolsDisabled { reason: String },
 }
 
-impl SecurityAuditMode {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Offline => "offline",
-            Self::Strict => "strict",
-        }
-    }
-
-    fn cargo_audit_args(self, advisory_db_path: &Path) -> Vec<String> {
-        let mut args = vec![
-            "audit".to_string(),
-            "--json".to_string(),
-            "--db".to_string(),
-            advisory_db_path.display().to_string(),
-        ];
-        match self {
-            Self::Offline => {
-                args.push("--no-fetch".to_string());
-                args.push("--stale".to_string());
-            }
-            Self::Strict => {}
-        }
-        args
-    }
-}
-
-pub fn resolve_security_audit_mode(raw: Option<&str>) -> Result<SecurityAuditMode, AxiomError> {
+pub fn resolve_security_audit_mode(
+    raw: Option<&str>,
+) -> Result<ReleaseSecurityAuditMode, AxiomError> {
     match raw
         .unwrap_or("offline")
         .trim()
         .to_ascii_lowercase()
         .as_str()
     {
-        "offline" => Ok(SecurityAuditMode::Offline),
-        "strict" => Ok(SecurityAuditMode::Strict),
+        "offline" => Ok(ReleaseSecurityAuditMode::Offline),
+        "strict" => Ok(ReleaseSecurityAuditMode::Strict),
         other => Err(AxiomError::Validation(format!(
             "invalid security audit mode: {other} (expected offline|strict)"
         ))),
     }
 }
 
+fn cargo_audit_args(mode: ReleaseSecurityAuditMode, advisory_db_path: &Path) -> Vec<String> {
+    let mut args = vec![
+        "audit".to_string(),
+        "--json".to_string(),
+        "--db".to_string(),
+        advisory_db_path.display().to_string(),
+    ];
+    match mode {
+        ReleaseSecurityAuditMode::Offline => {
+            args.push("--no-fetch".to_string());
+            args.push("--stale".to_string());
+        }
+        ReleaseSecurityAuditMode::Strict => {}
+    }
+    args
+}
+
 pub fn dependency_inventory_summary(workspace_dir: &Path) -> DependencyInventorySummary {
     let lockfile_present = workspace_dir.join("Cargo.lock").exists();
-    let package_count = Command::new("cargo")
-        .args(["metadata", "--format-version", "1"])
-        .current_dir(workspace_dir)
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .and_then(|out| serde_json::from_slice::<serde_json::Value>(&out.stdout).ok())
-        .and_then(|value| {
-            value
-                .get("packages")
-                .and_then(|v| v.as_array())
-                .map(Vec::len)
-        })
-        .unwrap_or(0);
+    let package_count = match run_host_command(
+        HostCommandSpec::new(
+            "security_audit:inventory",
+            "cargo",
+            &["metadata", "--format-version", "1"],
+        )
+        .with_current_dir(workspace_dir),
+    ) {
+        HostCommandResult::Completed {
+            success: true,
+            stdout,
+            ..
+        } => serde_json::from_str::<serde_json::Value>(&stdout)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("packages")
+                    .and_then(|v| v.as_array())
+                    .map(Vec::len)
+            })
+            .unwrap_or(0),
+        _ => 0,
+    };
 
     DependencyInventorySummary {
         lockfile_present,
@@ -77,53 +83,70 @@ pub fn dependency_inventory_summary(workspace_dir: &Path) -> DependencyInventory
 
 pub fn dependency_audit_summary(
     workspace_dir: &Path,
-    mode: SecurityAuditMode,
+    mode: ReleaseSecurityAuditMode,
 ) -> DependencyAuditSummary {
     let advisory_db_path = resolve_advisory_db_path(workspace_dir);
-    let (available, tool_version) = probe_cargo_audit_tool();
-    if !available {
-        return DependencyAuditSummary {
-            tool: "cargo-audit".to_string(),
-            mode: mode.as_str().to_string(),
-            available: false,
-            executed: false,
-            status: "tool_missing".to_string(),
-            advisories_found: 0,
-            tool_version,
-            output_excerpt: None,
-        };
-    }
+    let tool_version = match probe_cargo_audit_tool() {
+        CargoAuditProbe::HostToolsDisabled { reason } => {
+            return DependencyAuditSummary {
+                tool: "cargo-audit".to_string(),
+                mode,
+                available: false,
+                executed: false,
+                status: DependencyAuditStatus::HostToolsDisabled,
+                advisories_found: 0,
+                tool_version: None,
+                output_excerpt: Some(format_audit_output_excerpt(&advisory_db_path, Some(reason))),
+            };
+        }
+        CargoAuditProbe::Missing => {
+            return DependencyAuditSummary {
+                tool: "cargo-audit".to_string(),
+                mode,
+                available: false,
+                executed: false,
+                status: DependencyAuditStatus::ToolMissing,
+                advisories_found: 0,
+                tool_version: None,
+                output_excerpt: None,
+            };
+        }
+        CargoAuditProbe::Available { tool_version } => tool_version,
+    };
 
     if let Err(reason) = prepare_advisory_db_directory(&advisory_db_path, mode) {
         return DependencyAuditSummary {
             tool: "cargo-audit".to_string(),
-            mode: mode.as_str().to_string(),
+            mode,
             available: true,
             executed: false,
-            status: "error".to_string(),
+            status: DependencyAuditStatus::Error,
             advisories_found: 0,
             tool_version,
             output_excerpt: Some(format_audit_output_excerpt(&advisory_db_path, Some(reason))),
         };
     }
 
-    match Command::new("cargo")
-        .args(mode.cargo_audit_args(&advisory_db_path))
-        .current_dir(workspace_dir)
-        .output()
-    {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let audit_args = cargo_audit_args(mode, &advisory_db_path);
+    let audit_arg_refs = audit_args.iter().map(String::as_str).collect::<Vec<_>>();
+    match run_host_command(
+        HostCommandSpec::new("security_audit:dependency_audit", "cargo", &audit_arg_refs)
+            .with_current_dir(workspace_dir),
+    ) {
+        HostCommandResult::Completed {
+            success,
+            stdout,
+            stderr,
+        } => {
             let advisories = parse_cargo_audit_advisory_count(&stdout)
                 .or_else(|| parse_cargo_audit_advisory_count(&stderr))
                 .unwrap_or(0);
             let status = if advisories > 0 {
-                "vulnerabilities_found".to_string()
-            } else if output.status.success() {
-                "passed".to_string()
+                DependencyAuditStatus::VulnerabilitiesFound
+            } else if success {
+                DependencyAuditStatus::Passed
             } else {
-                "error".to_string()
+                DependencyAuditStatus::Error
             };
             let output_excerpt = Some(format_audit_output_excerpt(
                 &advisory_db_path,
@@ -132,7 +155,7 @@ pub fn dependency_audit_summary(
 
             DependencyAuditSummary {
                 tool: "cargo-audit".to_string(),
-                mode: mode.as_str().to_string(),
+                mode,
                 available: true,
                 executed: true,
                 status,
@@ -141,18 +164,25 @@ pub fn dependency_audit_summary(
                 output_excerpt,
             }
         }
-        Err(err) => DependencyAuditSummary {
+        HostCommandResult::SpawnError { error } => DependencyAuditSummary {
             tool: "cargo-audit".to_string(),
-            mode: mode.as_str().to_string(),
+            mode,
             available: true,
             executed: true,
-            status: "error".to_string(),
+            status: DependencyAuditStatus::Error,
             advisories_found: 0,
             tool_version,
-            output_excerpt: Some(format_audit_output_excerpt(
-                &advisory_db_path,
-                Some(err.to_string()),
-            )),
+            output_excerpt: Some(format_audit_output_excerpt(&advisory_db_path, Some(error))),
+        },
+        HostCommandResult::Blocked { reason } => DependencyAuditSummary {
+            tool: "cargo-audit".to_string(),
+            mode,
+            available: false,
+            executed: false,
+            status: DependencyAuditStatus::HostToolsDisabled,
+            advisories_found: 0,
+            tool_version: None,
+            output_excerpt: Some(format_audit_output_excerpt(&advisory_db_path, Some(reason))),
         },
     }
 }
@@ -196,7 +226,7 @@ pub fn build_security_audit_checks(
             passed: dependency_audit.available
                 && dependency_audit.executed
                 && dependency_audit.advisories_found == 0
-                && dependency_audit.status == "passed",
+                && dependency_audit.status == DependencyAuditStatus::Passed,
             details: format!(
                 "mode={} status={} advisories_found={}",
                 dependency_audit.mode, dependency_audit.status, dependency_audit.advisories_found
@@ -205,33 +235,39 @@ pub fn build_security_audit_checks(
     ]
 }
 
-fn probe_cargo_audit_tool() -> (bool, Option<String>) {
-    let probe = Command::new("cargo").args(["audit", "-V"]).output();
-    let Ok(output) = probe else {
-        return (false, None);
-    };
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if output.status.success() {
-        let version = if stdout.is_empty() {
-            None
-        } else {
-            Some(stdout)
-        };
-        return (true, version);
+fn probe_cargo_audit_tool() -> CargoAuditProbe {
+    match run_host_command(HostCommandSpec::new(
+        "security_audit:probe_cargo_audit_tool",
+        "cargo",
+        &["audit", "-V"],
+    )) {
+        HostCommandResult::Completed {
+            success,
+            stdout,
+            stderr,
+        } => {
+            let stdout = stdout.trim().to_string();
+            if success {
+                let tool_version = if stdout.is_empty() {
+                    None
+                } else {
+                    Some(stdout)
+                };
+                return CargoAuditProbe::Available { tool_version };
+            }
+            if stderr.contains("no such command") {
+                return CargoAuditProbe::Missing;
+            }
+            let tool_version = if stdout.is_empty() {
+                None
+            } else {
+                Some(stdout)
+            };
+            CargoAuditProbe::Available { tool_version }
+        }
+        HostCommandResult::SpawnError { .. } => CargoAuditProbe::Missing,
+        HostCommandResult::Blocked { reason } => CargoAuditProbe::HostToolsDisabled { reason },
     }
-
-    if stderr.contains("no such command") {
-        return (false, None);
-    }
-
-    let version = if stdout.is_empty() {
-        None
-    } else {
-        Some(stdout)
-    };
-    (true, version)
 }
 
 fn parse_cargo_audit_advisory_count(raw: &str) -> Option<usize> {
@@ -276,7 +312,7 @@ fn resolve_advisory_db_path(workspace_dir: &Path) -> PathBuf {
 
 fn prepare_advisory_db_directory(
     advisory_db_path: &Path,
-    mode: SecurityAuditMode,
+    mode: ReleaseSecurityAuditMode,
 ) -> Result<(), String> {
     let Some(parent) = advisory_db_path.parent() else {
         return Err("invalid advisory db path without parent".to_string());
@@ -289,9 +325,9 @@ fn prepare_advisory_db_directory(
             .map_err(|err| format!("failed to read advisory db metadata: {err}"))?;
         if metadata.is_file() {
             match mode {
-                SecurityAuditMode::Strict => std::fs::remove_file(advisory_db_path)
+                ReleaseSecurityAuditMode::Strict => std::fs::remove_file(advisory_db_path)
                     .map_err(|err| format!("failed to reset advisory db file path: {err}"))?,
-                SecurityAuditMode::Offline => {
+                ReleaseSecurityAuditMode::Offline => {
                     return Err(
                         "offline mode does not fetch advisory data; run strict once to bootstrap advisory-db"
                             .to_string(),
@@ -309,10 +345,12 @@ fn prepare_advisory_db_directory(
         let has_git_dir = advisory_db_path.join(".git").is_dir();
         if has_entries && !has_git_dir {
             match mode {
-                SecurityAuditMode::Strict => std::fs::remove_dir_all(advisory_db_path).map_err(
+                ReleaseSecurityAuditMode::Strict => {
+                    std::fs::remove_dir_all(advisory_db_path).map_err(
                     |err| format!("failed to reset invalid advisory db directory: {err}"),
-                )?,
-                SecurityAuditMode::Offline => {
+                )?
+                }
+                ReleaseSecurityAuditMode::Offline => {
                     return Err(
                         "offline mode requires a bootstrapped advisory-db metadata directory; run strict once to initialize advisory-db"
                             .to_string(),
@@ -322,7 +360,8 @@ fn prepare_advisory_db_directory(
         }
     }
 
-    if matches!(mode, SecurityAuditMode::Offline) && !advisory_db_path.join(".git").is_dir() {
+    if matches!(mode, ReleaseSecurityAuditMode::Offline) && !advisory_db_path.join(".git").is_dir()
+    {
         return Err(
             "offline mode requires a bootstrapped advisory-db metadata directory; run strict once to initialize advisory-db"
                 .to_string(),
@@ -376,10 +415,10 @@ mod tests {
         };
         let audit = DependencyAuditSummary {
             tool: "cargo-audit".to_string(),
-            mode: "offline".to_string(),
+            mode: ReleaseSecurityAuditMode::Offline,
             available: false,
             executed: false,
-            status: "tool_missing".to_string(),
+            status: DependencyAuditStatus::ToolMissing,
             advisories_found: 0,
             tool_version: None,
             output_excerpt: None,
@@ -390,14 +429,39 @@ mod tests {
     }
 
     #[test]
+    fn dependency_audit_summary_roundtrips_mode_and_status_contract_values() {
+        let summary = DependencyAuditSummary {
+            tool: "cargo-audit".to_string(),
+            mode: ReleaseSecurityAuditMode::Strict,
+            available: true,
+            executed: true,
+            status: DependencyAuditStatus::VulnerabilitiesFound,
+            advisories_found: 2,
+            tool_version: Some("cargo-audit 1.0.0".to_string()),
+            output_excerpt: Some("advisory_db=/tmp/db; found advisories".to_string()),
+        };
+        let json = serde_json::to_value(&summary).expect("serialize dependency audit summary");
+        assert_eq!(json["mode"], "strict");
+        assert_eq!(json["status"], "vulnerabilities_found");
+
+        let roundtrip: DependencyAuditSummary =
+            serde_json::from_value(json).expect("deserialize dependency audit summary");
+        assert_eq!(roundtrip.mode, ReleaseSecurityAuditMode::Strict);
+        assert_eq!(
+            roundtrip.status,
+            DependencyAuditStatus::VulnerabilitiesFound
+        );
+    }
+
+    #[test]
     fn resolve_security_audit_mode_supports_offline_and_strict() {
         assert_eq!(
             resolve_security_audit_mode(Some("offline")).expect("offline"),
-            SecurityAuditMode::Offline
+            ReleaseSecurityAuditMode::Offline
         );
         assert_eq!(
             resolve_security_audit_mode(Some("strict")).expect("strict"),
-            SecurityAuditMode::Strict
+            ReleaseSecurityAuditMode::Strict
         );
     }
 
@@ -410,7 +474,7 @@ mod tests {
     #[test]
     fn cargo_audit_args_include_db_and_mode_flags() {
         let db = Path::new("/tmp/advisory-db");
-        let strict = SecurityAuditMode::Strict.cargo_audit_args(db);
+        let strict = cargo_audit_args(ReleaseSecurityAuditMode::Strict, db);
         assert_eq!(
             strict,
             vec![
@@ -421,7 +485,7 @@ mod tests {
             ]
         );
 
-        let offline = SecurityAuditMode::Offline.cargo_audit_args(db);
+        let offline = cargo_audit_args(ReleaseSecurityAuditMode::Offline, db);
         assert_eq!(
             offline,
             vec![
@@ -454,7 +518,7 @@ mod tests {
     fn prepare_advisory_db_directory_offline_requires_bootstrapped_advisory_db() {
         let temp = tempfile::tempdir().expect("tempdir");
         let advisory_db = temp.path().join("advisory-db");
-        let err = prepare_advisory_db_directory(&advisory_db, SecurityAuditMode::Offline)
+        let err = prepare_advisory_db_directory(&advisory_db, ReleaseSecurityAuditMode::Offline)
             .expect_err("offline must fail without bootstrapped advisory db");
         assert!(err.contains("offline mode requires a bootstrapped advisory-db"));
     }
@@ -465,15 +529,14 @@ mod tests {
         let advisory_db = temp.path().join("advisory-db");
         std::fs::create_dir_all(&advisory_db).expect("create advisory dir");
         std::fs::write(advisory_db.join("junk.txt"), "junk").expect("write junk");
-        prepare_advisory_db_directory(&advisory_db, SecurityAuditMode::Strict)
+        prepare_advisory_db_directory(&advisory_db, ReleaseSecurityAuditMode::Strict)
             .expect("strict should reset invalid advisory db dir");
         assert!(!advisory_db.exists());
     }
 
     #[test]
     fn dependency_audit_summary_strict_attempts_recovery_from_non_git_advisory_db_directory() {
-        let (available, _) = probe_cargo_audit_tool();
-        if !available {
+        if !matches!(probe_cargo_audit_tool(), CargoAuditProbe::Available { .. }) {
             return;
         }
 
@@ -482,7 +545,7 @@ mod tests {
         std::fs::create_dir_all(&advisory_db).expect("create advisory dir");
         std::fs::write(advisory_db.join("junk.txt"), "junk").expect("write junk");
 
-        let summary = dependency_audit_summary(temp.path(), SecurityAuditMode::Strict);
+        let summary = dependency_audit_summary(temp.path(), ReleaseSecurityAuditMode::Strict);
         assert!(summary.executed);
         assert!(
             summary

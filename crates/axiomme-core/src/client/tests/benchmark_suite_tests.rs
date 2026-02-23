@@ -1054,7 +1054,7 @@ fn benchmark_gate_with_profile_writes_release_check() {
     let doc: ReleaseCheckDocument =
         serde_json::from_str(&raw).expect("parse release check document");
     assert_eq!(doc.gate_profile, "macmini-release");
-    assert_eq!(doc.status, "fail");
+    assert_eq!(doc.status, ReleaseGateStatus::Fail);
     assert_eq!(doc.embedding_provider.as_deref(), Some("semantic-lite"));
     assert!(doc.embedding_strict_error.is_none());
     assert!(doc.gate_record_uri.is_some());

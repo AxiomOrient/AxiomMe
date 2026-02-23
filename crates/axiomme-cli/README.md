@@ -5,7 +5,7 @@ Command-line interface crate.
 ## Responsibility
 
 - Parse commands/options and map them to `axiomme-core` service calls.
-- Expose web server boot command via `axiomme-web`.
+- Provide explicit handoff to an external web viewer process.
 - Keep CLI behavior deterministic/script-friendly.
 - Provide filesystem/document parity commands for web workflows:
   - filesystem: `mkdir`, `rm`, `mv`, `tree`
@@ -15,9 +15,16 @@ Command-line interface crate.
 
 - Runtime preparation is intentionally selective:
   - `init` runs bootstrap only (filesystem/state/backend boot).
-  - Retrieval-heavy commands run runtime prepare (`abstract`, `overview`, `find`, `search`, `trace replay`, `eval run`, `benchmark run|amortized`, `release pack`, `web`).
+  - Retrieval-heavy commands run runtime prepare (`abstract`, `overview`, `find`, `search`, `trace replay`, `eval run`, `benchmark run|amortized`, `release pack`).
   - Read-only/ops commands avoid full runtime prepare (`ls`, `glob`, `read`, `tree`, `queue status/replay/work/daemon/evidence`, `trace list/get/stats/...`, `benchmark list/trend/gate`, `session list/delete`, etc.).
 - Goal: avoid unnecessary global tier/index rebuild on commands that do not need retrieval runtime state.
+
+Web viewer command:
+- `axiomme web --host ... --port ...` launches an external viewer binary.
+- Viewer/server implementation is expected in a separate project (e.g. `/Users/axient/repository/AxiomMe-web`).
+- Resolution order:
+  - `AXIOMME_WEB_VIEWER_BIN` (if set)
+  - `axiomme-webd`
 
 ## How To Run (Operator)
 

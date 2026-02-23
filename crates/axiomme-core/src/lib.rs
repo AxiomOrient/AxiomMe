@@ -13,10 +13,13 @@ pub mod embedding;
 pub mod error;
 pub(crate) mod evidence;
 pub mod fs;
+pub(crate) mod host_tools;
 pub mod index;
 pub mod ingest;
 pub(crate) mod jsonl;
 pub(crate) mod llm_io;
+#[cfg(feature = "markdown-preview")]
+pub mod markdown_preview;
 pub(crate) mod mime;
 pub mod models;
 pub mod om;

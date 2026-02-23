@@ -1,14 +1,16 @@
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 
 use crate::config::AppConfig;
-use crate::error::Result;
+use crate::error::{AxiomError, Result};
 use crate::fs::LocalContextFs;
 use crate::index::InMemoryIndex;
 use crate::parse::ParserRegistry;
 use crate::retrieval::{DrrConfig, DrrEngine};
 use crate::state::SqliteStateStore;
+use crate::uri::AxiomUri;
 
 mod benchmark;
 mod eval;
@@ -27,13 +29,51 @@ mod trace;
 
 pub use benchmark::BenchmarkFixtureCreateOptions;
 
+type DocumentEditGate = Arc<RwLock<()>>;
+type WeakDocumentEditGate = Weak<RwLock<()>>;
+const MARKDOWN_EDIT_GATE_SWEEP_THRESHOLD: usize = 1024;
+
+#[derive(Debug, Default)]
+struct MarkdownEditGates {
+    by_uri: RwLock<HashMap<String, WeakDocumentEditGate>>,
+}
+
+impl MarkdownEditGates {
+    fn gate_for(&self, uri: &AxiomUri) -> Result<DocumentEditGate> {
+        let key = uri.to_string();
+        if let Some(existing) = self
+            .by_uri
+            .read()
+            .map_err(|_| AxiomError::lock_poisoned("markdown gate registry"))?
+            .get(&key)
+            .and_then(Weak::upgrade)
+        {
+            return Ok(existing);
+        }
+
+        let mut by_uri = self
+            .by_uri
+            .write()
+            .map_err(|_| AxiomError::lock_poisoned("markdown gate registry"))?;
+        if let Some(existing) = by_uri.get(&key).and_then(Weak::upgrade) {
+            return Ok(existing);
+        }
+        if by_uri.len() >= MARKDOWN_EDIT_GATE_SWEEP_THRESHOLD {
+            by_uri.retain(|_, gate| gate.strong_count() > 0);
+        }
+        let created = Arc::new(RwLock::new(()));
+        by_uri.insert(key, Arc::downgrade(&created));
+        Ok(created)
+    }
+}
+
 #[derive(Clone)]
 pub struct AxiomMe {
     pub fs: LocalContextFs,
     pub state: SqliteStateStore,
     pub index: Arc<RwLock<InMemoryIndex>>,
     config: Arc<AppConfig>,
-    markdown_edit_gate: Arc<RwLock<()>>,
+    markdown_edit_gates: Arc<MarkdownEditGates>,
     parser_registry: ParserRegistry,
     drr: DrrEngine,
 }
@@ -59,7 +99,7 @@ impl AxiomMe {
             state,
             index,
             config,
-            markdown_edit_gate: Arc::new(RwLock::new(())),
+            markdown_edit_gates: Arc::new(MarkdownEditGates::default()),
             parser_registry: ParserRegistry::new(),
             drr: DrrEngine::new(DrrConfig::default()),
         })
@@ -79,6 +119,10 @@ impl AxiomMe {
 
     pub fn initialize(&self) -> Result<()> {
         self.prepare_runtime()
+    }
+
+    fn markdown_gate_for_uri(&self, uri: &AxiomUri) -> Result<DocumentEditGate> {
+        self.markdown_edit_gates.gate_for(uri)
     }
 }
 #[cfg(test)]

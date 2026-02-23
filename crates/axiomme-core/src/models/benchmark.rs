@@ -109,7 +109,7 @@ impl Default for BenchmarkGateOptions {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ReleaseSecurityAuditMode {
     Offline,
@@ -118,11 +118,17 @@ pub enum ReleaseSecurityAuditMode {
 
 impl ReleaseSecurityAuditMode {
     #[must_use]
-    pub const fn as_str(&self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Offline => "offline",
             Self::Strict => "strict",
         }
+    }
+}
+
+impl std::fmt::Display for ReleaseSecurityAuditMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str((*self).as_str())
     }
 }
 
@@ -417,4 +423,25 @@ pub struct BenchmarkGateResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_strict_error: Option<String>,
     pub reasons: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn release_security_audit_mode_serde_contract_is_stable() {
+        let expected = [
+            (ReleaseSecurityAuditMode::Offline, "offline"),
+            (ReleaseSecurityAuditMode::Strict, "strict"),
+        ];
+
+        for (mode, raw) in expected {
+            let serialized = serde_json::to_string(&mode).expect("serialize mode");
+            assert_eq!(serialized, format!("\"{raw}\""));
+            let deserialized: ReleaseSecurityAuditMode =
+                serde_json::from_str(&serialized).expect("deserialize mode");
+            assert_eq!(deserialized, mode);
+        }
+    }
 }

@@ -11,6 +11,7 @@ It owns one problem end-to-end: **local data processing for indexed retrieval**.
 - In-memory index + retrieval orchestration
 - Ingest, reindex, queue replay/reconcile, markdown/json/yaml editor paths
 - Session memory extraction and release/eval/benchmark evidence pipelines
+- OM pure model/transform contracts via `episodic` (wired through `axiomme-core::om`)
 
 ## Runtime Lifecycle
 
@@ -37,6 +38,9 @@ It owns one problem end-to-end: **local data processing for indexed retrieval**.
   - Rationale: avoid heuristic data loss from `---` delimiter collisions with valid markdown content.
   - If metadata exclusion is needed, preprocess content explicitly before ingestion.
 - Runtime SQLite state DB (`.axiomme_state.sqlite3` + WAL/SHM) is permission-hardened to owner-only on Unix (`0600`).
+- Host-command execution (`cargo`, `sysctl`, etc.) is policy-gated:
+  - `AXIOMME_HOST_TOOLS=on|off` override
+  - target default: enabled on non-iOS, disabled on iOS
 - Reindex and benchmark corpus metadata now **skip symlink entries** to avoid:
   - accidental external file indexing
   - flaky failures on broken links
@@ -52,6 +56,14 @@ It owns one problem end-to-end: **local data processing for indexed retrieval**.
 - `src/retrieval/*`: DRR retrieval engine and trace model
 - `src/embedding.rs`: embedder selection and strict-error handling
 - `src/session/*`: session logs and memory extraction/indexing
+
+Optional feature modules:
+
+- `host-tools` feature enables host process execution boundaries (`cargo`, `sysctl`, etc.).
+  - Enabled by default for desktop/CLI builds.
+  - Mobile FFI builds should keep this disabled.
+- `markdown-preview` feature enables `src/markdown_preview.rs` (pure markdown->safe-html transform).
+- Cost boundary is explicit: mobile/native consumers can keep this feature disabled.
 
 ## Validation
 

@@ -11,8 +11,7 @@ anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-axiomme-core = { version = "0.1.1", path = "../axiomme-core" }
-axiomme-web = { version = "0.1.1", path = "../axiomme-web" }
+axiomme-core = { version = "0.1.1", path = "../axiomme-core", default-features = false, features = ["host-tools", "markdown-preview"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }

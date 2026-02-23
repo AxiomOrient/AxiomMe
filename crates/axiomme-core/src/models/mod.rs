@@ -32,9 +32,14 @@ pub use queue::{
 };
 pub use reconcile::{ReconcileOptions, ReconcileReport};
 pub use release::{
-    DependencyAuditSummary, DependencyInventorySummary, OperabilityEvidenceCheck,
-    OperabilityEvidenceReport, ReleaseCheckDocument, ReleaseGateDecision, ReleaseGatePackReport,
-    ReliabilityEvidenceCheck, ReliabilityEvidenceReport, SecurityAuditCheck, SecurityAuditReport,
+    BenchmarkGateDetails, BlockerRollupGateDetails, BuildQualityGateDetails, CommandProbeResult,
+    ContractIntegrityGateDetails, DependencyAuditStatus, DependencyAuditSummary,
+    DependencyInventorySummary, EpisodicSemverPolicy, EpisodicSemverProbeResult,
+    EvalQualityGateDetails, EvidenceStatus, OperabilityEvidenceCheck, OperabilityEvidenceReport,
+    OperabilityGateDetails, ReleaseCheckDocument, ReleaseGateDecision, ReleaseGateDetails,
+    ReleaseGateId, ReleaseGatePackReport, ReleaseGateStatus, ReliabilityEvidenceCheck,
+    ReliabilityEvidenceReport, ReliabilityGateDetails, SecurityAuditCheck,
+    SecurityAuditGateDetails, SecurityAuditReport, SessionMemoryGateDetails,
 };
 pub use search::{
     BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, IndexRecord, MetadataFilter,

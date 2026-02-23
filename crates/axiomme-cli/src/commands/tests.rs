@@ -1,19 +1,34 @@
 use std::fs;
+use std::path::Path;
 
 use tempfile::tempdir;
 
-use super::{command_needs_runtime, run};
+use super::command_needs_runtime;
 use crate::cli::{
     AddArgs, BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs, DocumentCommand,
     DocumentMode, EvalArgs, EvalCommand, FindArgs, QueueArgs, QueueCommand, ReconcileArgs,
-    TraceArgs, TraceCommand,
+    TraceArgs, TraceCommand, WebArgs,
 };
 use axiomme_core::AxiomMe;
+
+fn run(app: &AxiomMe, root: &Path, command: Commands) -> anyhow::Result<()> {
+    super::validate_command_preflight(&command)?;
+    super::run_validated(app, root, command)
+}
 
 #[test]
 fn queue_status_does_not_require_runtime_prepare() {
     let command = Commands::Queue(QueueArgs {
         command: QueueCommand::Status,
+    });
+    assert!(!command_needs_runtime(&command));
+}
+
+#[test]
+fn web_handoff_does_not_require_runtime_prepare() {
+    let command = Commands::Web(WebArgs {
+        host: "127.0.0.1".to_string(),
+        port: 8787,
     });
     assert!(!command_needs_runtime(&command));
 }

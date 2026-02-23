@@ -59,7 +59,7 @@ impl AxiomMe {
                 self.log_request_status(
                     request_id,
                     "reliability.evidence",
-                    &report.status,
+                    report.status.as_str(),
                     started,
                     Some(report.queued_root_uri.clone()),
                     Some(serde_json::json!({
