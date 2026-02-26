@@ -19,7 +19,8 @@ Scope: dev-branch-first implementation and verification workflow
 | TASK-010 | DONE | P0 | ai | Align `dev` with latest validated work from `main` and keep implementation on `dev`. | `git merge --no-ff main -m "chore: align dev with latest validated main changes"` -> merge commit `f41b46e` |
 | TASK-011 | DONE | P0 | ai | Re-validate full quality gates locally on `dev` after merge. | `bash scripts/quality_gates.sh` (exit 0, 2026-02-26) |
 | TASK-012 | DONE | P0 | ai | Validate remote CI on `dev` (no new tag) and capture artifact evidence. | `gh run view 22445209109` (`conclusion=success`, jobs `gates` + `release-pack-strict` success); `gh api .../runs/22445209109/artifacts` (`mirror-notice-gate`, `release-pack-strict-report`) |
-| TASK-013 | TODO | P0 | merged | Run feature-completeness/UAT gate before release decision. | Compare implemented behavior vs `docs/FEATURE_SPEC.md` + user acceptance checklist/signoff log |
+| TASK-013 | DONE | P0 | merged | Execute feature-completeness/UAT gate and produce signoff record with verdict. | `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`; `docs/MANUAL_USECASE_VALIDATION_2026-02-26.md`; `scripts/manual_usecase_validation.sh` |
+| TASK-014 | BLOCKED | P0 | merged | Unblock final release signoff: satisfy FR-011 runtime dependency and collect human UAT approval. | owner:`platform+release-manager`; `command -v axiomme-webd` -> `missing`; `axiomme-cli web` -> external viewer not found; re-check after dependency install + signoff update |
 
 ## Lifecycle Log
 
@@ -47,10 +48,16 @@ Scope: dev-branch-first implementation and verification workflow
     - Evidence: full local quality gates passed on `dev` after integration.
 12. `2026-02-26` `TASK-012` `TODO -> DOING -> DONE`
     - Evidence: remote `dev` run `22445209109` completed `success` with two artifacts.
-13. `2026-02-26` `TASK-013` `TODO`
-    - Rationale: quality gates are green, but feature-complete/UAT release gate has not been signed off yet.
+13. `2026-02-26` `TASK-013` `TODO -> DOING -> DONE`
+    - Evidence: feature/UAT gate document generated and manual usecase validation script stabilized via iterative self-fix.
+14. `2026-02-26` `TASK-014` `TODO -> DOING -> BLOCKED`
+    - Blocker owner/system: `platform/tooling` (`axiomme-webd` dependency), `release-manager` (human signoff).
+    - Deterministic re-check evidence:
+      - `command -v axiomme-webd`
+      - `target/debug/axiomme-cli --root <tmp-root> web --host 127.0.0.1 --port 8899`
+      - updated signoff entry in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`
 
 ## Next Action Mapping
 
-- [NX-014] source:merged priority:P0 status:todo action:Execute feature-completeness/UAT gate against `docs/FEATURE_SPEC.md`, capture pass/fail matrix, and produce release signoff record: `TASK-013` in this file + signoff evidence document
-- Selected For Next: NX-014
+- [NX-015] source:merged priority:P0 status:blocked action:Install/configure `axiomme-webd`, rerun FR-011 web probe, and capture human UAT/release signoff in gate document evidence: `TASK-014` in this file + updated `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`
+- Selected For Next: NX-015

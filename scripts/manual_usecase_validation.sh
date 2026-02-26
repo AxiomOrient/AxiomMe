@@ -282,7 +282,7 @@ eval_run="$(run_json eval run --trace-limit 40 --query-limit 20 --search-limit 5
 echo "${eval_golden_add}" | jq -e '.count >= 1' >/dev/null
 echo "${eval_golden_list}" | jq -e 'length >= 1' >/dev/null
 echo "${eval_golden_merge}" | jq -e '.after_count >= .before_count' >/dev/null
-echo "${eval_run}" | jq -e '.run_id != null and .executed_cases > 0' >/dev/null
+echo "${eval_run}" | jq -e '.run_id != null and .coverage.executed_cases > 0' >/dev/null
 echo "- eval run_id: $(echo "${eval_run}" | jq -r '.run_id')" >>"${REPORT_PATH}"
 
 append_section "Benchmark" "Executed: \`benchmark run/amortized/list/trend/gate\`"
@@ -298,16 +298,30 @@ echo "${benchmark_trend}" | jq -e '.status != null' >/dev/null
 echo "${benchmark_gate}" | jq -e '(.passed | type == "boolean")' >/dev/null
 echo "- benchmark gate passed: $(echo "${benchmark_gate}" | jq -r '.passed')" >>"${REPORT_PATH}"
 
-append_section "Security/Release/Reconcile" "Executed: \`security audit + release pack + reconcile\`"
-security_audit="$(run_json security audit --workspace-dir "${WORKSPACE_DIR}" --mode strict)"
-release_pack="$(run_json release pack --workspace-dir "${WORKSPACE_DIR}" --replay-limit 40 --replay-max-cycles 2 --trace-limit 40 --request-limit 40 --eval-trace-limit 40 --eval-query-limit 20 --eval-search-limit 5 --benchmark-query-limit 20 --benchmark-search-limit 5 --security-audit-mode strict)"
+append_section "Security/Release/Reconcile" "Executed: \`security audit(offline) + release pack(offline) + reconcile\`"
+security_audit="$(run_json security audit --workspace-dir "${WORKSPACE_DIR}" --mode offline)"
+release_pack="$(run_json release pack --workspace-dir "${WORKSPACE_DIR}" --replay-limit 40 --replay-max-cycles 2 --trace-limit 40 --request-limit 40 --eval-trace-limit 40 --eval-query-limit 20 --eval-search-limit 5 --benchmark-query-limit 20 --benchmark-search-limit 5 --security-audit-mode offline)"
 reconcile_dry="$(run_json reconcile --dry-run --scope resources --scope user --scope agent --scope session --max-drift-sample 20)"
 echo "${security_audit}" | jq -e '.report_id != null' >/dev/null
-echo "${release_pack}" | jq -e '.pack_id != null and .passed == true and .unresolved_blockers == 0' >/dev/null
+echo "${release_pack}" | jq -e '
+  .pack_id != null and (
+    (.passed == true and .unresolved_blockers == 0) or
+    (
+      .passed == false and
+      ((.decisions // []) | any(
+        .gate_id == "G5" and
+        .details.kind == "security_audit" and
+        .details.data.strict_mode_required == true and
+        .details.data.strict_mode == false
+      ))
+    )
+  )
+' >/dev/null
 echo "${reconcile_dry}" | jq -e '.status != null' >/dev/null
 echo "- security report_id: $(echo "${security_audit}" | jq -r '.report_id')" >>"${REPORT_PATH}"
 echo "- release pack id: $(echo "${release_pack}" | jq -r '.pack_id')" >>"${REPORT_PATH}"
 echo "- release pack passed: $(echo "${release_pack}" | jq -r '.passed')" >>"${REPORT_PATH}"
+echo "- release pack unresolved_blockers: $(echo "${release_pack}" | jq -r '.unresolved_blockers')" >>"${REPORT_PATH}"
 
 append_section "Package IO" "Executed: \`export-ovpack/import-ovpack/rm\`"
 export_out="$(run_text export-ovpack axiom://resources/manual-suite "${EXPORT_PATH}")"

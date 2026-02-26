@@ -1,94 +1,91 @@
 # Implementation Plan
 
 Date: 2026-02-26
-Scope: `/Users/axient/repository/AxiomMe` (dev-branch-first integration, verification, and release-discipline correction)
+Scope: `/Users/axient/repository/AxiomMe` (worktree integration on `dev` + `TASK-013` feature-completeness/UAT gate)
 
 ## Objective
 
-Correct the execution flow to a software-engineering-safe release model:
-
-1. keep active development and verification on `dev`,
-2. stop repeated tag/main release signaling during validation,
-3. validate integrated changes on `dev` locally and in remote CI,
-4. leave release decision gated by explicit feature-complete/UAT signoff.
+1. Integrate outstanding local worktree state into `dev` and origin.
+2. Execute `TASK-013` as an explicit feature-completeness/UAT gate.
+3. Run iterative self-critique and self-fix until the gate process is deterministic.
+4. Produce clear go/no-go evidence and next unblock action.
 
 ## Inputs
 
 1. `docs/FEATURE_SPEC.md`
 2. `docs/TASKS.md`
-3. Current branch/run state (`git status -sb`, `gh run list --workflow "Quality Gates"`)
-4. User branch policy: development on `dev`, release only after completion and test signoff.
+3. Existing CI evidence (`run 22445209109`) and artifacts.
+4. Manual validation harness: `scripts/manual_usecase_validation.sh`.
 
 ## Constraints
 
-1. Do not revert unrelated existing work.
-2. Do not create additional release tags during validation.
-3. Keep `docs/TASKS.md` synchronized with real branch/CI evidence.
-4. Release readiness must not be inferred from local-only checks.
+1. Keep dev-first branch policy (no new release tags during validation).
+2. Do not revert unrelated product work.
+3. Track status transitions/evidence in `docs/TASKS.md`.
+4. If blocked, record owner/system and deterministic re-check command.
 
 ## Verification Map (Narrow -> Broader)
 
-1. Narrow: confirm fix commit integrity (`6b720ea`) and clean integration path onto `dev`.
-2. Medium: run `bash scripts/quality_gates.sh` on `dev` and confirm full pass.
-3. Broader: push `dev`, verify remote `Quality Gates` run success, and capture artifact evidence.
-4. Final gate: feature-completeness/UAT signoff against `docs/FEATURE_SPEC.md` before release decision.
+1. Narrow: ensure worktree integration is complete (`dev` pushed, stale stash removed).
+2. Medium: execute manual usecase validation and ensure deterministic pass.
+3. Broader: synthesize FR-by-FR matrix and scenario coverage in a gate document.
+4. Final: decide go/no-go and map next action to one blocked/todo task.
 
 ## Acceptance Criteria
 
-1. `dev` contains latest validated code (`main` divergence closed by merge).
-2. Local `quality_gates.sh` passes on `dev`.
-3. Remote `dev` `Quality Gates` run is green with expected artifacts.
-4. No additional release tag churn occurs during validation.
-5. Release go/no-go remains blocked until feature-complete/UAT evidence exists.
+1. `dev` branch includes latest local documentation/integration commit and is pushed.
+2. `scripts/manual_usecase_validation.sh` runs successfully and writes a fresh report.
+3. `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` exists with FR matrix, verdict, and signoff section.
+4. `docs/TASKS.md` reflects `TASK-013` lifecycle and canonical next action mapping.
 
 ## Task Selection for This Run
 
-1. `TASK-009`: Enforce branch strategy correction and stop accidental main/tag validation churn.
-2. `TASK-010`: Integrate latest work onto `dev`.
-3. `TASK-011`: Execute local full quality gates on `dev`.
-4. `TASK-012`: Validate remote `dev` CI and collect artifact evidence.
-5. `TASK-013`: Keep release blocked until feature-complete/UAT signoff is produced.
+1. `TASK-013`: Execute feature-completeness/UAT gate and generate signoff evidence document.
+2. `TASK-014`: Track and block final release on unresolved environment/signoff dependency.
 
 ## Post-Run Routing Update
 
-1. Branch strategy correction is complete (`TASK-009` `DONE`).
-2. `dev` integration is complete (`TASK-010` `DONE`, merge commit `f41b46e`).
-3. Local quality verification is complete (`TASK-011` `DONE`).
-4. Remote `dev` CI verification is complete (`TASK-012` `DONE`, run `22445209109` success).
-5. Release remains intentionally pending on product-completion signoff (`TASK-013` `TODO`).
+1. Worktree integration completed:
+   - `dev` pushed (`52f5ca1`), stale stash dropped.
+2. `TASK-013` completed with new gate artifact:
+   - `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`.
+3. Self-critique/self-fix loop completed on validation harness:
+   - fixed eval JSON path bug,
+   - corrected unsupported security mode usage,
+   - corrected release-pack decision field parsing and null safety.
+4. Release remains blocked under `TASK-014`:
+   - missing `axiomme-webd`,
+   - pending human UAT/release signoff.
 
 ## Data Model
 
 1. `TaskRecord`: `task_id`, `status`, `priority`, `source`, `action`, `evidence`.
-2. `Status`: `TODO | DOING | DONE | BLOCKED`.
-3. `RunEvidence`: `run_id`, `branch`, `conclusion`, `artifacts[]`.
+2. `GateRecord`: `gate_id`, `requirement`, `evidence`, `verdict`, `blocker`.
+3. `BlockerRecord`: `owner`, `system`, `recheck_command`, `evidence_path`.
 
 ## Transformations vs Side Effects
 
 1. Transformations:
-   - Re-route task state from tag-first to dev-first validation policy.
-   - Normalize release decision input from CI-only to CI + feature/UAT signoff.
+   - Convert feature specification requirements into concrete FR/scenario evidence matrix.
+   - Convert ad-hoc script failures into deterministic script behavior via iterative fixes.
 2. Side effects:
-   - Cancel in-flight `main`/tag runs (`22443474696`, `22443480018`).
-   - Delete accidental tag `0.1.6` on origin.
-   - Merge `main` into `dev` (`f41b46e`).
-   - Push `dev` and validate run `22445209109`.
-   - Refresh gate evidence artifacts in `docs/` from local validation run.
+   - Push `dev` branch update.
+   - Drop obsolete stash entry.
+   - Patch `scripts/manual_usecase_validation.sh`.
+   - Generate `docs/MANUAL_USECASE_VALIDATION_2026-02-26.md`.
+   - Generate `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`.
+   - Update `docs/TASKS.md` lifecycle/next actions.
 
 ## Perf Notes
 
-1. Local `quality_gates.sh` on `dev` passed after integration.
-2. Remote run `22445209109` jobs both passed:
-   - `gates`: success
-   - `release-pack-strict`: success
-3. CI artifacts recorded:
-   - `mirror-notice-gate` (`id=5673120116`)
-   - `release-pack-strict-report` (`id=5673191406`)
+1. Manual usecase harness now completes end-to-end with `PASS`.
+2. Remote CI reference remains green on `dev` (`22445209109`).
+3. Remaining blocker is not performance-related; it is dependency/signoff gating.
 
 ## Risks and Rollback
 
-1. Risk: release can still be mis-triggered if tag is created before feature/UAT signoff.
-2. Mitigation: keep `TASK-013` as explicit P0 pre-release gate.
-3. Risk: operational docs can drift from branch reality.
-4. Mitigation: update `docs/TASKS.md` on every routing shift and CI conclusion.
-5. Rollback: if needed, reset only this run's branch-strategy/doc edits; do not discard unrelated product code.
+1. Risk: release could be attempted without FR-011 runtime dependency installed.
+2. Mitigation: keep `TASK-014` `BLOCKED` with deterministic re-check commands.
+3. Risk: manual signoff omitted despite technical gate evidence.
+4. Mitigation: require signoff fields in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`.
+5. Rollback: revert only this run's docs/script changes if policy changes; keep validated product code intact.
