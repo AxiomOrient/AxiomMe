@@ -92,14 +92,24 @@ impl OmObserverMode {
 struct OmObserverConfig {
     mode: OmObserverMode,
     model_enabled: bool,
-    llm_endpoint: String,
-    llm_model: String,
-    llm_timeout_ms: u64,
-    llm_max_output_tokens: u32,
-    llm_temperature_milli: u16,
-    llm_strict: bool,
-    llm_max_chars_per_message: usize,
-    llm_max_input_tokens: u32,
+    llm: OmObserverLlmConfig,
+    text_budget: OmObserverTextBudget,
+}
+
+#[derive(Debug, Clone)]
+struct OmObserverLlmConfig {
+    endpoint: String,
+    model: String,
+    timeout_ms: u64,
+    max_output_tokens: u32,
+    temperature_milli: u16,
+    strict: bool,
+    max_chars_per_message: usize,
+    max_input_tokens: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OmObserverTextBudget {
     observation_max_chars: usize,
     active_observations_max_chars: usize,
     other_conversation_max_part_chars: usize,
@@ -113,33 +123,38 @@ impl OmObserverConfig {
                 snapshot.explicit_model_enabled,
                 snapshot.rollout_profile.as_deref(),
             ),
-            llm_endpoint: snapshot
-                .llm_endpoint
-                .clone()
-                .unwrap_or_else(|| DEFAULT_OM_OBSERVER_LLM_ENDPOINT.to_string()),
-            llm_model: snapshot
-                .llm_model
-                .clone()
-                .unwrap_or_else(|| DEFAULT_OM_OBSERVER_LLM_MODEL.to_string()),
-            llm_timeout_ms: snapshot
-                .llm_timeout_ms
-                .unwrap_or(DEFAULT_OM_OBSERVER_LLM_TIMEOUT_MS),
-            llm_max_output_tokens: snapshot
-                .llm_max_output_tokens
-                .unwrap_or(DEFAULT_OM_OBSERVER_LLM_MAX_OUTPUT_TOKENS),
-            llm_temperature_milli: snapshot
-                .llm_temperature_milli
-                .unwrap_or(DEFAULT_OM_OBSERVER_LLM_TEMPERATURE_MILLI),
-            llm_strict: snapshot.llm_strict,
-            llm_max_chars_per_message: snapshot
-                .llm_max_chars_per_message
-                .unwrap_or(DEFAULT_OM_OBSERVER_LLM_MAX_CHARS_PER_MESSAGE),
-            llm_max_input_tokens: snapshot
-                .llm_max_input_tokens
-                .unwrap_or(DEFAULT_OM_OBSERVER_LLM_MAX_INPUT_TOKENS),
-            observation_max_chars: limits.observation_max_chars,
-            active_observations_max_chars: limits.observer_active_observations_max_chars,
-            other_conversation_max_part_chars: limits.observer_other_conversation_max_part_chars,
+            llm: OmObserverLlmConfig {
+                endpoint: snapshot
+                    .llm_endpoint
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_OM_OBSERVER_LLM_ENDPOINT.to_string()),
+                model: snapshot
+                    .llm_model
+                    .clone()
+                    .unwrap_or_else(|| DEFAULT_OM_OBSERVER_LLM_MODEL.to_string()),
+                timeout_ms: snapshot
+                    .llm_timeout_ms
+                    .unwrap_or(DEFAULT_OM_OBSERVER_LLM_TIMEOUT_MS),
+                max_output_tokens: snapshot
+                    .llm_max_output_tokens
+                    .unwrap_or(DEFAULT_OM_OBSERVER_LLM_MAX_OUTPUT_TOKENS),
+                temperature_milli: snapshot
+                    .llm_temperature_milli
+                    .unwrap_or(DEFAULT_OM_OBSERVER_LLM_TEMPERATURE_MILLI),
+                strict: snapshot.llm_strict,
+                max_chars_per_message: snapshot
+                    .llm_max_chars_per_message
+                    .unwrap_or(DEFAULT_OM_OBSERVER_LLM_MAX_CHARS_PER_MESSAGE),
+                max_input_tokens: snapshot
+                    .llm_max_input_tokens
+                    .unwrap_or(DEFAULT_OM_OBSERVER_LLM_MAX_INPUT_TOKENS),
+            },
+            text_budget: OmObserverTextBudget {
+                observation_max_chars: limits.observation_max_chars,
+                active_observations_max_chars: limits.observer_active_observations_max_chars,
+                other_conversation_max_part_chars: limits
+                    .observer_other_conversation_max_part_chars,
+            },
         }
     }
 }
@@ -437,7 +452,7 @@ impl Session {
         let observer_context_record = record_with_buffered_observation_context(
             record,
             buffered_chunks,
-            observer_config.active_observations_max_chars,
+            observer_config.text_budget.active_observations_max_chars,
         );
         let observer_output = resolve_observer_response_with_config(
             &observer_context_record,
@@ -464,7 +479,7 @@ impl Session {
             record,
             buffered_chunks,
             &observer_output,
-            observer_config.observation_max_chars,
+            observer_config.text_budget.observation_max_chars,
         )
     }
 

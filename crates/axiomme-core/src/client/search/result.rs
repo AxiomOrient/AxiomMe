@@ -1,8 +1,6 @@
 use serde_json::json;
 
-use crate::models::{
-    ContextHit, FindResult, MetadataFilter, SearchBudget, SearchFilter, TracePoint,
-};
+use crate::models::{FindResult, MetadataFilter, SearchBudget, SearchFilter, TracePoint};
 
 pub(super) fn metadata_filter_to_search_filter(
     filter: Option<MetadataFilter>,
@@ -58,28 +56,6 @@ pub(super) fn sync_trace_final_topk(result: &mut FindResult) {
         .collect();
 }
 
-pub(super) fn split_hits(
-    hits: &[ContextHit],
-) -> (Vec<ContextHit>, Vec<ContextHit>, Vec<ContextHit>) {
-    let mut memories = Vec::new();
-    let mut resources = Vec::new();
-    let mut skills = Vec::new();
-
-    for hit in hits {
-        if hit.uri.starts_with("axiom://user/memories")
-            || hit.uri.starts_with("axiom://agent/memories")
-        {
-            memories.push(hit.clone());
-        } else if hit.uri.starts_with("axiom://agent/skills") {
-            skills.push(hit.clone());
-        } else {
-            resources.push(hit.clone());
-        }
-    }
-
-    (memories, resources, skills)
-}
-
 pub(super) fn append_query_plan_note(result: &mut FindResult, note: &str) {
     result.query_plan.notes.push(note.to_string());
 }
@@ -110,9 +86,6 @@ pub(super) fn annotate_typed_edge_query_plan_visibility(result: &mut FindResult,
     let typed_edges = result
         .query_results
         .iter()
-        .chain(result.memories.iter())
-        .chain(result.resources.iter())
-        .chain(result.skills.iter())
         .flat_map(|hit| hit.relations.iter())
         .filter(|relation| relation.relation_type.is_some())
         .count();
@@ -122,7 +95,7 @@ pub(super) fn annotate_typed_edge_query_plan_visibility(result: &mut FindResult,
 #[cfg(test)]
 mod tests {
     use super::annotate_typed_edge_query_plan_visibility;
-    use crate::models::{ContextHit, FindResult, QueryPlan, RelationSummary};
+    use crate::models::{ContextHit, FindResult, HitBuckets, QueryPlan, RelationSummary};
 
     fn hit_with_relation(relation_type: Option<&str>) -> ContextHit {
         ContextHit {
@@ -143,11 +116,12 @@ mod tests {
     #[test]
     fn typed_edge_query_plan_visibility_is_disabled_by_flag() {
         let mut result = FindResult {
+            query_plan: QueryPlan::default(),
+            query_results: vec![hit_with_relation(Some("depends_on"))],
+            hit_buckets: HitBuckets::default(),
             memories: Vec::new(),
             resources: Vec::new(),
             skills: Vec::new(),
-            query_plan: QueryPlan::default(),
-            query_results: vec![hit_with_relation(Some("depends_on"))],
             trace: None,
             trace_uri: None,
         };
@@ -158,11 +132,15 @@ mod tests {
     #[test]
     fn typed_edge_query_plan_visibility_reports_typed_link_count() {
         let mut result = FindResult {
-            memories: vec![hit_with_relation(None)],
+            query_plan: QueryPlan::default(),
+            query_results: vec![
+                hit_with_relation(Some("depends_on")),
+                hit_with_relation(None),
+            ],
+            hit_buckets: HitBuckets::default(),
+            memories: Vec::new(),
             resources: Vec::new(),
             skills: Vec::new(),
-            query_plan: QueryPlan::default(),
-            query_results: vec![hit_with_relation(Some("depends_on"))],
             trace: None,
             trace_uri: None,
         };

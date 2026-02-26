@@ -32,26 +32,46 @@ pub struct EvalBucket {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EvalLoopReport {
-    pub run_id: String,
-    pub created_at: String,
+pub struct EvalRunSelection {
     pub trace_limit: usize,
     pub query_limit: usize,
     pub search_limit: usize,
     pub include_golden: bool,
     pub golden_only: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalCoverageSummary {
     pub traces_scanned: usize,
     pub trace_cases_used: usize,
     pub golden_cases_used: usize,
     pub executed_cases: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalQualitySummary {
     pub passed: usize,
     pub failed: usize,
     pub top1_accuracy: f32,
     pub buckets: Vec<EvalBucket>,
+    pub failures: Vec<EvalCaseResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalArtifacts {
     pub report_uri: String,
     pub query_set_uri: String,
     pub markdown_report_uri: String,
-    pub failures: Vec<EvalCaseResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalLoopReport {
+    pub run_id: String,
+    pub created_at: String,
+    pub selection: EvalRunSelection,
+    pub coverage: EvalCoverageSummary,
+    pub quality: EvalQualitySummary,
+    pub artifacts: EvalArtifacts,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

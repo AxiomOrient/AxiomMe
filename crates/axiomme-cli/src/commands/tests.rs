@@ -7,7 +7,7 @@ use super::command_needs_runtime;
 use crate::cli::{
     AddArgs, BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs, DocumentCommand,
     DocumentMode, EvalArgs, EvalCommand, FindArgs, OntologyArgs, OntologyCommand, QueueArgs,
-    QueueCommand, ReconcileArgs, TraceArgs, TraceCommand, WebArgs,
+    QueueCommand, ReconcileArgs, RelationArgs, RelationCommand, TraceArgs, TraceCommand, WebArgs,
 };
 use axiomme_core::AxiomMe;
 
@@ -100,6 +100,16 @@ fn find_requires_runtime_prepare() {
 fn backend_requires_runtime_prepare() {
     let command = Commands::Backend;
     assert!(command_needs_runtime(&command));
+}
+
+#[test]
+fn relation_commands_do_not_require_runtime_prepare() {
+    let command = Commands::Relation(RelationArgs {
+        command: RelationCommand::List {
+            owner_uri: "axiom://resources/docs".to_string(),
+        },
+    });
+    assert!(!command_needs_runtime(&command));
 }
 
 #[test]
@@ -236,6 +246,93 @@ fn queue_status_uses_bootstrap_only_without_generating_root_tiers() {
 
     assert!(temp.path().join("resources").exists());
     assert!(!temp.path().join("resources").join(".abstract.md").exists());
+}
+
+#[test]
+fn relation_commands_roundtrip_link_list_unlink() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+    run(
+        &app,
+        temp.path(),
+        Commands::Mkdir(crate::cli::UriArg {
+            uri: "axiom://resources/docs".to_string(),
+        }),
+    )
+    .expect("mkdir owner");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Relation(RelationArgs {
+            command: RelationCommand::Link {
+                owner_uri: "axiom://resources/docs".to_string(),
+                relation_id: "auth-security".to_string(),
+                uris: vec![
+                    "axiom://resources/docs/auth.md".to_string(),
+                    "axiom://resources/docs/security.md".to_string(),
+                ],
+                reason: "security dependency".to_string(),
+            },
+        }),
+    )
+    .expect("relation link");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Relation(RelationArgs {
+            command: RelationCommand::List {
+                owner_uri: "axiom://resources/docs".to_string(),
+            },
+        }),
+    )
+    .expect("relation list");
+    let listed = app
+        .relations("axiom://resources/docs")
+        .expect("relations listed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, "auth-security");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Relation(RelationArgs {
+            command: RelationCommand::Unlink {
+                owner_uri: "axiom://resources/docs".to_string(),
+                relation_id: "auth-security".to_string(),
+            },
+        }),
+    )
+    .expect("relation unlink");
+    assert!(
+        app.relations("axiom://resources/docs")
+            .expect("relations after unlink")
+            .is_empty()
+    );
+}
+
+#[test]
+fn relation_link_requires_at_least_two_uris_before_bootstrap() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    let err = run(
+        &app,
+        temp.path(),
+        Commands::Relation(RelationArgs {
+            command: RelationCommand::Link {
+                owner_uri: "axiom://resources/docs".to_string(),
+                relation_id: "auth-security".to_string(),
+                uris: vec!["axiom://resources/docs/auth.md".to_string()],
+                reason: "security dependency".to_string(),
+            },
+        }),
+    )
+    .expect_err("must reject one-uri relation");
+
+    assert!(format!("{err:#}").contains("at least two --uri"));
+    assert!(!temp.path().join("resources").exists());
 }
 
 #[test]

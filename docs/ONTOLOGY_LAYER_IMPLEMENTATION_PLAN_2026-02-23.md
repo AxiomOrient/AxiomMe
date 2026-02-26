@@ -280,7 +280,7 @@ Completed:
 
 1. CI strict release-pack execution path added via `scripts/release_pack_strict_gate.sh` and `.github/workflows/quality-gates.yml`.
 2. Typed-edge enrichment delta probe added via `scripts/typed_edge_enrichment_probe.sh` and wired into nightly perf workflow.
-3. Relation enrichment path hardened with per-request owner cache to avoid repeated `.relations.json` reads across hit sets (`query_results/memories/resources/skills`) in a single find/search request.
+3. Relation enrichment path hardened with per-request owner cache to avoid repeated `.relations.json` reads across `query_results` in a single find/search request (category views are derived via `hit_buckets` indices).
 4. `axiomme ontology pressure` command added with explicit `OntologyV2PressurePolicy` / `OntologyV2PressureReport` contract for data-driven `v2` escalation.
 5. Ontology pressure snapshots are now persisted in both CI and nightly artifacts via `scripts/ontology_pressure_snapshot.sh`, wired into `.github/workflows/quality-gates.yml` and `.github/workflows/perf-regression-nightly.yml`.
 6. Automated trend rule implemented (`min_samples=3`, `consecutive_v2_candidate=3`) with `axiomme ontology trend` + `scripts/ontology_pressure_trend_gate.sh`, wired in CI/nightly.

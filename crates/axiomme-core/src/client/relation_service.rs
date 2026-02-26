@@ -15,6 +15,7 @@ use super::{AxiomMe, OntologySchemaCacheEntry, OntologySchemaFingerprint};
 impl AxiomMe {
     pub fn relations(&self, owner_uri: &str) -> Result<Vec<RelationLink>> {
         let owner = AxiomUri::parse(owner_uri)?;
+        validate_relation_owner_scope(&owner)?;
         self.fs.read_relations(&owner)
     }
 
@@ -26,6 +27,7 @@ impl AxiomMe {
         reason: &str,
     ) -> Result<RelationLink> {
         let owner = AxiomUri::parse(owner_uri)?;
+        validate_relation_owner_scope(&owner)?;
         let relation_id = relation_id.trim();
         if relation_id.is_empty() {
             return Err(AxiomError::Validation(
@@ -43,7 +45,20 @@ impl AxiomMe {
             .into_iter()
             .map(|uri| AxiomUri::parse(&uri))
             .collect::<Result<Vec<_>>>()?;
+        let parsed_uris = dedupe_relation_uris(parsed_uris);
+        if parsed_uris.len() < 2 {
+            return Err(AxiomError::Validation(
+                "relation link requires at least two unique uris".to_string(),
+            ));
+        }
         self.maybe_validate_relation_link_ontology(relation_id, &parsed_uris)?;
+        for uri in &parsed_uris {
+            if !uri.starts_with(&owner) {
+                return Err(AxiomError::Validation(format!(
+                    "relation uri must be within owner subtree: owner={owner}, uri={uri}"
+                )));
+            }
+        }
         let normalized_uris = parsed_uris.iter().map(ToString::to_string).collect();
 
         let next = RelationLink {
@@ -64,6 +79,7 @@ impl AxiomMe {
 
     pub fn unlink(&self, owner_uri: &str, relation_id: &str) -> Result<bool> {
         let owner = AxiomUri::parse(owner_uri)?;
+        validate_relation_owner_scope(&owner)?;
         let relation_id = relation_id.trim();
         if relation_id.is_empty() {
             return Err(AxiomError::Validation(
@@ -88,37 +104,34 @@ impl AxiomMe {
         typed_edge_enrichment: bool,
     ) -> Result<()> {
         let ontology_schema = if typed_edge_enrichment {
-            self.load_relation_ontology_schema()?
+            self.load_relation_ontology_schema_for_enrichment()?
         } else {
             None
         };
         let ontology_schema = ontology_schema.as_deref();
         let mut owner_relations_cache = HashMap::<AxiomUri, Arc<Vec<RelationLink>>>::new();
+        let mut object_type_cache = HashMap::<String, Option<String>>::new();
         self.enrich_hits_with_relations(
             &mut result.query_results,
             max_per_hit,
             ontology_schema,
             &mut owner_relations_cache,
-        )?;
-        self.enrich_hits_with_relations(
-            &mut result.memories,
-            max_per_hit,
-            ontology_schema,
-            &mut owner_relations_cache,
-        )?;
-        self.enrich_hits_with_relations(
-            &mut result.resources,
-            max_per_hit,
-            ontology_schema,
-            &mut owner_relations_cache,
-        )?;
-        self.enrich_hits_with_relations(
-            &mut result.skills,
-            max_per_hit,
-            ontology_schema,
-            &mut owner_relations_cache,
+            &mut object_type_cache,
         )?;
         Ok(())
+    }
+
+    fn load_relation_ontology_schema_for_enrichment(
+        &self,
+    ) -> Result<Option<Arc<crate::ontology::CompiledOntologySchema>>> {
+        match self.load_relation_ontology_schema() {
+            Ok(schema) => Ok(schema),
+            // Relation enrichment is an optional read path. If ontology schema
+            // is malformed, preserve base retrieval behavior instead of failing
+            // the whole find/search request.
+            Err(AxiomError::OntologyViolation(_)) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 
     fn enrich_hits_with_relations(
@@ -127,6 +140,7 @@ impl AxiomMe {
         max_per_hit: usize,
         ontology_schema: Option<&CompiledOntologySchema>,
         owner_relations_cache: &mut HashMap<AxiomUri, Arc<Vec<RelationLink>>>,
+        object_type_cache: &mut HashMap<String, Option<String>>,
     ) -> Result<()> {
         for hit in hits {
             hit.relations = self.collect_relations_for_hit(
@@ -134,6 +148,7 @@ impl AxiomMe {
                 max_per_hit,
                 ontology_schema,
                 owner_relations_cache,
+                object_type_cache,
             )?;
         }
         Ok(())
@@ -145,6 +160,7 @@ impl AxiomMe {
         max_per_hit: usize,
         ontology_schema: Option<&CompiledOntologySchema>,
         owner_relations_cache: &mut HashMap<AxiomUri, Arc<Vec<RelationLink>>>,
+        object_type_cache: &mut HashMap<String, Option<String>>,
     ) -> Result<Vec<RelationSummary>> {
         if max_per_hit == 0 {
             return Ok(Vec::new());
@@ -152,9 +168,19 @@ impl AxiomMe {
 
         let parsed = AxiomUri::parse(hit_uri)?;
         let hit_uri = parsed.to_string();
-        let source_object_type = ontology_schema
-            .and_then(|schema| schema.resolve_object_type_id(&parsed))
-            .map(ToString::to_string);
+        let source_object_type = if let Some(schema) = ontology_schema {
+            if let Some(cached) = object_type_cache.get(hit_uri.as_str()) {
+                cached.clone()
+            } else {
+                let resolved = schema
+                    .resolve_object_type_id(&parsed)
+                    .map(ToString::to_string);
+                object_type_cache.insert(hit_uri.clone(), resolved.clone());
+                resolved
+            }
+        } else {
+            None
+        };
         let mut owner_candidates = Vec::new();
         if self.fs.is_dir(&parsed) {
             owner_candidates.push(parsed.clone());
@@ -182,13 +208,11 @@ impl AxiomMe {
                         let relation_type = ontology_schema
                             .and_then(|schema| schema.link_type(&relation.id))
                             .map(|def| def.id.clone());
-                        let target_object_type = ontology_schema
-                            .and_then(|schema| {
-                                AxiomUri::parse(related)
-                                    .ok()
-                                    .and_then(|uri| schema.resolve_object_type_id(&uri))
-                            })
-                            .map(ToString::to_string);
+                        let target_object_type = resolve_object_type_id_cached(
+                            ontology_schema,
+                            related,
+                            object_type_cache,
+                        );
                         out.push(RelationSummary {
                             uri: related.clone(),
                             reason: relation.reason.clone(),
@@ -313,4 +337,42 @@ impl AxiomMe {
         *cache = None;
         Ok(())
     }
+}
+
+fn dedupe_relation_uris(uris: Vec<AxiomUri>) -> Vec<AxiomUri> {
+    let mut out = Vec::with_capacity(uris.len());
+    let mut seen = HashSet::<String>::new();
+    for uri in uris {
+        let key = uri.to_string();
+        if seen.insert(key) {
+            out.push(uri);
+        }
+    }
+    out
+}
+
+fn validate_relation_owner_scope(owner: &AxiomUri) -> Result<()> {
+    if owner.scope().is_internal() {
+        return Err(AxiomError::PermissionDenied(format!(
+            "internal scope is read-only for relation operations: {owner}"
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_object_type_id_cached(
+    ontology_schema: Option<&CompiledOntologySchema>,
+    uri: &str,
+    object_type_cache: &mut HashMap<String, Option<String>>,
+) -> Option<String> {
+    let schema = ontology_schema?;
+    if let Some(cached) = object_type_cache.get(uri) {
+        return cached.clone();
+    }
+    let resolved = AxiomUri::parse(uri)
+        .ok()
+        .and_then(|parsed| schema.resolve_object_type_id(&parsed))
+        .map(ToString::to_string);
+    object_type_cache.insert(uri.to_string(), resolved.clone());
+    resolved
 }

@@ -339,41 +339,41 @@ pub fn format_eval_report_markdown(report: &EvalLoopReport) -> String {
     );
     write_line(
         &mut out,
-        format_args!("- include_golden: `{}`\n", report.include_golden),
+        format_args!("- include_golden: `{}`\n", report.selection.include_golden),
     );
     write_line(
         &mut out,
-        format_args!("- golden_only: `{}`\n", report.golden_only),
+        format_args!("- golden_only: `{}`\n", report.selection.golden_only),
     );
     write_line(
         &mut out,
         format_args!(
             "- executed_cases: `{}` (pass `{}`, fail `{}`)\n",
-            report.executed_cases, report.passed, report.failed
+            report.coverage.executed_cases, report.quality.passed, report.quality.failed
         ),
     );
     write_line(
         &mut out,
-        format_args!("- top1_accuracy: `{:.4}`\n", report.top1_accuracy),
+        format_args!("- top1_accuracy: `{:.4}`\n", report.quality.top1_accuracy),
     );
     write_line(
         &mut out,
         format_args!(
             "- trace_cases_used: `{}`, golden_cases_used: `{}`\n",
-            report.trace_cases_used, report.golden_cases_used
+            report.coverage.trace_cases_used, report.coverage.golden_cases_used
         ),
     );
     write_line(
         &mut out,
-        format_args!("- query_set_uri: `{}`\n", report.query_set_uri),
+        format_args!("- query_set_uri: `{}`\n", report.artifacts.query_set_uri),
     );
     write_line(
         &mut out,
-        format_args!("- report_uri: `{}`\n", report.report_uri),
+        format_args!("- report_uri: `{}`\n", report.artifacts.report_uri),
     );
 
     write_section_header(&mut out, "Buckets");
-    for bucket in &report.buckets {
+    for bucket in &report.quality.buckets {
         write_line(
             &mut out,
             format_args!("- {}: {}\n", bucket.name, bucket.count),
@@ -381,10 +381,10 @@ pub fn format_eval_report_markdown(report: &EvalLoopReport) -> String {
     }
 
     write_section_header(&mut out, "Failures");
-    if report.failures.is_empty() {
+    if report.quality.failures.is_empty() {
         out.push_str("- none\n");
     } else {
-        for failure in report.failures.iter().take(20) {
+        for failure in report.quality.failures.iter().take(20) {
             write_line(
                 &mut out,
                 format_args!(
@@ -422,54 +422,57 @@ fn write_benchmark_header(out: &mut String, report: &BenchmarkReport) {
     write_line(out, format_args!("- created_at: `{}`\n", report.created_at));
     write_line(
         out,
-        format_args!("- query_limit: `{}`\n", report.query_limit),
+        format_args!("- query_limit: `{}`\n", report.selection.query_limit),
     );
     write_line(
         out,
-        format_args!("- search_limit: `{}`\n", report.search_limit),
+        format_args!("- search_limit: `{}`\n", report.selection.search_limit),
     );
     write_line(
         out,
-        format_args!("- include_golden: `{}`\n", report.include_golden),
+        format_args!("- include_golden: `{}`\n", report.selection.include_golden),
     );
     write_line(
         out,
-        format_args!("- include_trace: `{}`\n", report.include_trace),
+        format_args!("- include_trace: `{}`\n", report.selection.include_trace),
     );
     write_line(
         out,
         format_args!(
             "- executed_cases: `{}` (pass `{}`, fail `{}`)\n",
-            report.executed_cases, report.passed, report.failed
+            report.quality.executed_cases, report.quality.passed, report.quality.failed
         ),
     );
     write_line(
         out,
-        format_args!("- error_rate: `{:.4}`\n", report.error_rate),
+        format_args!("- error_rate: `{:.4}`\n", report.quality.error_rate),
     );
     write_line(
         out,
-        format_args!("- top1_accuracy: `{:.4}`\n", report.top1_accuracy),
+        format_args!("- top1_accuracy: `{:.4}`\n", report.quality.top1_accuracy),
     );
-    write_line(out, format_args!("- ndcg@10: `{:.4}`\n", report.ndcg_at_10));
     write_line(
         out,
-        format_args!("- recall@10: `{:.4}`\n", report.recall_at_10),
+        format_args!("- ndcg@10: `{:.4}`\n", report.quality.ndcg_at_10),
+    );
+    write_line(
+        out,
+        format_args!("- recall@10: `{:.4}`\n", report.quality.recall_at_10),
     );
     write_line(
         out,
         format_args!(
             "- find_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
-            report.p50_latency_ms,
-            report.p95_latency_ms,
-            report.p99_latency_ms,
-            report.avg_latency_ms
+            report.latency.find.p50_ms,
+            report.latency.find.p95_ms,
+            report.latency.find.p99_ms,
+            report.latency.find.avg_ms
         ),
     );
     if let (Some(p50), Some(p95), Some(p99)) = (
-        report.p50_latency_us,
-        report.p95_latency_us,
-        report.p99_latency_us,
+        report.latency.find.p50_us,
+        report.latency.find.p95_us,
+        report.latency.find.p99_us,
     ) {
         write_line(
             out,
@@ -483,16 +486,16 @@ fn write_benchmark_header(out: &mut String, report: &BenchmarkReport) {
         out,
         format_args!(
             "- search_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
-            report.search_p50_latency_ms,
-            report.search_p95_latency_ms,
-            report.search_p99_latency_ms,
-            report.search_avg_latency_ms
+            report.latency.search.p50_ms,
+            report.latency.search.p95_ms,
+            report.latency.search.p99_ms,
+            report.latency.search.avg_ms
         ),
     );
     if let (Some(p50), Some(p95), Some(p99)) = (
-        report.search_p50_latency_us,
-        report.search_p95_latency_us,
-        report.search_p99_latency_us,
+        report.latency.search.p50_us,
+        report.latency.search.p95_us,
+        report.latency.search.p99_us,
     ) {
         write_line(
             out,
@@ -506,16 +509,16 @@ fn write_benchmark_header(out: &mut String, report: &BenchmarkReport) {
         out,
         format_args!(
             "- commit_latency_ms: p50=`{}`, p95=`{}`, p99=`{}`, avg=`{:.2}`\n",
-            report.commit_p50_latency_ms,
-            report.commit_p95_latency_ms,
-            report.commit_p99_latency_ms,
-            report.commit_avg_latency_ms
+            report.latency.commit.p50_ms,
+            report.latency.commit.p95_ms,
+            report.latency.commit.p99_ms,
+            report.latency.commit.avg_ms
         ),
     );
     if let (Some(p50), Some(p95), Some(p99)) = (
-        report.commit_p50_latency_us,
-        report.commit_p95_latency_us,
-        report.commit_p99_latency_us,
+        report.latency.commit.p50_us,
+        report.latency.commit.p95_us,
+        report.latency.commit.p99_us,
     ) {
         write_line(
             out,
@@ -527,9 +530,12 @@ fn write_benchmark_header(out: &mut String, report: &BenchmarkReport) {
     }
     write_line(
         out,
-        format_args!("- case_set_uri: `{}`\n", report.case_set_uri),
+        format_args!("- case_set_uri: `{}`\n", report.artifacts.case_set_uri),
     );
-    write_line(out, format_args!("- report_uri: `{}`\n", report.report_uri));
+    write_line(
+        out,
+        format_args!("- report_uri: `{}`\n", report.artifacts.report_uri),
+    );
 }
 
 fn write_benchmark_environment(out: &mut String, report: &BenchmarkReport) {
@@ -703,11 +709,11 @@ pub fn to_benchmark_summary(report: BenchmarkReport) -> BenchmarkSummary {
     BenchmarkSummary {
         run_id: report.run_id,
         created_at: report.created_at,
-        executed_cases: report.executed_cases,
-        top1_accuracy: report.top1_accuracy,
-        p95_latency_ms: report.p95_latency_ms,
-        p95_latency_us: report.p95_latency_us,
-        report_uri: report.report_uri,
+        executed_cases: report.quality.executed_cases,
+        top1_accuracy: report.quality.top1_accuracy,
+        p95_latency_ms: report.latency.find.p95_ms,
+        p95_latency_us: report.latency.find.p95_us,
+        report_uri: report.artifacts.report_uri,
     }
 }
 

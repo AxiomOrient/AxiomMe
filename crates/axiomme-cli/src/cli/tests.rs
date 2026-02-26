@@ -259,6 +259,76 @@ fn ontology_invariant_check_parses_enforce_flag() {
 }
 
 #[test]
+fn relation_link_parses_owner_id_and_uris() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "relation",
+        "link",
+        "--owner-uri",
+        "axiom://resources/docs",
+        "--relation-id",
+        "auth-security",
+        "--uri",
+        "axiom://resources/docs/auth.md",
+        "--uri",
+        "axiom://resources/docs/security.md",
+        "--reason",
+        "security dependency",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Relation(RelationArgs {
+            command:
+                RelationCommand::Link {
+                    owner_uri,
+                    relation_id,
+                    uris,
+                    reason,
+                },
+        }) => {
+            assert_eq!(owner_uri, "axiom://resources/docs");
+            assert_eq!(relation_id, "auth-security");
+            assert_eq!(
+                uris,
+                vec![
+                    "axiom://resources/docs/auth.md".to_string(),
+                    "axiom://resources/docs/security.md".to_string()
+                ]
+            );
+            assert_eq!(reason, "security dependency");
+        }
+        _ => panic!("expected relation link command"),
+    }
+}
+
+#[test]
+fn relation_unlink_parses_owner_and_relation_id() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "relation",
+        "unlink",
+        "--owner-uri",
+        "axiom://resources/docs",
+        "--relation-id",
+        "auth-security",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Relation(RelationArgs {
+            command:
+                RelationCommand::Unlink {
+                    owner_uri,
+                    relation_id,
+                },
+        }) => {
+            assert_eq!(owner_uri, "axiom://resources/docs");
+            assert_eq!(relation_id, "auth-security");
+        }
+        _ => panic!("expected relation unlink command"),
+    }
+}
+
+#[test]
 fn document_save_from_file_parses() {
     let cli = Cli::try_parse_from([
         "axiomme",
@@ -291,6 +361,33 @@ fn document_save_from_file_parses() {
 }
 
 #[test]
+fn document_save_content_with_front_matter_parses() {
+    let front_matter = "---\nid: demo\n---\n\n# title\n";
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "document",
+        "save",
+        "axiom://resources/docs/guide.md",
+        "--content",
+        front_matter,
+    ])
+    .expect("parse");
+
+    match cli.command {
+        Commands::Document(DocumentArgs {
+            command: DocumentCommand::Save {
+                uri, content, from, ..
+            },
+        }) => {
+            assert_eq!(uri, "axiom://resources/docs/guide.md");
+            assert_eq!(content.as_deref(), Some(front_matter));
+            assert!(from.is_none());
+        }
+        _ => panic!("expected document save"),
+    }
+}
+
+#[test]
 fn document_preview_from_uri_parses() {
     let cli = Cli::try_parse_from([
         "axiomme",
@@ -317,6 +414,34 @@ fn document_preview_from_uri_parses() {
             assert!(!stdin);
         }
         _ => panic!("expected document preview"),
+    }
+}
+
+#[test]
+fn find_query_with_leading_hyphen_parses() {
+    let cli =
+        Cli::try_parse_from(["axiomme", "find", "--dash-prefixed", "--limit", "7"]).expect("parse");
+
+    match cli.command {
+        Commands::Find(FindArgs { query, limit, .. }) => {
+            assert_eq!(query, "--dash-prefixed");
+            assert_eq!(limit, 7);
+        }
+        _ => panic!("expected find command"),
+    }
+}
+
+#[test]
+fn search_query_with_leading_hyphen_parses() {
+    let cli = Cli::try_parse_from(["axiomme", "search", "--dash-prefixed", "--limit", "4"])
+        .expect("parse");
+
+    match cli.command {
+        Commands::Search(SearchArgs { query, limit, .. }) => {
+            assert_eq!(query, "--dash-prefixed");
+            assert_eq!(limit, 4);
+        }
+        _ => panic!("expected search command"),
     }
 }
 

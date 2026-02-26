@@ -37,15 +37,111 @@ pub struct ContextHit {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FindResult {
-    pub memories: Vec<ContextHit>,
-    pub resources: Vec<ContextHit>,
-    pub skills: Vec<ContextHit>,
     pub query_plan: QueryPlan,
     pub query_results: Vec<ContextHit>,
+    #[serde(default, skip_serializing_if = "HitBuckets::is_empty")]
+    pub hit_buckets: HitBuckets,
+    #[serde(default)]
+    pub memories: Vec<ContextHit>,
+    #[serde(default)]
+    pub resources: Vec<ContextHit>,
+    #[serde(default)]
+    pub skills: Vec<ContextHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace: Option<RetrievalTrace>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct HitBuckets {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub memories: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<usize>,
+}
+
+impl HitBuckets {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.memories.is_empty() && self.resources.is_empty() && self.skills.is_empty()
+    }
+}
+
+impl FindResult {
+    pub fn rebuild_hit_buckets(&mut self) {
+        self.hit_buckets = classify_hit_buckets(&self.query_results);
+        self.rebuild_legacy_views();
+    }
+
+    pub fn rebuild_legacy_views(&mut self) {
+        let (memories, resources, skills) =
+            collect_legacy_hit_views(&self.query_results, &self.hit_buckets);
+        self.memories = memories;
+        self.resources = resources;
+        self.skills = skills;
+    }
+
+    pub fn memories(&self) -> impl Iterator<Item = &ContextHit> {
+        self.hit_buckets
+            .memories
+            .iter()
+            .filter_map(|&index| self.query_results.get(index))
+    }
+
+    pub fn resources(&self) -> impl Iterator<Item = &ContextHit> {
+        self.hit_buckets
+            .resources
+            .iter()
+            .filter_map(|&index| self.query_results.get(index))
+    }
+
+    pub fn skills(&self) -> impl Iterator<Item = &ContextHit> {
+        self.hit_buckets
+            .skills
+            .iter()
+            .filter_map(|&index| self.query_results.get(index))
+    }
+}
+
+pub fn classify_hit_buckets(hits: &[ContextHit]) -> HitBuckets {
+    let mut buckets = HitBuckets::default();
+    for (index, hit) in hits.iter().enumerate() {
+        if hit.uri.starts_with("axiom://user/memories")
+            || hit.uri.starts_with("axiom://agent/memories")
+        {
+            buckets.memories.push(index);
+        } else if hit.uri.starts_with("axiom://agent/skills") {
+            buckets.skills.push(index);
+        } else {
+            buckets.resources.push(index);
+        }
+    }
+    buckets
+}
+
+fn collect_legacy_hit_views(
+    hits: &[ContextHit],
+    buckets: &HitBuckets,
+) -> (Vec<ContextHit>, Vec<ContextHit>, Vec<ContextHit>) {
+    let memories = buckets
+        .memories
+        .iter()
+        .filter_map(|&index| hits.get(index).cloned())
+        .collect::<Vec<_>>();
+    let resources = buckets
+        .resources
+        .iter()
+        .filter_map(|&index| hits.get(index).cloned())
+        .collect::<Vec<_>>();
+    let skills = buckets
+        .skills
+        .iter()
+        .filter_map(|&index| hits.get(index).cloned())
+        .collect::<Vec<_>>();
+    (memories, resources, skills)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -213,7 +309,9 @@ pub struct BackendStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{QueryPlan, SearchRequest, TypedQueryPlan};
+    use super::{
+        ContextHit, FindResult, QueryPlan, SearchRequest, TypedQueryPlan, classify_hit_buckets,
+    };
 
     #[test]
     fn query_plan_serialization_snapshot_is_stable() {
@@ -273,5 +371,93 @@ mod tests {
         let decoded: SearchRequest =
             serde_json::from_value(payload).expect("deserialize search request");
         assert!(decoded.runtime_hints.is_empty());
+    }
+
+    fn hit(uri: &str) -> ContextHit {
+        ContextHit {
+            uri: uri.to_string(),
+            score: 0.5,
+            abstract_text: String::new(),
+            context_type: "resource".to_string(),
+            relations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn classify_hit_buckets_assigns_stable_indices() {
+        let hits = vec![
+            hit("axiom://resources/docs/a.md"),
+            hit("axiom://user/memories/preferences/pref.md"),
+            hit("axiom://agent/skills/rust.md"),
+            hit("axiom://agent/memories/patterns/pat.md"),
+        ];
+        let buckets = classify_hit_buckets(&hits);
+        assert_eq!(buckets.resources, vec![0]);
+        assert_eq!(buckets.memories, vec![1, 3]);
+        assert_eq!(buckets.skills, vec![2]);
+    }
+
+    #[test]
+    fn find_result_bucket_accessors_read_from_query_results() {
+        let query_results = vec![
+            hit("axiom://resources/docs/a.md"),
+            hit("axiom://user/memories/preferences/pref.md"),
+            hit("axiom://agent/skills/rust.md"),
+        ];
+        let hit_buckets = classify_hit_buckets(&query_results);
+        let mut result = FindResult {
+            query_plan: QueryPlan::default(),
+            hit_buckets,
+            query_results,
+            memories: Vec::new(),
+            resources: Vec::new(),
+            skills: Vec::new(),
+            trace: None,
+            trace_uri: None,
+        };
+        result.rebuild_legacy_views();
+        let memories = result
+            .memories()
+            .map(|item| item.uri.clone())
+            .collect::<Vec<_>>();
+        let resources = result
+            .resources()
+            .map(|item| item.uri.clone())
+            .collect::<Vec<_>>();
+        let skills = result
+            .skills()
+            .map(|item| item.uri.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            memories,
+            vec!["axiom://user/memories/preferences/pref.md".to_string()]
+        );
+        assert_eq!(resources, vec!["axiom://resources/docs/a.md".to_string()]);
+        assert_eq!(skills, vec!["axiom://agent/skills/rust.md".to_string()]);
+    }
+
+    #[test]
+    fn find_result_legacy_views_are_derived_from_hit_buckets() {
+        let query_results = vec![
+            hit("axiom://resources/docs/a.md"),
+            hit("axiom://user/memories/preferences/pref.md"),
+            hit("axiom://agent/skills/rust.md"),
+        ];
+        let hit_buckets = classify_hit_buckets(&query_results);
+        let mut result = FindResult {
+            query_plan: QueryPlan::default(),
+            query_results,
+            hit_buckets,
+            memories: Vec::new(),
+            resources: Vec::new(),
+            skills: Vec::new(),
+            trace: None,
+            trace_uri: None,
+        };
+
+        result.rebuild_legacy_views();
+        assert_eq!(result.memories.len(), 1);
+        assert_eq!(result.resources.len(), 1);
+        assert_eq!(result.skills.len(), 1);
     }
 }

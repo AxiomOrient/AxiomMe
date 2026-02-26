@@ -1,28 +1,47 @@
 use crate::catalog::{eval_query_set_uri, eval_report_json_uri, eval_report_markdown_uri};
 use crate::error::Result;
-use crate::models::{EvalBucket, EvalCaseResult, EvalLoopReport, EvalQueryCase};
+use crate::models::{
+    EvalArtifacts, EvalBucket, EvalCaseResult, EvalCoverageSummary, EvalLoopReport,
+    EvalQualitySummary, EvalQueryCase, EvalRunSelection,
+};
 use crate::quality::format_eval_report_markdown;
 
 use super::AxiomMe;
 
-pub(super) struct EvalReportInput {
+pub(super) struct EvalReportMetaInput {
     pub run_id: String,
     pub created_at: String,
+    pub query_set_uri: String,
+}
+
+pub(super) struct EvalReportRunConfigInput {
     pub trace_limit: usize,
     pub query_limit: usize,
     pub search_limit: usize,
     pub include_golden: bool,
     pub golden_only: bool,
+}
+
+pub(super) struct EvalReportCoverageInput {
     pub traces_scanned: usize,
     pub trace_cases_used: usize,
     pub golden_cases_used: usize,
     pub executed_cases: usize,
+}
+
+pub(super) struct EvalReportOutcomeInput {
     pub passed: usize,
     pub failed: usize,
     pub top1_accuracy: f32,
     pub buckets: Vec<EvalBucket>,
     pub failures: Vec<EvalCaseResult>,
-    pub query_set_uri: String,
+}
+
+pub(super) struct EvalReportInput {
+    pub meta: EvalReportMetaInput,
+    pub run_config: EvalReportRunConfigInput,
+    pub coverage: EvalReportCoverageInput,
+    pub outcome: EvalReportOutcomeInput,
 }
 
 impl AxiomMe {
@@ -41,28 +60,36 @@ impl AxiomMe {
     }
 
     pub(super) fn write_eval_report(&self, input: EvalReportInput) -> Result<EvalLoopReport> {
-        let report_uri = eval_report_json_uri(&input.run_id)?;
-        let markdown_report_uri = eval_report_markdown_uri(&input.run_id)?;
+        let report_uri = eval_report_json_uri(&input.meta.run_id)?;
+        let markdown_report_uri = eval_report_markdown_uri(&input.meta.run_id)?;
         let report = EvalLoopReport {
-            run_id: input.run_id,
-            created_at: input.created_at,
-            trace_limit: input.trace_limit,
-            query_limit: input.query_limit,
-            search_limit: input.search_limit,
-            include_golden: input.include_golden,
-            golden_only: input.golden_only,
-            traces_scanned: input.traces_scanned,
-            trace_cases_used: input.trace_cases_used,
-            golden_cases_used: input.golden_cases_used,
-            executed_cases: input.executed_cases,
-            passed: input.passed,
-            failed: input.failed,
-            top1_accuracy: input.top1_accuracy,
-            buckets: input.buckets,
-            report_uri: report_uri.to_string(),
-            query_set_uri: input.query_set_uri,
-            markdown_report_uri: markdown_report_uri.to_string(),
-            failures: input.failures,
+            run_id: input.meta.run_id,
+            created_at: input.meta.created_at,
+            selection: EvalRunSelection {
+                trace_limit: input.run_config.trace_limit,
+                query_limit: input.run_config.query_limit,
+                search_limit: input.run_config.search_limit,
+                include_golden: input.run_config.include_golden,
+                golden_only: input.run_config.golden_only,
+            },
+            coverage: EvalCoverageSummary {
+                traces_scanned: input.coverage.traces_scanned,
+                trace_cases_used: input.coverage.trace_cases_used,
+                golden_cases_used: input.coverage.golden_cases_used,
+                executed_cases: input.coverage.executed_cases,
+            },
+            quality: EvalQualitySummary {
+                passed: input.outcome.passed,
+                failed: input.outcome.failed,
+                top1_accuracy: input.outcome.top1_accuracy,
+                buckets: input.outcome.buckets,
+                failures: input.outcome.failures,
+            },
+            artifacts: EvalArtifacts {
+                report_uri: report_uri.to_string(),
+                query_set_uri: input.meta.query_set_uri,
+                markdown_report_uri: markdown_report_uri.to_string(),
+            },
         };
         self.fs
             .write(&report_uri, &serde_json::to_string_pretty(&report)?, true)?;

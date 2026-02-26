@@ -17,7 +17,8 @@ use crate::models::{
     BenchmarkGateDetails, BenchmarkGateResult, BlockerRollupGateDetails, BuildQualityGateDetails,
     CommandProbeResult, ContractIntegrityGateDetails, EpisodicSemverPolicy,
     EpisodicSemverProbeResult, EvalLoopReport, EvalQualityGateDetails, OntologyContractPolicy,
-    OntologyContractProbeResult, OperabilityEvidenceReport, OperabilityGateDetails,
+    OntologyContractProbeResult, OntologyInvariantCheckSummary, OntologySchemaCardinality,
+    OntologySchemaVersionProbe, OperabilityEvidenceReport, OperabilityGateDetails,
     ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId, ReleaseGatePackReport,
     ReleaseGateStatus, ReleaseSecurityAuditMode, ReliabilityEvidenceReport, ReliabilityGateDetails,
     SecurityAuditGateDetails, SecurityAuditReport, SessionMemoryGateDetails,
@@ -98,15 +99,21 @@ impl OntologyContractProbeResult {
             passed: false,
             error: Some(error),
             command_probe,
-            schema_uri,
-            schema_version: None,
-            schema_version_ok: false,
-            object_type_count: 0,
-            link_type_count: 0,
-            action_type_count: 0,
-            invariant_count: 0,
-            invariant_check_passed: 0,
-            invariant_check_failed: 0,
+            schema: OntologySchemaVersionProbe {
+                schema_uri,
+                schema_version: None,
+                schema_version_ok: false,
+            },
+            cardinality: OntologySchemaCardinality {
+                object_type_count: 0,
+                link_type_count: 0,
+                action_type_count: 0,
+                invariant_count: 0,
+            },
+            invariant_checks: OntologyInvariantCheckSummary {
+                passed: 0,
+                failed: 0,
+            },
         }
     }
 }
@@ -141,8 +148,8 @@ pub fn reliability_evidence_gate_decision(
         report.passed,
         ReleaseGateDetails::ReliabilityEvidence(ReliabilityGateDetails {
             status: report.status,
-            replay_done: report.replay_totals.done,
-            dead_letter: report.final_dead_letter,
+            replay_done: report.replay_progress.replay_totals.done,
+            dead_letter: report.queue_delta.final_dead_letter,
         }),
         Some(report.report_uri.clone()),
     )
@@ -151,22 +158,22 @@ pub fn reliability_evidence_gate_decision(
 pub fn eval_quality_gate_decision(report: &EvalLoopReport) -> ReleaseGateDecision {
     let filter_ignored = eval_bucket_count(report, "filter_ignored");
     let relation_missing = eval_bucket_count(report, "relation_missing");
-    let passed = report.executed_cases > 0
-        && report.top1_accuracy >= RELEASE_EVAL_MIN_TOP1_ACCURACY
+    let passed = report.coverage.executed_cases > 0
+        && report.quality.top1_accuracy >= RELEASE_EVAL_MIN_TOP1_ACCURACY
         && filter_ignored == 0
         && relation_missing == 0;
     gate_decision(
         ReleaseGateId::EvalQuality,
         passed,
         ReleaseGateDetails::EvalQuality(EvalQualityGateDetails {
-            executed_cases: report.executed_cases,
-            top1_accuracy: report.top1_accuracy,
+            executed_cases: report.coverage.executed_cases,
+            top1_accuracy: report.quality.top1_accuracy,
             min_top1_accuracy: RELEASE_EVAL_MIN_TOP1_ACCURACY,
-            failed: report.failed,
+            failed: report.quality.failed,
             filter_ignored,
             relation_missing,
         }),
-        Some(report.report_uri.clone()),
+        Some(report.artifacts.report_uri.clone()),
     )
 }
 
@@ -208,17 +215,18 @@ pub fn security_audit_gate_decision(report: &SecurityAuditReport) -> ReleaseGate
 
 pub fn benchmark_release_gate_decision(report: &BenchmarkGateResult) -> ReleaseGateDecision {
     let evidence_uri = report
+        .artifacts
         .release_check_uri
         .clone()
-        .or_else(|| report.gate_record_uri.clone());
+        .or_else(|| report.artifacts.gate_record_uri.clone());
     gate_decision(
         ReleaseGateId::Benchmark,
         report.passed,
         ReleaseGateDetails::Benchmark(BenchmarkGateDetails {
             passed: report.passed,
-            evaluated_runs: report.evaluated_runs,
-            passing_runs: report.passing_runs,
-            reasons: report.reasons.clone(),
+            evaluated_runs: report.execution.evaluated_runs,
+            passing_runs: report.execution.passing_runs,
+            reasons: report.execution.reasons.clone(),
         }),
         evidence_uri,
     )
@@ -232,8 +240,8 @@ pub fn operability_evidence_gate_decision(
         report.passed,
         ReleaseGateDetails::OperabilityEvidence(OperabilityGateDetails {
             status: report.status,
-            traces_analyzed: report.traces_analyzed,
-            request_logs_scanned: report.request_logs_scanned,
+            traces_analyzed: report.coverage.traces_analyzed,
+            request_logs_scanned: report.coverage.request_logs_scanned,
         }),
         Some(report.report_uri.clone()),
     )
@@ -457,6 +465,7 @@ pub fn with_workspace_command_mocks<T>(
 
 fn eval_bucket_count(report: &EvalLoopReport, name: &str) -> usize {
     report
+        .quality
         .buckets
         .iter()
         .find(|bucket| bucket.name == name)
@@ -576,15 +585,21 @@ fn run_ontology_contract_probe(
         passed,
         error,
         command_probe,
-        schema_uri,
-        schema_version: Some(schema_version),
-        schema_version_ok,
-        object_type_count,
-        link_type_count,
-        action_type_count,
-        invariant_count,
-        invariant_check_passed: invariant_report.passed,
-        invariant_check_failed: invariant_report.failed,
+        schema: OntologySchemaVersionProbe {
+            schema_uri,
+            schema_version: Some(schema_version),
+            schema_version_ok,
+        },
+        cardinality: OntologySchemaCardinality {
+            object_type_count,
+            link_type_count,
+            action_type_count,
+            invariant_count,
+        },
+        invariant_checks: OntologyInvariantCheckSummary {
+            passed: invariant_report.passed,
+            failed: invariant_report.failed,
+        },
     }
 }
 
@@ -778,31 +793,40 @@ mod tests {
 
     use super::*;
     use crate::models::{
-        BenchmarkGateRunResult, BenchmarkSummary, DependencyAuditSummary,
-        DependencyInventorySummary, EvalBucket, EvalCaseResult,
+        BenchmarkGateArtifacts, BenchmarkGateExecution, BenchmarkGateQuorum,
+        BenchmarkGateRunResult, BenchmarkGateSnapshot, BenchmarkGateThresholds, BenchmarkSummary,
+        DependencyAuditSummary, DependencyInventorySummary, EvalBucket, EvalCaseResult,
     };
 
     fn eval_report(executed_cases: usize, top1_accuracy: f32) -> EvalLoopReport {
         EvalLoopReport {
             run_id: "run-1".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
-            trace_limit: 10,
-            query_limit: 10,
-            search_limit: 5,
-            include_golden: true,
-            golden_only: false,
-            traces_scanned: 10,
-            trace_cases_used: 5,
-            golden_cases_used: 5,
-            executed_cases,
-            passed: 0,
-            failed: 0,
-            top1_accuracy,
-            buckets: Vec::<EvalBucket>::new(),
-            report_uri: "axiom://queue/eval/reports/x.json".to_string(),
-            query_set_uri: "axiom://queue/eval/query_sets/x.json".to_string(),
-            markdown_report_uri: "axiom://queue/eval/reports/x.md".to_string(),
-            failures: Vec::<EvalCaseResult>::new(),
+            selection: crate::models::EvalRunSelection {
+                trace_limit: 10,
+                query_limit: 10,
+                search_limit: 5,
+                include_golden: true,
+                golden_only: false,
+            },
+            coverage: crate::models::EvalCoverageSummary {
+                traces_scanned: 10,
+                trace_cases_used: 5,
+                golden_cases_used: 5,
+                executed_cases,
+            },
+            quality: crate::models::EvalQualitySummary {
+                passed: 0,
+                failed: 0,
+                top1_accuracy,
+                buckets: Vec::<EvalBucket>::new(),
+                failures: Vec::<EvalCaseResult>::new(),
+            },
+            artifacts: crate::models::EvalArtifacts {
+                report_uri: "axiom://queue/eval/reports/x.json".to_string(),
+                query_set_uri: "axiom://queue/eval/query_sets/x.json".to_string(),
+                markdown_report_uri: "axiom://queue/eval/reports/x.md".to_string(),
+            },
         }
     }
 
@@ -813,44 +837,54 @@ mod tests {
         BenchmarkGateResult {
             passed: true,
             gate_profile: "rc-release".to_string(),
-            threshold_p95_ms: 1000,
-            min_top1_accuracy: 0.75,
-            min_stress_top1_accuracy: None,
-            max_p95_regression_pct: Some(0.1),
-            max_top1_regression_pct: Some(2.0),
-            window_size: 3,
-            required_passes: 1,
-            evaluated_runs: 1,
-            passing_runs: 1,
-            latest: Some(BenchmarkSummary {
-                run_id: "run".to_string(),
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-                executed_cases: 10,
-                top1_accuracy: 0.9,
-                p95_latency_ms: 700,
-                p95_latency_us: Some(699_420),
-                report_uri: "axiom://queue/benchmarks/reports/run.json".to_string(),
-            }),
-            previous: None,
-            regression_pct: None,
-            top1_regression_pct: None,
-            stress_top1_accuracy: None,
-            run_results: vec![BenchmarkGateRunResult {
-                run_id: "run".to_string(),
-                passed: true,
-                p95_latency_ms: 700,
-                p95_latency_us: Some(699_420),
-                top1_accuracy: 0.9,
-                stress_top1_accuracy: None,
+            thresholds: BenchmarkGateThresholds {
+                threshold_p95_ms: 1000,
+                min_top1_accuracy: 0.75,
+                min_stress_top1_accuracy: None,
+                max_p95_regression_pct: Some(0.1),
+                max_top1_regression_pct: Some(2.0),
+            },
+            quorum: BenchmarkGateQuorum {
+                window_size: 3,
+                required_passes: 1,
+            },
+            snapshot: BenchmarkGateSnapshot {
+                latest: Some(BenchmarkSummary {
+                    run_id: "run".to_string(),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                    executed_cases: 10,
+                    top1_accuracy: 0.9,
+                    p95_latency_ms: 700,
+                    p95_latency_us: Some(699_420),
+                    report_uri: "axiom://queue/benchmarks/reports/run.json".to_string(),
+                }),
+                previous: None,
                 regression_pct: None,
                 top1_regression_pct: None,
+                stress_top1_accuracy: None,
+            },
+            execution: BenchmarkGateExecution {
+                evaluated_runs: 1,
+                passing_runs: 1,
+                run_results: vec![BenchmarkGateRunResult {
+                    run_id: "run".to_string(),
+                    passed: true,
+                    p95_latency_ms: 700,
+                    p95_latency_us: Some(699_420),
+                    top1_accuracy: 0.9,
+                    stress_top1_accuracy: None,
+                    regression_pct: None,
+                    top1_regression_pct: None,
+                    reasons: vec!["ok".to_string()],
+                }],
                 reasons: vec!["ok".to_string()],
-            }],
-            gate_record_uri: gate_record_uri.map(ToString::to_string),
-            release_check_uri: release_check_uri.map(ToString::to_string),
-            embedding_provider: Some("semantic-model-http".to_string()),
-            embedding_strict_error: None,
-            reasons: vec!["ok".to_string()],
+            },
+            artifacts: BenchmarkGateArtifacts {
+                gate_record_uri: gate_record_uri.map(ToString::to_string),
+                release_check_uri: release_check_uri.map(ToString::to_string),
+                embedding_provider: Some("semantic-model-http".to_string()),
+                embedding_strict_error: None,
+            },
         }
     }
 
@@ -869,7 +903,7 @@ mod tests {
     #[test]
     fn eval_quality_gate_decision_fails_when_filter_or_relation_buckets_exist() {
         let mut report = eval_report(10, 0.9);
-        report.buckets = vec![
+        report.quality.buckets = vec![
             EvalBucket {
                 name: "filter_ignored".to_string(),
                 count: 1,

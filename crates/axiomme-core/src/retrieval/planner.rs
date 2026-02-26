@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::models::SearchOptions;
 use crate::uri::{AxiomUri, Scope};
@@ -9,6 +9,12 @@ pub(super) struct PlannedQuery {
     pub query: String,
     pub scopes: Vec<Scope>,
     pub priority: u8,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct QueryIntent {
+    wants_skill: bool,
+    wants_memory: bool,
 }
 
 impl PlannedQuery {
@@ -23,7 +29,8 @@ impl PlannedQuery {
 }
 
 pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
-    let base_scopes = intent_scopes(&options.query, options.target_uri.as_ref());
+    let intent = query_intent(&options.query);
+    let base_scopes = intent_scopes(intent, options.target_uri.as_ref());
     let has_session_context = options.session.is_some();
     let mut planned = vec![PlannedQuery::new(
         "primary",
@@ -37,14 +44,8 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
     }
 
     if !options.session_hints.is_empty() {
-        let hint_text = options
-            .session_hints
-            .iter()
-            .filter(|hint| !is_om_hint(hint))
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !hint_text.trim().is_empty() {
+        let hint_text = merge_non_om_hints(&options.session_hints);
+        if !hint_text.is_empty() {
             let kind = if has_session_context {
                 "session_recent"
             } else {
@@ -80,8 +81,7 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
     }
 
     if options.target_uri.is_none() {
-        let query_lower = options.query.to_lowercase();
-        if query_lower.contains("skill") {
+        if intent.wants_skill {
             planned.push(PlannedQuery::new(
                 "skill_focus",
                 options.query.clone(),
@@ -89,11 +89,7 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
                 2,
             ));
         }
-        if query_lower.contains("memory")
-            || query_lower.contains("preference")
-            || query_lower.contains("prefer")
-            || has_session_context
-        {
+        if intent.wants_memory || has_session_context {
             planned.push(PlannedQuery::new(
                 "memory_focus",
                 options.query.clone(),
@@ -106,16 +102,23 @@ pub(super) fn plan_queries(options: &SearchOptions) -> Vec<PlannedQuery> {
     dedup_and_limit_queries(planned, 5)
 }
 
-fn intent_scopes(query: &str, target: Option<&AxiomUri>) -> Vec<Scope> {
+fn query_intent(query: &str) -> QueryIntent {
+    let q = query.to_lowercase();
+    QueryIntent {
+        wants_skill: q.contains("skill"),
+        wants_memory: q.contains("memory") || q.contains("preference") || q.contains("prefer"),
+    }
+}
+
+fn intent_scopes(intent: QueryIntent, target: Option<&AxiomUri>) -> Vec<Scope> {
     if let Some(target) = target {
         return vec![target.scope()];
     }
 
-    let q = query.to_lowercase();
-    if q.contains("skill") {
+    if intent.wants_skill {
         return vec![Scope::Agent];
     }
-    if q.contains("memory") || q.contains("preference") || q.contains("prefer") {
+    if intent.wants_memory {
         return vec![Scope::User, Scope::Agent];
     }
     vec![Scope::Resources]
@@ -132,15 +135,7 @@ fn dedup_and_limit_queries(mut planned: Vec<PlannedQuery>, max_len: usize) -> Ve
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for item in planned {
-        let key = format!(
-            "{}|{}",
-            item.query.to_lowercase(),
-            item.scopes
-                .iter()
-                .map(Scope::as_str)
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let key = (item.query.to_lowercase(), item.scopes.clone());
         if !seen.insert(key) {
             continue;
         }
@@ -163,22 +158,34 @@ fn dedup_and_limit_queries(mut planned: Vec<PlannedQuery>, max_len: usize) -> Ve
 }
 
 fn normalize_scopes(scopes: Vec<Scope>) -> Vec<Scope> {
-    let mut map = HashMap::<String, Scope>::new();
-    for scope in scopes {
-        map.insert(scope.as_str().to_string(), scope);
-    }
-
-    let mut names = map.keys().cloned().collect::<Vec<_>>();
-    names.sort();
-
-    names
-        .into_iter()
-        .filter_map(|name| map.remove(&name))
-        .collect()
+    let mut scopes = scopes;
+    scopes.sort_by_key(Scope::as_str);
+    scopes.dedup();
+    scopes
 }
 
-fn is_om_hint(text: &str) -> bool {
-    text.trim_start().to_ascii_lowercase().starts_with("om:")
+pub(super) fn is_om_hint(text: &str) -> bool {
+    text.trim_start()
+        .get(..3)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("om:"))
+}
+
+fn merge_non_om_hints(hints: &[String]) -> String {
+    let mut out = String::new();
+    for hint in hints {
+        if is_om_hint(hint) {
+            continue;
+        }
+        let trimmed = hint.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(trimmed);
+    }
+    out
 }
 
 fn normalize_om_hint(text: &str) -> Option<String> {
@@ -195,13 +202,16 @@ fn normalize_om_hint(text: &str) -> Option<String> {
 }
 
 pub(super) fn collect_scope_names(planned_queries: &[PlannedQuery]) -> Vec<String> {
-    let mut names = planned_queries
+    let mut scopes = planned_queries
         .iter()
-        .flat_map(|x| x.scopes.iter().map(|s| s.as_str().to_string()))
+        .flat_map(|x| x.scopes.iter().copied())
         .collect::<Vec<_>>();
-    names.sort();
-    names.dedup();
-    names
+    scopes.sort_by_key(Scope::as_str);
+    scopes.dedup();
+    scopes
+        .into_iter()
+        .map(|scope| scope.as_str().to_string())
+        .collect()
 }
 
 pub(super) fn uri_in_scopes(uri: &str, scopes: &[Scope]) -> bool {
@@ -212,4 +222,102 @@ pub(super) fn uri_in_scopes(uri: &str, scopes: &[Scope]) -> bool {
         return false;
     };
     scopes.iter().any(|scope| parsed.scope() == *scope)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PlannedQuery, collect_scope_names, dedup_and_limit_queries, is_om_hint, merge_non_om_hints,
+        normalize_scopes, query_intent,
+    };
+    use crate::uri::Scope;
+
+    #[test]
+    fn normalize_scopes_is_value_based_and_sorted() {
+        let scopes = normalize_scopes(vec![
+            Scope::Resources,
+            Scope::User,
+            Scope::Resources,
+            Scope::Agent,
+        ]);
+        assert_eq!(scopes, vec![Scope::Agent, Scope::Resources, Scope::User]);
+    }
+
+    #[test]
+    fn dedup_queries_ignores_scope_order_after_normalization() {
+        let queries = vec![
+            PlannedQuery::new(
+                "primary",
+                "oauth flow".to_string(),
+                vec![Scope::User, Scope::Resources],
+                1,
+            ),
+            PlannedQuery::new(
+                "primary",
+                "OAUTH FLOW".to_string(),
+                vec![Scope::Resources, Scope::User],
+                1,
+            ),
+        ];
+        let deduped = dedup_and_limit_queries(queries, 5);
+        assert_eq!(deduped.len(), 1);
+    }
+
+    #[test]
+    fn collect_scope_names_returns_sorted_distinct_names() {
+        let planned = vec![
+            PlannedQuery::new(
+                "primary",
+                "q".to_string(),
+                vec![Scope::Resources, Scope::User],
+                1,
+            ),
+            PlannedQuery::new(
+                "secondary",
+                "q2".to_string(),
+                vec![Scope::Agent, Scope::User],
+                2,
+            ),
+        ];
+        let names = collect_scope_names(&planned);
+        assert_eq!(
+            names,
+            vec![
+                "agent".to_string(),
+                "resources".to_string(),
+                "user".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn query_intent_parses_skill_and_memory_flags() {
+        let skill = query_intent("show skill docs");
+        assert!(skill.wants_skill);
+        assert!(!skill.wants_memory);
+
+        let memory = query_intent("memory preference profile");
+        assert!(!memory.wants_skill);
+        assert!(memory.wants_memory);
+    }
+
+    #[test]
+    fn is_om_hint_is_case_insensitive_and_trim_aware() {
+        assert!(is_om_hint("om: hint"));
+        assert!(is_om_hint("  Om: hint"));
+        assert!(is_om_hint("\tOM: hint"));
+        assert!(!is_om_hint("hint om: value"));
+        assert!(!is_om_hint("memo: hint"));
+    }
+
+    #[test]
+    fn merge_non_om_hints_skips_om_prefixed_entries() {
+        let hints = vec![
+            "recent one".to_string(),
+            "  om: long memory".to_string(),
+            " recent two ".to_string(),
+            " ".to_string(),
+        ];
+        assert_eq!(merge_non_om_hints(&hints), "recent one recent two");
+    }
 }

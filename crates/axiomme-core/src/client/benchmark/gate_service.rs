@@ -3,8 +3,9 @@ use std::time::Instant;
 use crate::catalog::normalize_gate_profile;
 use crate::error::Result;
 use crate::models::{
-    BenchmarkGateOptions, BenchmarkGateResult, BenchmarkGateRunResult, BenchmarkReport,
-    BenchmarkSummary,
+    BenchmarkGateArtifacts, BenchmarkGateExecution, BenchmarkGateOptions, BenchmarkGateQuorum,
+    BenchmarkGateResult, BenchmarkGateRunResult, BenchmarkGateSnapshot, BenchmarkGateThresholds,
+    BenchmarkReport, BenchmarkSummary,
 };
 use crate::quality::to_benchmark_summary;
 
@@ -103,13 +104,13 @@ impl GateSnapshot {
 
         let semantic_ndcg_regression_pct = match (reports.first(), reports.get(1)) {
             (Some(current), Some(prev)) if semantic_quality_regression_eligible(current, prev) => {
-                percent_drop_f32(current.ndcg_at_10, prev.ndcg_at_10)
+                percent_drop_f32(current.quality.ndcg_at_10, prev.quality.ndcg_at_10)
             }
             _ => None,
         };
         let semantic_recall_regression_pct = match (reports.first(), reports.get(1)) {
             (Some(current), Some(prev)) if semantic_quality_regression_eligible(current, prev) => {
-                percent_drop_f32(current.recall_at_10, prev.recall_at_10)
+                percent_drop_f32(current.quality.recall_at_10, prev.quality.recall_at_10)
             }
             _ => None,
         };
@@ -211,23 +212,23 @@ impl AxiomMe {
                     None,
                     Some(serde_json::json!({
                         "gate_profile": result.gate_profile,
-                        "threshold_p95_ms": result.threshold_p95_ms.to_string(),
-                        "min_top1_accuracy": result.min_top1_accuracy,
-                        "min_stress_top1_accuracy": result.min_stress_top1_accuracy,
-                        "max_p95_regression_pct": result.max_p95_regression_pct,
-                        "max_top1_regression_pct": result.max_top1_regression_pct,
+                        "threshold_p95_ms": result.thresholds.threshold_p95_ms.to_string(),
+                        "min_top1_accuracy": result.thresholds.min_top1_accuracy,
+                        "min_stress_top1_accuracy": result.thresholds.min_stress_top1_accuracy,
+                        "max_p95_regression_pct": result.thresholds.max_p95_regression_pct,
+                        "max_top1_regression_pct": result.thresholds.max_top1_regression_pct,
                         "semantic_regression_pct_max": MAX_SEMANTIC_QUALITY_REGRESSION_PCT,
-                        "window_size": result.window_size,
-                        "required_passes": result.required_passes,
-                        "evaluated_runs": result.evaluated_runs,
-                        "passing_runs": result.passing_runs,
+                        "window_size": result.quorum.window_size,
+                        "required_passes": result.quorum.required_passes,
+                        "evaluated_runs": result.execution.evaluated_runs,
+                        "passing_runs": result.execution.passing_runs,
                         "passed": result.passed,
-                        "p95_regression_pct": result.regression_pct,
-                        "top1_regression_pct": result.top1_regression_pct,
-                        "stress_top1_accuracy": result.stress_top1_accuracy,
-                        "reasons": result.reasons,
-                        "gate_record_uri": result.gate_record_uri,
-                        "release_check_uri": result.release_check_uri,
+                        "p95_regression_pct": result.snapshot.regression_pct,
+                        "top1_regression_pct": result.snapshot.top1_regression_pct,
+                        "stress_top1_accuracy": result.snapshot.stress_top1_accuracy,
+                        "reasons": result.execution.reasons,
+                        "gate_record_uri": result.artifacts.gate_record_uri,
+                        "release_check_uri": result.artifacts.release_check_uri,
                     })),
                 );
                 Ok(result)
@@ -264,10 +265,10 @@ impl AxiomMe {
         config: &GateConfig,
     ) -> Result<()> {
         if config.record {
-            result.gate_record_uri = Some(self.persist_benchmark_gate_result(result)?);
+            result.artifacts.gate_record_uri = Some(self.persist_benchmark_gate_result(result)?);
         }
         if config.write_release_check {
-            result.release_check_uri = Some(self.persist_release_check_result(result)?);
+            result.artifacts.release_check_uri = Some(self.persist_release_check_result(result)?);
         }
         Ok(())
     }
@@ -277,26 +278,36 @@ fn empty_gate_result(config: &GateConfig, snapshot: &GateSnapshot) -> BenchmarkG
     BenchmarkGateResult {
         passed: false,
         gate_profile: config.gate_profile.clone(),
-        threshold_p95_ms: config.threshold_p95_ms,
-        min_top1_accuracy: config.min_top1_accuracy,
-        min_stress_top1_accuracy: config.min_stress_top1_accuracy,
-        max_p95_regression_pct: config.max_p95_regression_pct,
-        max_top1_regression_pct: config.max_top1_regression_pct,
-        window_size: config.window_size,
-        required_passes: config.required_passes,
-        evaluated_runs: 0,
-        passing_runs: 0,
-        latest: snapshot.latest.clone(),
-        previous: snapshot.previous.clone(),
-        regression_pct: snapshot.regression_pct,
-        top1_regression_pct: snapshot.top1_regression_pct,
-        stress_top1_accuracy: snapshot.stress_top1_accuracy,
-        run_results: Vec::new(),
-        gate_record_uri: None,
-        release_check_uri: None,
-        embedding_provider: None,
-        embedding_strict_error: None,
-        reasons: vec!["no_benchmark_reports".to_string()],
+        thresholds: BenchmarkGateThresholds {
+            threshold_p95_ms: config.threshold_p95_ms,
+            min_top1_accuracy: config.min_top1_accuracy,
+            min_stress_top1_accuracy: config.min_stress_top1_accuracy,
+            max_p95_regression_pct: config.max_p95_regression_pct,
+            max_top1_regression_pct: config.max_top1_regression_pct,
+        },
+        quorum: BenchmarkGateQuorum {
+            window_size: config.window_size,
+            required_passes: config.required_passes,
+        },
+        snapshot: BenchmarkGateSnapshot {
+            latest: snapshot.latest.clone(),
+            previous: snapshot.previous.clone(),
+            regression_pct: snapshot.regression_pct,
+            top1_regression_pct: snapshot.top1_regression_pct,
+            stress_top1_accuracy: snapshot.stress_top1_accuracy,
+        },
+        execution: BenchmarkGateExecution {
+            evaluated_runs: 0,
+            passing_runs: 0,
+            run_results: Vec::new(),
+            reasons: vec!["no_benchmark_reports".to_string()],
+        },
+        artifacts: BenchmarkGateArtifacts {
+            gate_record_uri: None,
+            release_check_uri: None,
+            embedding_provider: None,
+            embedding_strict_error: None,
+        },
     }
 }
 
@@ -313,26 +324,36 @@ fn build_gate_result(
     BenchmarkGateResult {
         passed,
         gate_profile: config.gate_profile.clone(),
-        threshold_p95_ms: config.threshold_p95_ms,
-        min_top1_accuracy: config.min_top1_accuracy,
-        min_stress_top1_accuracy: config.min_stress_top1_accuracy,
-        max_p95_regression_pct: config.max_p95_regression_pct,
-        max_top1_regression_pct: config.max_top1_regression_pct,
-        window_size: config.window_size,
-        required_passes: config.required_passes,
-        evaluated_runs,
-        passing_runs,
-        latest: snapshot.latest.clone(),
-        previous: snapshot.previous.clone(),
-        regression_pct: snapshot.regression_pct,
-        top1_regression_pct: snapshot.top1_regression_pct,
-        stress_top1_accuracy: snapshot.stress_top1_accuracy,
-        run_results,
-        gate_record_uri: None,
-        release_check_uri: None,
-        embedding_provider: snapshot.embedding_provider.clone(),
-        embedding_strict_error: snapshot.embedding_strict_error.clone(),
-        reasons,
+        thresholds: BenchmarkGateThresholds {
+            threshold_p95_ms: config.threshold_p95_ms,
+            min_top1_accuracy: config.min_top1_accuracy,
+            min_stress_top1_accuracy: config.min_stress_top1_accuracy,
+            max_p95_regression_pct: config.max_p95_regression_pct,
+            max_top1_regression_pct: config.max_top1_regression_pct,
+        },
+        quorum: BenchmarkGateQuorum {
+            window_size: config.window_size,
+            required_passes: config.required_passes,
+        },
+        snapshot: BenchmarkGateSnapshot {
+            latest: snapshot.latest.clone(),
+            previous: snapshot.previous.clone(),
+            regression_pct: snapshot.regression_pct,
+            top1_regression_pct: snapshot.top1_regression_pct,
+            stress_top1_accuracy: snapshot.stress_top1_accuracy,
+        },
+        execution: BenchmarkGateExecution {
+            evaluated_runs,
+            passing_runs,
+            run_results,
+            reasons,
+        },
+        artifacts: BenchmarkGateArtifacts {
+            gate_record_uri: None,
+            release_check_uri: None,
+            embedding_provider: snapshot.embedding_provider.clone(),
+            embedding_strict_error: snapshot.embedding_strict_error.clone(),
+        },
     }
 }
 
@@ -406,18 +427,18 @@ fn evaluate_gate_run(
     let mut passed = true;
     let mut reasons = Vec::<String>::new();
 
-    if report.p95_latency_ms > config.threshold_p95_ms {
+    if report.latency.find.p95_ms > config.threshold_p95_ms {
         passed = false;
         reasons.push(format!(
             "p95_latency_exceeded:{}>{}",
-            report.p95_latency_ms, config.threshold_p95_ms
+            report.latency.find.p95_ms, config.threshold_p95_ms
         ));
     }
-    if report.top1_accuracy < config.min_top1_accuracy {
+    if report.quality.top1_accuracy < config.min_top1_accuracy {
         passed = false;
         reasons.push(format!(
             "top1_accuracy_below:{:.4}<{:.4}",
-            report.top1_accuracy, config.min_top1_accuracy
+            report.quality.top1_accuracy, config.min_top1_accuracy
         ));
     }
 
@@ -451,8 +472,9 @@ fn evaluate_gate_run(
         ));
     }
 
-    let run_top1_regression_pct =
-        prev_report.and_then(|prev| percent_drop_f32(report.top1_accuracy, prev.top1_accuracy));
+    let run_top1_regression_pct = prev_report.and_then(|prev| {
+        percent_drop_f32(report.quality.top1_accuracy, prev.quality.top1_accuracy)
+    });
     if let (Some(max_regression), Some(pct)) =
         (config.max_top1_regression_pct, run_top1_regression_pct)
         && pct > max_regression
@@ -466,7 +488,7 @@ fn evaluate_gate_run(
     if let Some(prev) = prev_report
         && semantic_quality_regression_eligible(report, prev)
     {
-        if let Some(pct) = percent_drop_f32(report.ndcg_at_10, prev.ndcg_at_10)
+        if let Some(pct) = percent_drop_f32(report.quality.ndcg_at_10, prev.quality.ndcg_at_10)
             && pct > MAX_SEMANTIC_QUALITY_REGRESSION_PCT
         {
             passed = false;
@@ -474,7 +496,7 @@ fn evaluate_gate_run(
                 "ndcg_regression_exceeded:{pct:.2}%>{MAX_SEMANTIC_QUALITY_REGRESSION_PCT:.2}%"
             ));
         }
-        if let Some(pct) = percent_drop_f32(report.recall_at_10, prev.recall_at_10)
+        if let Some(pct) = percent_drop_f32(report.quality.recall_at_10, prev.quality.recall_at_10)
             && pct > MAX_SEMANTIC_QUALITY_REGRESSION_PCT
         {
             passed = false;
@@ -491,9 +513,9 @@ fn evaluate_gate_run(
     BenchmarkGateRunResult {
         run_id: report.run_id.clone(),
         passed,
-        p95_latency_ms: report.p95_latency_ms,
-        p95_latency_us: report.p95_latency_us,
-        top1_accuracy: report.top1_accuracy,
+        p95_latency_ms: report.latency.find.p95_ms,
+        p95_latency_us: report.latency.find.p95_us,
+        top1_accuracy: report.quality.top1_accuracy,
         stress_top1_accuracy: run_stress_top1_accuracy,
         regression_pct: run_regression_pct,
         top1_regression_pct: run_top1_regression_pct,
@@ -523,7 +545,7 @@ fn stress_top1_accuracy(report: &BenchmarkReport) -> Option<f32> {
 }
 
 fn p95_latency_for_regression(report: &BenchmarkReport) -> u128 {
-    regression_latency_value(report.p95_latency_ms, report.p95_latency_us)
+    regression_latency_value(report.latency.find.p95_ms, report.latency.find.p95_us)
 }
 
 fn regression_latency_value(p95_latency_ms: u128, p95_latency_us: Option<u128>) -> u128 {

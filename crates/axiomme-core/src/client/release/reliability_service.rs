@@ -9,7 +9,10 @@ use crate::evidence::{
     ReliabilityEvidenceInput, accumulate_replay_report, build_reliability_evidence_checks,
     evidence_status,
 };
-use crate::models::{MetadataFilter, QueueDiagnostics, ReliabilityEvidenceReport, ReplayReport};
+use crate::models::{
+    MetadataFilter, QueueDiagnostics, ReliabilityEvidenceReport, ReliabilityQueueDelta,
+    ReliabilityReplayPlan, ReliabilityReplayProgress, ReliabilitySearchProbe, ReplayReport,
+};
 use crate::uri::{AxiomUri, Scope};
 
 use super::AxiomMe;
@@ -61,15 +64,15 @@ impl AxiomMe {
                     "reliability.evidence",
                     report.status.as_str(),
                     started,
-                    Some(report.queued_root_uri.clone()),
+                    Some(report.search_probe.queued_root_uri.clone()),
                     Some(serde_json::json!({
-                        "replay_limit": report.replay_limit,
-                        "max_cycles": report.max_cycles,
-                        "replay_cycles": report.replay_cycles,
+                        "replay_limit": report.replay_plan.replay_limit,
+                        "max_cycles": report.replay_plan.max_cycles,
+                        "replay_cycles": report.replay_progress.replay_cycles,
                         "passed": report.passed,
                         "report_uri": report.report_uri,
-                        "replay_done": report.replay_totals.done,
-                        "replay_dead_letter": report.replay_totals.dead_letter,
+                        "replay_done": report.replay_progress.replay_totals.done,
+                        "replay_dead_letter": report.replay_progress.replay_totals.dead_letter,
                     })),
                 );
                 Ok(report)
@@ -130,18 +133,26 @@ impl AxiomMe {
             created_at: Utc::now().to_rfc3339(),
             passed,
             status,
-            replay_limit,
-            max_cycles,
-            replay_cycles: runtime.replay_cycles,
-            replay_totals: runtime.replay_totals,
-            baseline_dead_letter,
-            final_dead_letter: runtime.final_dead_letter,
-            baseline_checkpoint,
-            final_checkpoint: runtime.final_checkpoint,
-            queued_root_uri: queued_root_uri_str,
-            query,
-            replay_hit_uri: runtime.replay_hit_uri,
-            restart_hit_uri: runtime.restart_hit_uri,
+            replay_plan: ReliabilityReplayPlan {
+                replay_limit,
+                max_cycles,
+            },
+            replay_progress: ReliabilityReplayProgress {
+                replay_cycles: runtime.replay_cycles,
+                replay_totals: runtime.replay_totals,
+            },
+            queue_delta: ReliabilityQueueDelta {
+                baseline_dead_letter,
+                final_dead_letter: runtime.final_dead_letter,
+                baseline_checkpoint,
+                final_checkpoint: runtime.final_checkpoint,
+            },
+            search_probe: ReliabilitySearchProbe {
+                queued_root_uri: queued_root_uri_str,
+                query,
+                replay_hit_uri: runtime.replay_hit_uri,
+                restart_hit_uri: runtime.restart_hit_uri,
+            },
             queue: runtime.queue_after_restart,
             checks,
             report_uri: report_uri.to_string(),

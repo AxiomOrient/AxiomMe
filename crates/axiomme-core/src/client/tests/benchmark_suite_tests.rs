@@ -38,15 +38,16 @@ fn benchmark_suite_generates_report_and_artifacts() {
             fixture_name: None,
         })
         .expect("benchmark");
-    assert!(report.executed_cases >= 1);
-    assert!(report.p95_latency_ms >= report.p50_latency_ms);
-    let find_p95_us = report.p95_latency_us.expect("find p95 us");
-    let find_p50_us = report.p50_latency_us.expect("find p50 us");
+    assert!(report.quality.executed_cases >= 1);
+    assert!(report.latency.find.p95_ms >= report.latency.find.p50_ms);
+    let find_p95_us = report.latency.find.p95_us.expect("find p95 us");
+    let find_p50_us = report.latency.find.p50_us.expect("find p50 us");
     assert!(find_p95_us >= find_p50_us);
 
-    let report_uri = AxiomUri::parse(&report.report_uri).expect("report uri");
-    let markdown_uri = AxiomUri::parse(&report.markdown_report_uri).expect("markdown uri");
-    let case_set_uri = AxiomUri::parse(&report.case_set_uri).expect("set uri");
+    let report_uri = AxiomUri::parse(&report.artifacts.report_uri).expect("report uri");
+    let markdown_uri =
+        AxiomUri::parse(&report.artifacts.markdown_report_uri).expect("markdown uri");
+    let case_set_uri = AxiomUri::parse(&report.artifacts.case_set_uri).expect("set uri");
     assert!(app.fs.exists(&report_uri));
     assert!(app.fs.exists(&markdown_uri));
     assert!(app.fs.exists(&case_set_uri));
@@ -105,19 +106,20 @@ fn benchmark_report_includes_protocol_metadata_and_acceptance_mapping() {
     );
     assert_eq!(report.acceptance.protocol_id, "macmini-g6-v1");
     assert!(!report.acceptance.checks.is_empty());
-    assert!(report.p99_latency_ms >= report.p95_latency_ms);
-    assert!(report.search_p99_latency_ms >= report.search_p95_latency_ms);
-    assert!(report.commit_p99_latency_ms >= report.commit_p95_latency_ms);
+    assert!(report.latency.find.p99_ms >= report.latency.find.p95_ms);
+    assert!(report.latency.search.p99_ms >= report.latency.search.p95_ms);
+    assert!(report.latency.commit.p99_ms >= report.latency.commit.p95_ms);
     assert!(
-        report.p99_latency_us.expect("find p99 us") >= report.p95_latency_us.expect("find p95 us")
+        report.latency.find.p99_us.expect("find p99 us")
+            >= report.latency.find.p95_us.expect("find p95 us")
     );
     assert!(
-        report.search_p99_latency_us.expect("search p99 us")
-            >= report.search_p95_latency_us.expect("search p95 us")
+        report.latency.search.p99_us.expect("search p99 us")
+            >= report.latency.search.p95_us.expect("search p95 us")
     );
     assert!(
-        report.commit_p99_latency_us.expect("commit p99 us")
-            >= report.commit_p95_latency_us.expect("commit p95 us")
+        report.latency.commit.p99_us.expect("commit p99 us")
+            >= report.latency.commit.p95_us.expect("commit p95 us")
     );
 }
 
@@ -247,7 +249,7 @@ fn benchmark_top1_accuracy_uses_only_graded_cases() {
         .count();
     assert!(graded_count >= 1);
     assert!(ungraded_count >= 1);
-    assert!((report.top1_accuracy - 1.0).abs() < f32::EPSILON);
+    assert!((report.quality.top1_accuracy - 1.0).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -302,9 +304,9 @@ fn benchmark_top1_treats_duplicate_leaf_uri_as_equivalent() {
         })
         .expect("benchmark");
 
-    assert!(report.executed_cases >= 1);
-    assert_eq!(report.passed, report.executed_cases);
-    assert!((report.top1_accuracy - 1.0).abs() < f32::EPSILON);
+    assert!(report.quality.executed_cases >= 1);
+    assert_eq!(report.quality.passed, report.quality.executed_cases);
+    assert!((report.quality.top1_accuracy - 1.0).abs() < f32::EPSILON);
 }
 
 #[test]
@@ -448,7 +450,12 @@ fn benchmark_gate_fails_without_reports() {
         .benchmark_gate(600, 0.75, Some(20.0), None)
         .expect("gate check");
     assert!(!gate.passed);
-    assert!(gate.reasons.iter().any(|r| r == "no_benchmark_reports"));
+    assert!(
+        gate.execution
+            .reasons
+            .iter()
+            .any(|r| r == "no_benchmark_reports")
+    );
 }
 
 #[test]
@@ -602,12 +609,12 @@ fn benchmark_gate_enforces_top1_regression_threshold() {
     let mut previous = template.clone();
     previous.run_id = "top1-prev".to_string();
     previous.created_at = "2999-01-01T00:00:01Z".to_string();
-    previous.top1_accuracy = 1.0;
+    previous.quality.top1_accuracy = 1.0;
 
     let mut latest = template;
     latest.run_id = "top1-latest".to_string();
     latest.created_at = "2999-01-01T00:00:02Z".to_string();
-    latest.top1_accuracy = 0.4;
+    latest.quality.top1_accuracy = 0.4;
 
     let previous_uri =
         AxiomUri::parse("axiom://queue/benchmarks/reports/top1-prev.json").expect("prev uri");
@@ -644,11 +651,11 @@ fn benchmark_gate_enforces_top1_regression_threshold() {
         .expect("gate");
 
     assert!(!gate.passed);
-    assert!(gate.top1_regression_pct.is_some());
-    assert_eq!(gate.run_results.len(), 1);
-    assert!(gate.run_results[0].top1_regression_pct.is_some());
+    assert!(gate.snapshot.top1_regression_pct.is_some());
+    assert_eq!(gate.execution.run_results.len(), 1);
+    assert!(gate.execution.run_results[0].top1_regression_pct.is_some());
     assert!(
-        gate.run_results[0]
+        gate.execution.run_results[0]
             .reasons
             .iter()
             .any(|r| r.starts_with("top1_regression_exceeded:"))
@@ -697,8 +704,8 @@ fn benchmark_gate_enforces_semantic_quality_regression_threshold() {
     let mut previous = template.clone();
     previous.run_id = "semantic-prev".to_string();
     previous.created_at = "2999-02-01T00:00:01Z".to_string();
-    previous.ndcg_at_10 = 0.92;
-    previous.recall_at_10 = 0.95;
+    previous.quality.ndcg_at_10 = 0.92;
+    previous.quality.recall_at_10 = 0.95;
     previous.query_set.total_queries = 120;
     previous.query_set.semantic_queries = 60;
     previous.query_set.lexical_queries = 40;
@@ -707,8 +714,8 @@ fn benchmark_gate_enforces_semantic_quality_regression_threshold() {
     let mut latest = template;
     latest.run_id = "semantic-latest".to_string();
     latest.created_at = "2999-02-01T00:00:02Z".to_string();
-    latest.ndcg_at_10 = 0.80;
-    latest.recall_at_10 = 0.86;
+    latest.quality.ndcg_at_10 = 0.80;
+    latest.quality.recall_at_10 = 0.86;
     latest.query_set.total_queries = 120;
     latest.query_set.semantic_queries = 60;
     latest.query_set.lexical_queries = 40;
@@ -749,12 +756,12 @@ fn benchmark_gate_enforces_semantic_quality_regression_threshold() {
         .expect("gate");
 
     assert!(!gate.passed);
-    assert!(gate.run_results.iter().any(|run| {
+    assert!(gate.execution.run_results.iter().any(|run| {
         run.reasons
             .iter()
             .any(|r| r.starts_with("ndcg_regression_exceeded:"))
     }));
-    assert!(gate.run_results.iter().any(|run| {
+    assert!(gate.execution.run_results.iter().any(|run| {
         run.reasons
             .iter()
             .any(|r| r.starts_with("recall_regression_exceeded:"))
@@ -839,10 +846,10 @@ fn benchmark_gate_enforces_stress_top1_floor() {
         .expect("gate");
 
     assert!(!gate.passed);
-    assert!(gate.stress_top1_accuracy.is_some());
-    assert!(gate.run_results[0].stress_top1_accuracy.is_some());
+    assert!(gate.snapshot.stress_top1_accuracy.is_some());
+    assert!(gate.execution.run_results[0].stress_top1_accuracy.is_some());
     assert!(
-        gate.run_results[0]
+        gate.execution.run_results[0]
             .reasons
             .iter()
             .any(|r| r.starts_with("stress_top1_accuracy_below:"))
@@ -904,7 +911,7 @@ fn benchmark_fixture_create_list_and_run() {
             fixture_name: Some("release-smoke".to_string()),
         })
         .expect("run fixture benchmark");
-    assert!(report.executed_cases >= 1);
+    assert!(report.quality.executed_cases >= 1);
 }
 
 #[test]
@@ -961,13 +968,13 @@ fn benchmark_gate_with_policy_records_result() {
         .benchmark_gate_with_policy(10_000, 0.0, None, 2, 2, true)
         .expect("policy gate");
     assert!(gate.passed);
-    assert_eq!(gate.window_size, 2);
-    assert_eq!(gate.required_passes, 2);
-    assert!(gate.evaluated_runs >= 2);
-    assert!(gate.passing_runs >= 2);
-    assert!(gate.gate_record_uri.is_some());
-    let gate_uri =
-        AxiomUri::parse(gate.gate_record_uri.as_deref().expect("uri")).expect("gate uri parse");
+    assert_eq!(gate.quorum.window_size, 2);
+    assert_eq!(gate.quorum.required_passes, 2);
+    assert!(gate.execution.evaluated_runs >= 2);
+    assert!(gate.execution.passing_runs >= 2);
+    assert!(gate.artifacts.gate_record_uri.is_some());
+    let gate_uri = AxiomUri::parse(gate.artifacts.gate_record_uri.as_deref().expect("uri"))
+        .expect("gate uri parse");
     assert!(app.fs.exists(&gate_uri));
 }
 
@@ -1036,18 +1043,22 @@ fn benchmark_gate_with_profile_writes_release_check() {
         })
         .expect("profile gate");
     assert_eq!(gate.gate_profile, "macmini-release");
-    assert!(gate.gate_record_uri.is_some());
-    assert!(gate.release_check_uri.is_some());
+    assert!(gate.artifacts.gate_record_uri.is_some());
+    assert!(gate.artifacts.release_check_uri.is_some());
     assert!(!gate.passed);
-    assert_eq!(gate.embedding_provider.as_deref(), Some("semantic-lite"));
-    assert!(gate.embedding_strict_error.is_none());
+    assert_eq!(
+        gate.artifacts.embedding_provider.as_deref(),
+        Some("semantic-lite")
+    );
+    assert!(gate.artifacts.embedding_strict_error.is_none());
     assert!(
-        gate.reasons
+        gate.execution
+            .reasons
             .iter()
             .any(|reason| { reason.starts_with("release_embedding_provider_required:") })
     );
 
-    let release_uri = AxiomUri::parse(gate.release_check_uri.as_deref().expect("uri"))
+    let release_uri = AxiomUri::parse(gate.artifacts.release_check_uri.as_deref().expect("uri"))
         .expect("release uri parse");
     assert!(app.fs.exists(&release_uri));
     let raw = app.fs.read(&release_uri).expect("read release check");
@@ -1055,8 +1066,11 @@ fn benchmark_gate_with_profile_writes_release_check() {
         serde_json::from_str(&raw).expect("parse release check document");
     assert_eq!(doc.gate_profile, "macmini-release");
     assert_eq!(doc.status, ReleaseGateStatus::Fail);
-    assert_eq!(doc.embedding_provider.as_deref(), Some("semantic-lite"));
-    assert!(doc.embedding_strict_error.is_none());
+    assert_eq!(
+        doc.embedding.embedding_provider.as_deref(),
+        Some("semantic-lite")
+    );
+    assert!(doc.embedding.embedding_strict_error.is_none());
     assert!(doc.gate_record_uri.is_some());
 }
 
@@ -1104,7 +1118,7 @@ fn benchmark_gate_release_propagates_structured_embedding_strict_error() {
     latest.environment.embedding_provider = Some("semantic-model-http".to_string());
     latest.environment.embedding_strict_error =
         Some("semantic-model-http embed request failed".to_string());
-    let latest_uri = AxiomUri::parse(&latest.report_uri).expect("report uri");
+    let latest_uri = AxiomUri::parse(&latest.artifacts.report_uri).expect("report uri");
     app.fs
         .write(
             &latest_uri,
@@ -1129,30 +1143,31 @@ fn benchmark_gate_release_propagates_structured_embedding_strict_error() {
         .expect("profile gate");
     assert!(!gate.passed);
     assert_eq!(
-        gate.embedding_provider.as_deref(),
+        gate.artifacts.embedding_provider.as_deref(),
         Some("semantic-model-http")
     );
     assert_eq!(
-        gate.embedding_strict_error.as_deref(),
+        gate.artifacts.embedding_strict_error.as_deref(),
         Some("semantic-model-http embed request failed")
     );
     assert!(
-        gate.reasons
+        gate.execution
+            .reasons
             .iter()
             .any(|reason| { reason.starts_with("release_embedding_strict_error:") })
     );
 
-    let release_uri = AxiomUri::parse(gate.release_check_uri.as_deref().expect("uri"))
+    let release_uri = AxiomUri::parse(gate.artifacts.release_check_uri.as_deref().expect("uri"))
         .expect("release uri parse");
     let raw = app.fs.read(&release_uri).expect("read release check");
     let doc: ReleaseCheckDocument =
         serde_json::from_str(&raw).expect("parse release check document");
     assert_eq!(
-        doc.embedding_provider.as_deref(),
+        doc.embedding.embedding_provider.as_deref(),
         Some("semantic-model-http")
     );
     assert_eq!(
-        doc.embedding_strict_error.as_deref(),
+        doc.embedding.embedding_strict_error.as_deref(),
         Some("semantic-model-http embed request failed")
     );
 }
@@ -1201,7 +1216,8 @@ fn benchmark_gate_with_policy_reports_insufficient_history() {
         .expect("gate");
     assert!(!gate.passed);
     assert!(
-        gate.reasons
+        gate.execution
+            .reasons
             .iter()
             .any(|r| r.starts_with("insufficient_history:"))
     );
@@ -1252,7 +1268,7 @@ fn benchmark_amortized_mode_runs_multiple_iterations_in_process() {
     assert_eq!(report.mode, "in_process_amortized");
     assert_eq!(report.iterations, 3);
     assert_eq!(report.runs.len(), 3);
-    assert!(report.executed_cases_total >= 3);
-    assert!(report.wall_total_ms >= report.p95_latency_ms_median);
-    assert!(report.p95_latency_us_median.is_some());
+    assert!(report.quality.executed_cases_total >= 3);
+    assert!(report.timing.wall_total_ms >= report.timing.p95_latency_ms_median);
+    assert!(report.timing.p95_latency_us_median.is_some());
 }

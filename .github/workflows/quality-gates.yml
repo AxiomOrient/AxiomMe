@@ -21,7 +21,19 @@ jobs:
         run: cargo install --locked cargo-audit
 
       - name: Run quality gates
+        env:
+          AXIOMME_QUALITY_ENFORCE_MIRROR_NOTICE: ${{ startsWith(github.ref, 'refs/tags/') && 'on' || 'off' }}
         run: bash scripts/quality_gates.sh
+
+      - name: Upload mirror notice gate snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-notice-gate
+          if-no-files-found: warn
+          path: |
+            docs/MIRROR_NOTICE_GATE_2026-02-24.json
+            docs/MIRROR_NOTICE_ROUTER_2026-02-24.json
 
   release-pack-strict:
     needs: gates

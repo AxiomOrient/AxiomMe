@@ -56,6 +56,7 @@ pub struct MoveArgs {
 }
 #[derive(Debug, Args)]
 pub struct FindArgs {
+    #[arg(allow_hyphen_values = true)]
     pub query: String,
     #[arg(long)]
     pub target: Option<String>,
@@ -71,6 +72,7 @@ pub struct FindArgs {
 
 #[derive(Debug, Args)]
 pub struct SearchArgs {
+    #[arg(allow_hyphen_values = true)]
     pub query: String,
     #[arg(long)]
     pub target: Option<String>,

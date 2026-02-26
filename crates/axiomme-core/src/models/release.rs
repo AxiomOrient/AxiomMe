@@ -11,6 +11,14 @@ pub struct ReleaseCheckDocument {
     pub status: ReleaseGateStatus,
     pub passed: bool,
     pub reasons: Vec<String>,
+    pub thresholds: ReleaseCheckThresholds,
+    pub run_summary: ReleaseCheckRunSummary,
+    pub embedding: ReleaseCheckEmbeddingMetadata,
+    pub gate_record_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseCheckThresholds {
     pub threshold_p95_ms: u128,
     pub min_top1_accuracy: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -19,6 +27,10 @@ pub struct ReleaseCheckDocument {
     pub max_top1_regression_pct: Option<f32>,
     pub window_size: usize,
     pub required_passes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseCheckRunSummary {
     pub evaluated_runs: usize,
     pub passing_runs: usize,
     pub latest_report_uri: Option<String>,
@@ -27,11 +39,14 @@ pub struct ReleaseCheckDocument {
     pub latest_p95_latency_us: Option<u128>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_p95_latency_us: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseCheckEmbeddingMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_strict_error: Option<String>,
-    pub gate_record_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,16 +97,26 @@ pub struct OperabilityEvidenceCheck {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperabilitySampleWindow {
+    pub trace_limit: usize,
+    pub request_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperabilityCoverage {
+    pub traces_analyzed: usize,
+    pub request_logs_scanned: usize,
+    pub trace_metrics_snapshot_uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperabilityEvidenceReport {
     pub report_id: String,
     pub created_at: String,
     pub passed: bool,
     pub status: EvidenceStatus,
-    pub trace_limit: usize,
-    pub request_limit: usize,
-    pub traces_analyzed: usize,
-    pub request_logs_scanned: usize,
-    pub trace_metrics_snapshot_uri: String,
+    pub sample_window: OperabilitySampleWindow,
+    pub coverage: OperabilityCoverage,
     pub queue: QueueDiagnostics,
     pub checks: Vec<OperabilityEvidenceCheck>,
     pub report_uri: String,
@@ -105,27 +130,47 @@ pub struct ReliabilityEvidenceCheck {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReliabilityEvidenceReport {
-    pub report_id: String,
-    pub created_at: String,
-    pub passed: bool,
-    pub status: EvidenceStatus,
+pub struct ReliabilityReplayPlan {
     pub replay_limit: usize,
     pub max_cycles: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReliabilityReplayProgress {
     pub replay_cycles: u32,
     pub replay_totals: ReplayReport,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReliabilityQueueDelta {
     pub baseline_dead_letter: u64,
     pub final_dead_letter: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baseline_checkpoint: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_checkpoint: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReliabilitySearchProbe {
     pub queued_root_uri: String,
     pub query: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replay_hit_uri: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub restart_hit_uri: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReliabilityEvidenceReport {
+    pub report_id: String,
+    pub created_at: String,
+    pub passed: bool,
+    pub status: EvidenceStatus,
+    pub replay_plan: ReliabilityReplayPlan,
+    pub replay_progress: ReliabilityReplayProgress,
+    pub queue_delta: ReliabilityQueueDelta,
+    pub search_probe: ReliabilitySearchProbe,
     pub queue: QueueDiagnostics,
     pub checks: Vec<ReliabilityEvidenceCheck>,
     pub report_uri: String,
@@ -171,19 +216,34 @@ pub struct OntologyContractPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct OntologyContractProbeResult {
-    pub passed: bool,
-    pub error: Option<String>,
-    pub command_probe: CommandProbeResult,
+pub struct OntologySchemaVersionProbe {
     pub schema_uri: String,
     pub schema_version: Option<u32>,
     pub schema_version_ok: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OntologySchemaCardinality {
     pub object_type_count: usize,
     pub link_type_count: usize,
     pub action_type_count: usize,
     pub invariant_count: usize,
-    pub invariant_check_passed: usize,
-    pub invariant_check_failed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OntologyInvariantCheckSummary {
+    pub passed: usize,
+    pub failed: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OntologyContractProbeResult {
+    pub passed: bool,
+    pub error: Option<String>,
+    pub command_probe: CommandProbeResult,
+    pub schema: OntologySchemaVersionProbe,
+    pub cardinality: OntologySchemaCardinality,
+    pub invariant_checks: OntologyInvariantCheckSummary,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

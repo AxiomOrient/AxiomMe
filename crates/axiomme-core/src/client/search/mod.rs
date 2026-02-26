@@ -58,6 +58,34 @@ struct SessionHintSnapshot {
     metrics: OmSearchMetrics,
 }
 
+#[derive(Debug)]
+struct SearchOptionsInput {
+    query: String,
+    target_uri: Option<AxiomUri>,
+    session: Option<String>,
+    session_hints: Vec<String>,
+    budget: Option<SearchBudget>,
+    requested_limit: usize,
+    score_threshold: Option<f32>,
+    min_match_tokens: Option<usize>,
+    filter: Option<MetadataFilter>,
+    request_type: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SearchRequestLogInput<'a> {
+    query: &'a str,
+    requested_limit: usize,
+    session: Option<&'a str>,
+    budget: Option<&'a SearchBudget>,
+    score_threshold: Option<f32>,
+    min_match_tokens: Option<usize>,
+    metrics: OmSearchMetrics,
+    hint_policy: OmHintPolicy,
+    typed_edge_enrichment: bool,
+    result_count: Option<usize>,
+}
+
 impl AxiomMe {
     #[must_use]
     pub fn search_requires_runtime_prepare(&self) -> bool {
@@ -95,18 +123,18 @@ impl AxiomMe {
             validate_filter(filter.as_ref())?;
             validate_search_cutoff_options(score_threshold, None)?;
             let target = parse_optional_target_uri(target_uri)?;
-            let options = build_search_options(
-                query.to_string(),
-                target,
-                None,
-                Vec::new(),
-                budget.clone(),
+            let options = build_search_options(SearchOptionsInput {
+                query: query.to_string(),
+                target_uri: target,
+                session: None,
+                session_hints: Vec::new(),
+                budget: budget.clone(),
                 requested_limit,
                 score_threshold,
-                None,
+                min_match_tokens: None,
                 filter,
-                "find",
-            );
+                request_type: "find",
+            });
 
             let mut result = self.run_retrieval_memory_only(&options)?;
             self.enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
@@ -211,13 +239,20 @@ impl AxiomMe {
             .and_then(|state| state.hint.as_deref())
             .map(ToString::to_string);
         let filtered_recent_messages =
-            if let Some(state) = om_state.as_ref().filter(|state| state.hint.is_some()) {
-                filter_recent_messages_by_ids(&ctx.recent_messages, &state.activated_message_ids)
-            } else {
-                ctx.recent_messages.clone()
-            };
+            om_state
+                .as_ref()
+                .filter(|state| state.hint.is_some())
+                .map(|state| {
+                    filter_recent_messages_by_ids(
+                        &ctx.recent_messages,
+                        &state.activated_message_ids,
+                    )
+                });
+        let recent_messages_for_hints = filtered_recent_messages
+            .as_deref()
+            .unwrap_or(ctx.recent_messages.as_slice());
         let recent_hints =
-            collect_recent_hints(&filtered_recent_messages, hint_policy.recent_hint_limit);
+            collect_recent_hints(recent_messages_for_hints, hint_policy.recent_hint_limit);
         let merged_hints = merge_runtime_om_recent_hints(
             &[],
             om_hint.as_deref(),
@@ -242,11 +277,10 @@ impl AxiomMe {
             .map_or(0, |state| state.observation_tokens_active);
         metrics.session_recent_hint_count = saturating_usize_to_u32(pre_om_recent_hints.len());
         metrics.session_hint_count_final = saturating_usize_to_u32(merged_hints.len());
-        metrics.om_filtered_message_count = saturating_usize_to_u32(
-            ctx.recent_messages
-                .len()
-                .saturating_sub(filtered_recent_messages.len()),
-        );
+        metrics.om_filtered_message_count =
+            saturating_usize_to_u32(filtered_recent_messages.as_ref().map_or(0, |messages| {
+                ctx.recent_messages.len().saturating_sub(messages.len())
+            }));
         metrics.context_tokens_after_om = estimate_hint_tokens(&merged_hints);
 
         Ok(SessionHintSnapshot {
@@ -315,18 +349,18 @@ impl AxiomMe {
                 om_metrics.context_tokens_after_om = estimate_hint_tokens(&session_hints);
             }
 
-            let options = build_search_options(
-                query.clone(),
-                target,
-                session.clone(),
+            let options = build_search_options(SearchOptionsInput {
+                query: query.clone(),
+                target_uri: target,
+                session: session.clone(),
                 session_hints,
-                budget.clone(),
+                budget: budget.clone(),
                 requested_limit,
                 score_threshold,
                 min_match_tokens,
                 filter,
-                "search",
-            );
+                request_type: "search",
+            });
 
             let mut result = self.run_retrieval_memory_only(&options)?;
             self.enrich_find_result_relations(&mut result, 5, typed_edge_enrichment)?;
@@ -340,18 +374,18 @@ impl AxiomMe {
         match output {
             Ok(result) => {
                 let trace_id = result.trace.as_ref().map(|x| x.trace_id.clone());
-                let details = search_request_details(
-                    &query,
+                let details = search_request_details(SearchRequestLogInput {
+                    query: &query,
                     requested_limit,
-                    session_raw.as_deref(),
-                    budget.as_ref(),
+                    session: session_raw.as_deref(),
+                    budget: budget.as_ref(),
                     score_threshold,
                     min_match_tokens,
-                    om_metrics,
+                    metrics: om_metrics,
                     hint_policy,
                     typed_edge_enrichment,
-                    Some(result.query_results.len()),
-                );
+                    result_count: Some(result.query_results.len()),
+                });
                 self.try_log_request(&RequestLogEntry {
                     request_id,
                     operation: "search".to_string(),
@@ -367,18 +401,18 @@ impl AxiomMe {
                 Ok(result)
             }
             Err(err) => {
-                let details = search_request_details(
-                    &query,
+                let details = search_request_details(SearchRequestLogInput {
+                    query: &query,
                     requested_limit,
-                    session_raw.as_deref(),
-                    budget.as_ref(),
+                    session: session_raw.as_deref(),
+                    budget: budget.as_ref(),
                     score_threshold,
                     min_match_tokens,
-                    om_metrics,
+                    metrics: om_metrics,
                     hint_policy,
                     typed_edge_enrichment,
-                    None,
-                );
+                    result_count: None,
+                });
                 self.try_log_request(&RequestLogEntry {
                     request_id,
                     operation: "search".to_string(),
@@ -556,22 +590,19 @@ fn parse_optional_target_uri(target_uri: Option<&str>) -> Result<Option<AxiomUri
     target_uri.map(AxiomUri::parse).transpose()
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "search option construction keeps query knobs explicit and side-effect free"
-)]
-fn build_search_options(
-    query: String,
-    target_uri: Option<AxiomUri>,
-    session: Option<String>,
-    session_hints: Vec<String>,
-    budget: Option<SearchBudget>,
-    requested_limit: usize,
-    score_threshold: Option<f32>,
-    min_match_tokens: Option<usize>,
-    filter: Option<MetadataFilter>,
-    request_type: &str,
-) -> SearchOptions {
+fn build_search_options(input: SearchOptionsInput) -> SearchOptions {
+    let SearchOptionsInput {
+        query,
+        target_uri,
+        session,
+        session_hints,
+        budget,
+        requested_limit,
+        score_threshold,
+        min_match_tokens,
+        filter,
+        request_type,
+    } = input;
     SearchOptions {
         query,
         target_uri,
@@ -713,24 +744,44 @@ fn merge_runtime_om_recent_hints(
 }
 
 fn normalize_hint_text(value: &str, max_chars: usize) -> Option<String> {
+    collapse_and_clip_whitespace(value, max_chars)
+}
+
+fn collapse_and_clip_whitespace(value: &str, max_chars: usize) -> Option<String> {
     if max_chars == 0 {
         return None;
     }
-    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return None;
+    let mut out = String::new();
+    let mut used = 0usize;
+    let mut has_word = false;
+
+    for word in value.split_whitespace() {
+        if word.is_empty() {
+            continue;
+        }
+        if has_word {
+            // Keep at least one char budget for the next token; avoid trailing
+            // whitespace-only clipping (e.g., "alpha ").
+            if used.saturating_add(1) >= max_chars {
+                break;
+            }
+            out.push(' ');
+            used = used.saturating_add(1);
+        }
+        for ch in word.chars() {
+            if used >= max_chars {
+                break;
+            }
+            out.push(ch);
+            used = used.saturating_add(1);
+        }
+        if used >= max_chars {
+            break;
+        }
+        has_word = true;
     }
-    let clipped = normalized
-        .chars()
-        .take(max_chars)
-        .collect::<String>()
-        .trim()
-        .to_string();
-    if clipped.is_empty() {
-        None
-    } else {
-        Some(clipped)
-    }
+
+    if out.is_empty() { None } else { Some(out) }
 }
 
 fn annotate_om_query_plan_visibility(
@@ -788,22 +839,19 @@ fn hint_policy_to_json(policy: OmHintPolicy) -> serde_json::Value {
     })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "request log payload builder keeps explicit fields to avoid hidden coupling"
-)]
-fn search_request_details(
-    query: &str,
-    requested_limit: usize,
-    session: Option<&str>,
-    budget: Option<&SearchBudget>,
-    score_threshold: Option<f32>,
-    min_match_tokens: Option<usize>,
-    metrics: OmSearchMetrics,
-    hint_policy: OmHintPolicy,
-    typed_edge_enrichment: bool,
-    result_count: Option<usize>,
-) -> serde_json::Value {
+fn search_request_details(input: SearchRequestLogInput<'_>) -> serde_json::Value {
+    let SearchRequestLogInput {
+        query,
+        requested_limit,
+        session,
+        budget,
+        score_threshold,
+        min_match_tokens,
+        metrics,
+        hint_policy,
+        typed_edge_enrichment,
+        result_count,
+    } = input;
     let mut details = serde_json::json!({
         "query": query,
         "limit": requested_limit,
@@ -878,11 +926,8 @@ fn merge_observation_hint_with_suggested_response(
     if max_suggested_chars == 0 {
         return observation_hint;
     }
-    let suggested = suggested_response
-        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "))
-        .filter(|value| !value.is_empty())
-        .map(|value| value.chars().take(max_suggested_chars).collect::<String>())
-        .filter(|value| !value.is_empty());
+    let suggested =
+        suggested_response.and_then(|value| normalize_hint_text(value, max_suggested_chars));
 
     match (observation_hint, suggested) {
         (Some(base), Some(next)) => Some(format!("{base} | next: {next}")),
@@ -896,7 +941,10 @@ fn merge_observation_hint_with_suggested_response(
 mod tests {
     use std::collections::HashMap;
 
-    use super::{build_search_options, parse_optional_target_uri, validate_search_cutoff_options};
+    use super::{
+        SearchOptionsInput, build_search_options, normalize_hint_text, parse_optional_target_uri,
+        validate_search_cutoff_options,
+    };
     use crate::error::AxiomError;
     use crate::models::{MetadataFilter, SearchBudget};
     use crate::uri::AxiomUri;
@@ -923,6 +971,28 @@ mod tests {
     }
 
     #[test]
+    fn normalize_hint_text_collapses_whitespace_and_clips_chars() {
+        assert_eq!(
+            normalize_hint_text("  alpha   beta\tgamma  ", 64).as_deref(),
+            Some("alpha beta gamma")
+        );
+        assert_eq!(
+            normalize_hint_text("alpha beta gamma", 5).as_deref(),
+            Some("alpha")
+        );
+        assert_eq!(
+            normalize_hint_text("alpha beta", 6).as_deref(),
+            Some("alpha")
+        );
+    }
+
+    #[test]
+    fn normalize_hint_text_rejects_empty_or_zero_budget() {
+        assert!(normalize_hint_text("   \n\t ", 16).is_none());
+        assert!(normalize_hint_text("hint", 0).is_none());
+    }
+
+    #[test]
     fn parse_optional_target_uri_returns_none_when_missing() {
         let target = parse_optional_target_uri(None).expect("parse none");
         assert!(target.is_none());
@@ -935,22 +1005,22 @@ mod tests {
         fields.insert("mime".to_string(), serde_json::json!("text/markdown"));
         let filter = MetadataFilter { fields };
 
-        let options = build_search_options(
-            "oauth".to_string(),
-            Some(AxiomUri::parse("axiom://resources").expect("target parse")),
-            Some("s-1".to_string()),
-            vec!["recent hint".to_string()],
-            Some(SearchBudget {
+        let options = build_search_options(SearchOptionsInput {
+            query: "oauth".to_string(),
+            target_uri: Some(AxiomUri::parse("axiom://resources").expect("target parse")),
+            session: Some("s-1".to_string()),
+            session_hints: vec!["recent hint".to_string()],
+            budget: Some(SearchBudget {
                 max_ms: Some(100),
                 max_nodes: Some(10),
                 max_depth: Some(3),
             }),
-            5,
-            Some(0.5),
-            Some(2),
-            Some(filter),
-            "search",
-        );
+            requested_limit: 5,
+            score_threshold: Some(0.5),
+            min_match_tokens: Some(2),
+            filter: Some(filter),
+            request_type: "search",
+        });
 
         assert_eq!(options.query, "oauth");
         assert_eq!(options.request_type, "search");

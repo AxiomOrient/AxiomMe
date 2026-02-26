@@ -273,12 +273,20 @@ fn relation_api_supports_link_unlink_and_list_crud() {
             "auth-security",
             vec![
                 "axiom://resources/relation-demo/auth".to_string(),
+                "axiom://resources/relation-demo/auth".to_string(),
                 "axiom://resources/relation-demo/security".to_string(),
             ],
             "Security dependency",
         )
         .expect("link create");
     assert_eq!(created.id, "auth-security");
+    assert_eq!(
+        created.uris,
+        vec![
+            "axiom://resources/relation-demo/auth".to_string(),
+            "axiom://resources/relation-demo/security".to_string()
+        ]
+    );
 
     let listed = app.relations(owner).expect("relations list");
     assert_eq!(listed.len(), 1);
@@ -315,6 +323,27 @@ fn relation_api_supports_link_unlink_and_list_crud() {
 }
 
 #[test]
+fn relation_api_requires_at_least_two_unique_uris() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let err = app
+        .link(
+            "axiom://resources/relation-demo",
+            "degenerate",
+            vec![
+                "axiom://resources/relation-demo/auth".to_string(),
+                "axiom://resources/relation-demo/auth".to_string(),
+            ],
+            "must have at least two unique endpoints",
+        )
+        .expect_err("duplicate-only relation should fail");
+    assert!(matches!(err, AxiomError::Validation(_)));
+    assert!(err.to_string().contains("two unique uris"));
+}
+
+#[test]
 fn relation_api_rejects_queue_scope_write_for_link() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app new");
@@ -332,6 +361,61 @@ fn relation_api_rejects_queue_scope_write_for_link() {
         )
         .expect_err("link must fail on queue");
     assert!(matches!(err, AxiomError::PermissionDenied(_)));
+}
+
+#[test]
+fn relation_api_rejects_internal_temp_scope_operations() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let link_err = app
+        .link(
+            "axiom://temp/relation-demo",
+            "tmp-link",
+            vec![
+                "axiom://temp/relation-demo/a".to_string(),
+                "axiom://temp/relation-demo/b".to_string(),
+            ],
+            "internal scope should be blocked",
+        )
+        .expect_err("temp link must fail");
+    assert!(matches!(link_err, AxiomError::PermissionDenied(_)));
+
+    let list_err = app
+        .relations("axiom://temp/relation-demo")
+        .expect_err("temp list must fail");
+    assert!(matches!(list_err, AxiomError::PermissionDenied(_)));
+
+    let unlink_err = app
+        .unlink("axiom://temp/relation-demo", "tmp-link")
+        .expect_err("temp unlink must fail");
+    assert!(matches!(unlink_err, AxiomError::PermissionDenied(_)));
+}
+
+#[test]
+fn relation_api_requires_uris_within_owner_subtree() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let err = app
+        .link(
+            "axiom://resources/relation-demo/rels",
+            "cross-scope",
+            vec![
+                "axiom://resources/relation-demo/auth".to_string(),
+                "axiom://resources/relation-demo/security".to_string(),
+            ],
+            "owner subtree invariant",
+        )
+        .expect_err("owner subtree invariant must be enforced");
+
+    assert!(matches!(err, AxiomError::Validation(_)));
+    assert!(
+        err.to_string().contains("owner subtree"),
+        "error should explain relation ownership invariant"
+    );
 }
 
 #[test]
@@ -695,6 +779,74 @@ fn relation_enrichment_can_attach_typed_edge_metadata_when_enabled() {
 }
 
 #[test]
+fn relation_enrichment_soft_fails_when_ontology_schema_is_invalid() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let corpus_dir = temp.path().join("relation_schema_corrupt_corpus");
+    fs::create_dir_all(&corpus_dir).expect("mkdir");
+    fs::write(
+        corpus_dir.join("auth.md"),
+        "OAuth auth flow and token rotation",
+    )
+    .expect("write");
+    fs::write(
+        corpus_dir.join("security.md"),
+        "Security baseline and hardening notes",
+    )
+    .expect("write");
+    app.add_resource(
+        corpus_dir.to_str().expect("corpus"),
+        Some("axiom://resources/relation-schema-corrupt-demo"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add");
+
+    app.link(
+        "axiom://resources/relation-schema-corrupt-demo",
+        "auth-security",
+        vec![
+            "axiom://resources/relation-schema-corrupt-demo/auth.md".to_string(),
+            "axiom://resources/relation-schema-corrupt-demo/security.md".to_string(),
+        ],
+        "Security dependency",
+    )
+    .expect("link");
+
+    write_ontology_schema(&app, "{invalid-json");
+
+    let mut result = app
+        .find(
+            "oauth",
+            Some("axiom://resources/relation-schema-corrupt-demo"),
+            Some(10),
+            None,
+            None,
+        )
+        .expect("find");
+    app.enrich_find_result_relations(&mut result, 5, true)
+        .expect("invalid schema should soft-fail for enrichment path");
+
+    let relation = result
+        .query_results
+        .iter()
+        .find(|hit| hit.uri.ends_with("auth.md"))
+        .and_then(|hit| {
+            hit.relations
+                .iter()
+                .find(|item| item.uri.ends_with("security.md"))
+        })
+        .expect("relation summary");
+    assert!(relation.relation_type.is_none());
+    assert!(relation.source_object_type.is_none());
+    assert!(relation.target_object_type.is_none());
+}
+
+#[test]
 fn find_soft_fails_when_relations_file_is_corrupted() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app new");
@@ -961,7 +1113,7 @@ fn request_logs_capture_extended_core_operations() {
             golden_only: false,
         })
         .expect("eval");
-    assert!(eval.executed_cases >= 1);
+    assert!(eval.coverage.executed_cases >= 1);
 
     let benchmark = app
         .run_benchmark_suite(&BenchmarkRunOptions {
@@ -974,7 +1126,7 @@ fn request_logs_capture_extended_core_operations() {
             fixture_name: None,
         })
         .expect("benchmark");
-    assert!(benchmark.executed_cases >= 1);
+    assert!(benchmark.quality.executed_cases >= 1);
 
     let gate = app
         .benchmark_gate_with_options(BenchmarkGateOptions {

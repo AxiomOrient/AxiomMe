@@ -293,13 +293,31 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
 
 ```json
 {
-  "memories": [{"uri":"axiom://...", "score":0.7, "abstract":"...", "relations":[{"uri":"axiom://...", "reason":"...", "relation_type":"depends_on", "source_object_type":"resource_doc", "target_object_type":"resource_doc"}]}],
-  "resources": [{"uri":"axiom://...", "score":0.8, "abstract":"...", "relations":[{"uri":"axiom://...", "reason":"..."}]}],
-  "skills": [{"uri":"axiom://...", "score":0.6, "abstract":"...", "relations":[{"uri":"axiom://...", "reason":"..."}]}],
   "query_plan": {},
-  "query_results": []
+  "query_results": [
+    {"uri":"axiom://...", "score":0.8, "abstract":"...", "relations":[{"uri":"axiom://...", "reason":"...", "relation_type":"depends_on", "source_object_type":"resource_doc", "target_object_type":"resource_doc"}]}
+  ],
+  "hit_buckets": {
+    "memories": [1, 4],
+    "resources": [0, 2],
+    "skills": [3]
+  },
+  "memories": [],
+  "resources": [],
+  "skills": []
 }
 ```
+
+- `query_results` is the canonical hit list.
+- `hit_buckets` contains index lists into `query_results` for memory/resource/skill views.
+- `memories/resources/skills` are compatibility mirrors derived from `query_results` + `hit_buckets`.
+
+Compatibility/deprecation plan (`memories/resources/skills`):
+
+- 2026-02-24 (current): compatibility mirrors are still emitted by default.
+- Transition window: consumers should migrate to `query_results` + `hit_buckets` during 2026-Q2.
+- Removal gate: mirror-field removal requires an explicit release note and one-cycle advance notice before enforcement (see `docs/RELEASE_NOTES_2026-02-24.md`).
+- Contract rule: when mirrors exist, they must be generated from `query_results`/`hit_buckets` only (no independent ranking path).
 
 Relation fields:
 
