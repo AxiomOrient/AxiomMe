@@ -217,10 +217,11 @@ struct ResolvedConfigExpectation {
     async_buffering_disabled: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 enum ScopeFixture {
     Session,
+    #[default]
     Thread,
     Resource,
 }
@@ -266,12 +267,6 @@ enum ReflectionActionFixture {
     None,
     Buffer,
     Reflect,
-}
-
-impl Default for ScopeFixture {
-    fn default() -> Self {
-        Self::Thread
-    }
 }
 
 impl From<ScopeFixture> for OmScope {
