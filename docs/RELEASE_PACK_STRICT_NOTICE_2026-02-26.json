@@ -1,6 +1,6 @@
 {
-  "pack_id": "df53666a-43b5-4886-bb69-fe3844e98999",
-  "created_at": "2026-02-26T10:01:10.442106+00:00",
+  "pack_id": "2da1817c-a436-4996-a715-647ef75ccaa5",
+  "created_at": "2026-02-26T13:54:40.919479+00:00",
   "workspace_dir": "/Users/axient/repository/AxiomMe",
   "passed": true,
   "status": "pass",
@@ -94,9 +94,9 @@
           "cargo_check": true,
           "cargo_fmt": true,
           "cargo_clippy": true,
-          "check_output": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.10s\n",
+          "check_output": "    Checking axiomme-core v0.1.1 (/Users/axient/repository/AxiomMe/crates/axiomme-core)\n    Checking axiomme-mobile-ffi v0.1.1 (/Users/axient/repository/AxiomMe/crates/axiomme-mobile-ffi)\n    Checking axiomme-cli v0.1.1 (/Users/axient/repos...",
           "fmt_output": "",
-          "clippy_output": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s\n"
+          "clippy_output": "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.14s\n"
         }
       }
     },
@@ -112,7 +112,7 @@
           "dead_letter": 0
         }
       },
-      "evidence_uri": "axiom://queue/release/reliability/631fe0ae-d265-4839-8ba5-e36211d1efa5.json"
+      "evidence_uri": "axiom://queue/release/reliability/3a715320-208e-4d94-bd45-a3d1928ab301.json"
     },
     {
       "gate_id": "G3",
@@ -129,7 +129,7 @@
           "relation_missing": 0
         }
       },
-      "evidence_uri": "axiom://queue/eval/reports/1b60372b-cb08-4e0c-a14a-f585137d13e7.json"
+      "evidence_uri": "axiom://queue/eval/reports/f7ab5b5a-b5bc-4edd-b5b6-e4dbe59cadd0.json"
     },
     {
       "gate_id": "G4",
@@ -138,7 +138,7 @@
       "details": {
         "kind": "session_memory",
         "data": {
-          "base_details": "session_id=release-gate-d9d1ec7dd1fc4bc7a0a48496c6d449d0 memories_extracted=9 hit_count=1 missing_categories=-",
+          "base_details": "session_id=release-gate-dd3760ff171141bb8f01a09415de3cf0 memories_extracted=9 hit_count=1 missing_categories=-",
           "memory_category_miss": 0
         }
       }
@@ -159,7 +159,7 @@
           "packages": 278
         }
       },
-      "evidence_uri": "axiom://queue/release/security/9f0acc4b-2115-47c2-af66-3a59324cfcaf.json"
+      "evidence_uri": "axiom://queue/release/security/9b2967f5-e2d9-4e59-8798-040ace49a4ad.json"
     },
     {
       "gate_id": "G6",
@@ -176,7 +176,7 @@
           ]
         }
       },
-      "evidence_uri": "axiom://queue/release/gates/1d2612a9-12f0-450f-9985-78ad105673ee.json"
+      "evidence_uri": "axiom://queue/release/gates/011e452f-ce31-40ce-85ea-05b0d4f72482.json"
     },
     {
       "gate_id": "G7",
@@ -190,7 +190,7 @@
           "request_logs_scanned": 12
         }
       },
-      "evidence_uri": "axiom://queue/release/operability/7dd76e39-8fe8-4dc5-a2f3-f33e6d80b649.json"
+      "evidence_uri": "axiom://queue/release/operability/ccada1fe-f0b5-4aeb-9c48-c668c7580d5b.json"
     },
     {
       "gate_id": "G8",
@@ -204,5 +204,5 @@
       }
     }
   ],
-  "report_uri": "axiom://queue/release/packs/df53666a-43b5-4886-bb69-fe3844e98999.json"
+  "report_uri": "axiom://queue/release/packs/2da1817c-a436-4996-a715-647ef75ccaa5.json"
 }
