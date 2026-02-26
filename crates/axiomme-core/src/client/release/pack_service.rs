@@ -83,8 +83,8 @@ impl AxiomMe {
         decisions.push(evaluate_build_quality_gate(workspace_path));
 
         let reliability = self.collect_reliability_evidence(
-            options.replay_limit.max(1),
-            options.replay_max_cycles.max(1),
+            options.replay.replay_limit.max(1),
+            options.replay.replay_max_cycles.max(1),
         )?;
         decisions.push(reliability_evidence_gate_decision(&reliability));
 
@@ -101,9 +101,9 @@ impl AxiomMe {
         )?;
 
         let eval = self.run_eval_loop_with_options(&EvalRunOptions {
-            trace_limit: options.eval_trace_limit.max(1),
-            query_limit: options.eval_query_limit.max(1),
-            search_limit: options.eval_search_limit.max(1),
+            trace_limit: options.eval.eval_trace_limit.max(1),
+            query_limit: options.eval.eval_query_limit.max(1),
+            search_limit: options.eval.eval_search_limit.max(1),
             include_golden: true,
             golden_only: true,
         })?;
@@ -123,8 +123,8 @@ impl AxiomMe {
         decisions.push(security_audit_gate_decision(&security));
 
         let _ = self.run_benchmark_suite(&BenchmarkRunOptions {
-            query_limit: options.benchmark_query_limit.max(1),
-            search_limit: options.benchmark_search_limit.max(1),
+            query_limit: options.benchmark_run.benchmark_query_limit.max(1),
+            search_limit: options.benchmark_run.benchmark_search_limit.max(1),
             include_golden: true,
             include_trace: false,
             include_stress: false,
@@ -133,21 +133,21 @@ impl AxiomMe {
         })?;
         let benchmark_gate = self.benchmark_gate_with_options(BenchmarkGateOptions {
             gate_profile: "rc-candidate".to_string(),
-            threshold_p95_ms: options.benchmark_threshold_p95_ms,
-            min_top1_accuracy: options.benchmark_min_top1_accuracy,
-            min_stress_top1_accuracy: options.benchmark_min_stress_top1_accuracy,
-            max_p95_regression_pct: options.benchmark_max_p95_regression_pct,
-            max_top1_regression_pct: options.benchmark_max_top1_regression_pct,
-            window_size: options.benchmark_window_size.max(1),
-            required_passes: options.benchmark_required_passes.max(1),
+            threshold_p95_ms: options.benchmark_gate.benchmark_threshold_p95_ms,
+            min_top1_accuracy: options.benchmark_gate.benchmark_min_top1_accuracy,
+            min_stress_top1_accuracy: options.benchmark_gate.benchmark_min_stress_top1_accuracy,
+            max_p95_regression_pct: options.benchmark_gate.benchmark_max_p95_regression_pct,
+            max_top1_regression_pct: options.benchmark_gate.benchmark_max_top1_regression_pct,
+            window_size: options.benchmark_gate.benchmark_window_size.max(1),
+            required_passes: options.benchmark_gate.benchmark_required_passes.max(1),
             record: true,
             write_release_check: false,
         })?;
         decisions.push(benchmark_release_gate_decision(&benchmark_gate));
 
         let operability = self.collect_operability_evidence(
-            options.trace_limit.max(1),
-            options.request_limit.max(1),
+            options.operability.trace_limit.max(1),
+            options.operability.request_limit.max(1),
         )?;
         decisions.push(operability_evidence_gate_decision(&operability));
 

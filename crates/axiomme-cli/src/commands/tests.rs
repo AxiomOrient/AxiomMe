@@ -6,14 +6,64 @@ use tempfile::tempdir;
 use super::command_needs_runtime;
 use crate::cli::{
     AddArgs, BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs, DocumentCommand,
-    DocumentMode, EvalArgs, EvalCommand, FindArgs, QueueArgs, QueueCommand, ReconcileArgs,
-    TraceArgs, TraceCommand, WebArgs,
+    DocumentMode, EvalArgs, EvalCommand, FindArgs, OntologyArgs, OntologyCommand, QueueArgs,
+    QueueCommand, ReconcileArgs, RelationArgs, RelationCommand, TraceArgs, TraceCommand, WebArgs,
 };
 use axiomme_core::AxiomMe;
 
 fn run(app: &AxiomMe, root: &Path, command: Commands) -> anyhow::Result<()> {
     super::validate_command_preflight(&command)?;
     super::run_validated(app, root, command)
+}
+
+fn write_schema_with_action_and_invariants(root: &Path) {
+    let schema_path = root.join("agent").join("ontology").join("schema.v1.json");
+    fs::write(
+        schema_path,
+        r#"{
+          "version": 1,
+          "object_types": [
+            {
+              "id": "resource_doc",
+              "uri_prefixes": ["axiom://resources/docs"],
+              "allowed_scopes": ["resources"]
+            }
+          ],
+          "link_types": [
+            {
+              "id": "depends_on",
+              "from_types": ["resource_doc"],
+              "to_types": ["resource_doc"],
+              "min_arity": 2,
+              "max_arity": 8,
+              "symmetric": false
+            }
+          ],
+          "action_types": [
+            {
+              "id": "sync_doc",
+              "input_contract": "json-object",
+              "effects": ["enqueue"],
+              "queue_event_type": "semantic_scan"
+            }
+          ],
+          "invariants": [
+            {
+              "id": "inv_doc_exists",
+              "rule": "object_type_declared:resource_doc",
+              "severity": "warn",
+              "message": "resource_doc required"
+            },
+            {
+              "id": "inv_missing_link",
+              "rule": "link_type_declared:missing_link",
+              "severity": "warn",
+              "message": "missing link for test"
+            }
+          ]
+        }"#,
+    )
+    .expect("write schema");
 }
 
 #[test]
@@ -50,6 +100,16 @@ fn find_requires_runtime_prepare() {
 fn backend_requires_runtime_prepare() {
     let command = Commands::Backend;
     assert!(command_needs_runtime(&command));
+}
+
+#[test]
+fn relation_commands_do_not_require_runtime_prepare() {
+    let command = Commands::Relation(RelationArgs {
+        command: RelationCommand::List {
+            owner_uri: "axiom://resources/docs".to_string(),
+        },
+    });
+    assert!(!command_needs_runtime(&command));
 }
 
 #[test]
@@ -189,6 +249,93 @@ fn queue_status_uses_bootstrap_only_without_generating_root_tiers() {
 }
 
 #[test]
+fn relation_commands_roundtrip_link_list_unlink() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+    run(
+        &app,
+        temp.path(),
+        Commands::Mkdir(crate::cli::UriArg {
+            uri: "axiom://resources/docs".to_string(),
+        }),
+    )
+    .expect("mkdir owner");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Relation(RelationArgs {
+            command: RelationCommand::Link {
+                owner_uri: "axiom://resources/docs".to_string(),
+                relation_id: "auth-security".to_string(),
+                uris: vec![
+                    "axiom://resources/docs/auth.md".to_string(),
+                    "axiom://resources/docs/security.md".to_string(),
+                ],
+                reason: "security dependency".to_string(),
+            },
+        }),
+    )
+    .expect("relation link");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Relation(RelationArgs {
+            command: RelationCommand::List {
+                owner_uri: "axiom://resources/docs".to_string(),
+            },
+        }),
+    )
+    .expect("relation list");
+    let listed = app
+        .relations("axiom://resources/docs")
+        .expect("relations listed");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].id, "auth-security");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Relation(RelationArgs {
+            command: RelationCommand::Unlink {
+                owner_uri: "axiom://resources/docs".to_string(),
+                relation_id: "auth-security".to_string(),
+            },
+        }),
+    )
+    .expect("relation unlink");
+    assert!(
+        app.relations("axiom://resources/docs")
+            .expect("relations after unlink")
+            .is_empty()
+    );
+}
+
+#[test]
+fn relation_link_requires_at_least_two_uris_before_bootstrap() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    let err = run(
+        &app,
+        temp.path(),
+        Commands::Relation(RelationArgs {
+            command: RelationCommand::Link {
+                owner_uri: "axiom://resources/docs".to_string(),
+                relation_id: "auth-security".to_string(),
+                uris: vec!["axiom://resources/docs/auth.md".to_string()],
+                reason: "security dependency".to_string(),
+            },
+        }),
+    )
+    .expect_err("must reject one-uri relation");
+
+    assert!(format!("{err:#}").contains("at least two --uri"));
+    assert!(!temp.path().join("resources").exists());
+}
+
+#[test]
 fn init_bootstraps_required_scope_directories() {
     // Given a fresh root.
     // When running `init`.
@@ -221,6 +368,246 @@ fn find_runs_runtime_prepare_and_generates_root_tiers() {
     run(&app, temp.path(), command).expect("find");
 
     assert!(temp.path().join("resources").join(".abstract.md").exists());
+}
+
+#[test]
+fn ontology_pressure_runs_against_bootstrapped_default_schema() {
+    // Given a fresh root and default ontology schema.
+    // When running `ontology pressure`.
+    // Then command should complete and report thresholds without runtime side effects.
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+
+    let command = Commands::Ontology(OntologyArgs {
+        command: OntologyCommand::Pressure {
+            uri: None,
+            min_action_types: 3,
+            min_invariants: 3,
+            min_action_invariant_total: 5,
+            min_link_types_per_object_basis_points: 15_000,
+        },
+    });
+    run(&app, temp.path(), command).expect("ontology pressure");
+}
+
+#[test]
+fn ontology_trend_reads_snapshot_history_and_runs() {
+    // Given explicit ontology pressure snapshot history.
+    // When running `ontology trend`.
+    // Then CLI should evaluate trend report without runtime side effects.
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+
+    let history_dir = temp.path().join("pressure-history");
+    fs::create_dir_all(&history_dir).expect("history dir");
+    fs::write(
+        history_dir.join("s1.json"),
+        r#"{
+          "generated_at_utc": "2026-02-21T00:00:00Z",
+          "label": "nightly",
+          "pressure": {
+            "report": {
+              "schema_version": 1,
+              "object_type_count": 1,
+              "link_type_count": 1,
+              "action_type_count": 1,
+              "invariant_count": 1,
+              "action_invariant_total": 2,
+              "link_types_per_object_basis_points": 10000,
+              "v2_candidate": true,
+              "trigger_reasons": ["a"],
+              "policy": {
+                "min_action_types": 1,
+                "min_invariants": 1,
+                "min_action_invariant_total": 1,
+                "min_link_types_per_object_basis_points": 1
+              }
+            }
+          }
+        }"#,
+    )
+    .expect("write snapshot 1");
+    fs::write(
+        history_dir.join("s2.json"),
+        r#"{
+          "generated_at_utc": "2026-02-22T00:00:00Z",
+          "label": "nightly",
+          "pressure": {
+            "report": {
+              "schema_version": 1,
+              "object_type_count": 1,
+              "link_type_count": 1,
+              "action_type_count": 1,
+              "invariant_count": 1,
+              "action_invariant_total": 2,
+              "link_types_per_object_basis_points": 10000,
+              "v2_candidate": true,
+              "trigger_reasons": ["b"],
+              "policy": {
+                "min_action_types": 1,
+                "min_invariants": 1,
+                "min_action_invariant_total": 1,
+                "min_link_types_per_object_basis_points": 1
+              }
+            }
+          }
+        }"#,
+    )
+    .expect("write snapshot 2");
+    fs::write(
+        history_dir.join("s3.json"),
+        r#"{
+          "generated_at_utc": "2026-02-23T00:00:00Z",
+          "label": "nightly",
+          "pressure": {
+            "report": {
+              "schema_version": 1,
+              "object_type_count": 1,
+              "link_type_count": 1,
+              "action_type_count": 1,
+              "invariant_count": 1,
+              "action_invariant_total": 2,
+              "link_types_per_object_basis_points": 10000,
+              "v2_candidate": true,
+              "trigger_reasons": ["c"],
+              "policy": {
+                "min_action_types": 1,
+                "min_invariants": 1,
+                "min_action_invariant_total": 1,
+                "min_link_types_per_object_basis_points": 1
+              }
+            }
+          }
+        }"#,
+    )
+    .expect("write snapshot 3");
+
+    let command = Commands::Ontology(OntologyArgs {
+        command: OntologyCommand::Trend {
+            history_dir: history_dir.clone(),
+            min_samples: 3,
+            consecutive_v2_candidate: 3,
+        },
+    });
+    run(&app, temp.path(), command).expect("ontology trend");
+}
+
+#[test]
+fn ontology_action_validate_and_enqueue_run_with_schema_contract() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+    write_schema_with_action_and_invariants(temp.path());
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Ontology(OntologyArgs {
+            command: OntologyCommand::ActionValidate {
+                uri: None,
+                action_id: "sync_doc".to_string(),
+                queue_event_type: "semantic_scan".to_string(),
+                input_json: Some("{\"uri\":\"axiom://resources/docs/a.md\"}".to_string()),
+                input_file: None,
+                input_stdin: false,
+            },
+        }),
+    )
+    .expect("action validate");
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Ontology(OntologyArgs {
+            command: OntologyCommand::ActionEnqueue {
+                uri: None,
+                target_uri: "axiom://resources/docs/a.md".to_string(),
+                action_id: "sync_doc".to_string(),
+                queue_event_type: "semantic_scan".to_string(),
+                input_json: Some("{\"uri\":\"axiom://resources/docs/a.md\"}".to_string()),
+                input_file: None,
+                input_stdin: false,
+            },
+        }),
+    )
+    .expect("action enqueue");
+
+    let outbox = app.state.fetch_outbox("new", 200).expect("fetch outbox");
+    let queued = outbox
+        .iter()
+        .find(|event| {
+            event.event_type == "semantic_scan" && event.uri == "axiom://resources/docs/a.md"
+        })
+        .expect("queued ontology action event");
+    let payload = queued.payload_json.as_object().expect("payload object");
+    assert_eq!(payload.get("schema_version"), Some(&serde_json::json!(1)));
+    assert_eq!(
+        payload.get("action_id"),
+        Some(&serde_json::json!("sync_doc"))
+    );
+}
+
+#[test]
+fn ontology_invariant_check_can_enforce_failures() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+    write_schema_with_action_and_invariants(temp.path());
+
+    run(
+        &app,
+        temp.path(),
+        Commands::Ontology(OntologyArgs {
+            command: OntologyCommand::InvariantCheck {
+                uri: None,
+                enforce: false,
+            },
+        }),
+    )
+    .expect("invariant check non-enforced");
+
+    let enforce_error = run(
+        &app,
+        temp.path(),
+        Commands::Ontology(OntologyArgs {
+            command: OntologyCommand::InvariantCheck {
+                uri: None,
+                enforce: true,
+            },
+        }),
+    )
+    .expect_err("invariant check must fail when enforced");
+    assert!(format!("{enforce_error:#}").contains("ontology invariant check failed"));
+}
+
+#[test]
+fn ontology_action_input_rejects_multiple_sources() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app");
+    run(&app, temp.path(), Commands::Init).expect("init");
+    write_schema_with_action_and_invariants(temp.path());
+
+    let input_file = temp.path().join("input.json");
+    fs::write(&input_file, "{\"uri\":\"axiom://resources/docs/a.md\"}").expect("write input");
+
+    let error = run(
+        &app,
+        temp.path(),
+        Commands::Ontology(OntologyArgs {
+            command: OntologyCommand::ActionValidate {
+                uri: None,
+                action_id: "sync_doc".to_string(),
+                queue_event_type: "semantic_scan".to_string(),
+                input_json: Some("{\"uri\":\"axiom://resources/docs/a.md\"}".to_string()),
+                input_file: Some(input_file),
+                input_stdin: false,
+            },
+        }),
+    )
+    .expect_err("must reject multiple action input sources");
+    assert!(format!("{error:#}").contains("ontology action input accepts at most one source"));
 }
 
 #[test]

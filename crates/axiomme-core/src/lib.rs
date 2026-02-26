@@ -24,6 +24,7 @@ pub(crate) mod mime;
 pub mod models;
 pub mod om;
 pub mod om_bridge;
+pub mod ontology;
 pub mod pack;
 pub mod parse;
 pub(crate) mod quality;

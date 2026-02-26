@@ -18,10 +18,23 @@ mod helpers;
 mod tests;
 
 use helpers::{
-    MAX_INDEX_READ_BYTES, directory_record_name, index_state_changed, metadata_mtime_nanos,
-    path_mtime_nanos, read_index_source_bytes, should_skip_indexing_file,
-    synthesize_directory_tiers,
+    MAX_INDEX_READ_BYTES, MAX_TRUNCATED_MARKDOWN_TAIL_HEADING_KEYS,
+    collect_markdown_tail_heading_keys, directory_record_name, index_state_changed,
+    is_markdown_file, metadata_mtime_nanos, path_mtime_nanos, read_index_source_bytes,
+    should_skip_indexing_file, synthesize_directory_tiers,
 };
+
+fn append_truncated_markdown_heading_index(text: &mut String, headings: &[String]) {
+    if headings.is_empty() {
+        return;
+    }
+    text.push_str("\n\n[index markdown heading keys]\n");
+    for heading in headings {
+        text.push_str("- ");
+        text.push_str(heading);
+        text.push('\n');
+    }
+}
 
 impl AxiomMe {
     fn prune_generated_tiers_recursive(&self, root: &AxiomUri) -> Result<usize> {
@@ -235,6 +248,20 @@ impl AxiomMe {
                 text,
                 "\n\n[indexing truncated at {MAX_INDEX_READ_BYTES} bytes]"
             );
+            if is_markdown_file(&name) {
+                let tail_headings = collect_markdown_tail_heading_keys(
+                    path,
+                    MAX_TRUNCATED_MARKDOWN_TAIL_HEADING_KEYS,
+                )?;
+                if !tail_headings.is_empty() {
+                    let text_lower = text.to_lowercase();
+                    let missing_tail_headings = tail_headings
+                        .into_iter()
+                        .filter(|heading| !text_lower.contains(&heading.to_lowercase()))
+                        .collect::<Vec<_>>();
+                    append_truncated_markdown_heading_index(&mut text, &missing_tail_headings);
+                }
+            }
         }
 
         let abstract_text = title

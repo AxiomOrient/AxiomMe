@@ -104,11 +104,31 @@ The goal is simple: keep data contracts explicit, isolate side effects, and avoi
    - host-only release/security tasks executed in CI/desktop path only,
    - mobile runtime path excludes subprocess-dependent gates.
 
+6. Real-use retrieval benchmark:
+   - run random heading scenarios against real corpus (`contextSet`) with reproducible seed,
+   - require explicit retrieval quality + latency report (`top1/top5`, `non-empty`, `p50/p95`) plus CRUD proof.
+
 ## Practical Command Baseline
 
 ```bash
 # Core/CLI quality baseline
 bash scripts/quality_gates.sh
+
+# Real dataset random scenario benchmark (reproducible with seed)
+bash scripts/contextset_random_benchmark.sh \
+  --dataset /Users/axient/Documents/contextSet \
+  --sample-size 24 \
+  --seed 4242 \
+  --report-path docs/REAL_CONTEXTSET_VALIDATION_$(date +%F)-random.md
+
+# Real dataset matrix benchmark (recommended release gate)
+bash scripts/contextset_random_benchmark_matrix.sh \
+  --dataset /Users/axient/Documents/contextSet \
+  --sample-size 24 \
+  --seeds 4242,777,9001 \
+  --report-path docs/REAL_CONTEXTSET_VALIDATION_MATRIX_$(date +%F).md
+# default gate: non-empty + top1 + top5 thresholds with per-seed p95 and reason columns
+# heading candidates exclude YAML front matter and fenced code blocks
 
 # iOS simulator test (example)
 xcodebuild test \

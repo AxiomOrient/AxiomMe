@@ -5,7 +5,7 @@ use tempfile::{TempDir, tempdir};
 
 use crate::models::{
     ContextHit, FindResult, IndexRecord, QueryPlan, RuntimeHint, RuntimeHintKind, SearchBudget,
-    SearchOptions, SearchRequest,
+    SearchOptions, SearchRequest, classify_hit_buckets,
 };
 use crate::om::{OmOriginType, OmRecord, OmScope, build_scope_key};
 
@@ -993,12 +993,29 @@ fn hit(uri: &str, score: f32) -> ContextHit {
 }
 
 fn sample_find_result(hits: Vec<ContextHit>) -> FindResult {
+    let hit_buckets = classify_hit_buckets(&hits);
+    let memories = hit_buckets
+        .memories
+        .iter()
+        .filter_map(|&index| hits.get(index).cloned())
+        .collect::<Vec<_>>();
+    let resources = hit_buckets
+        .resources
+        .iter()
+        .filter_map(|&index| hits.get(index).cloned())
+        .collect::<Vec<_>>();
+    let skills = hit_buckets
+        .skills
+        .iter()
+        .filter_map(|&index| hits.get(index).cloned())
+        .collect::<Vec<_>>();
     FindResult {
-        memories: Vec::new(),
-        resources: hits.clone(),
-        skills: Vec::new(),
         query_plan: QueryPlan::default(),
         query_results: hits,
+        hit_buckets,
+        memories,
+        resources,
+        skills,
         trace: None,
         trace_uri: None,
     }

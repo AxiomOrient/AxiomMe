@@ -10,7 +10,8 @@ use crate::config::RETRIEVAL_BACKEND_MEMORY;
 use crate::error::{AxiomError, Result};
 use crate::models::{
     BenchmarkCorpusMetadata, BenchmarkEnvironmentMetadata, BenchmarkGateResult, MetadataFilter,
-    ReleaseCheckDocument, ReleaseGateStatus,
+    ReleaseCheckDocument, ReleaseCheckEmbeddingMetadata, ReleaseCheckRunSummary,
+    ReleaseCheckThresholds, ReleaseGateStatus,
 };
 use crate::quality::{
     command_stdout, duration_to_latency_ms, duration_to_latency_us, infer_corpus_profile,
@@ -185,23 +186,45 @@ impl AxiomMe {
             gate_profile: result.gate_profile.clone(),
             status: ReleaseGateStatus::from_passed(result.passed),
             passed: result.passed,
-            reasons: result.reasons.clone(),
-            threshold_p95_ms: result.threshold_p95_ms,
-            min_top1_accuracy: result.min_top1_accuracy,
-            min_stress_top1_accuracy: result.min_stress_top1_accuracy,
-            max_p95_regression_pct: result.max_p95_regression_pct,
-            max_top1_regression_pct: result.max_top1_regression_pct,
-            window_size: result.window_size,
-            required_passes: result.required_passes,
-            evaluated_runs: result.evaluated_runs,
-            passing_runs: result.passing_runs,
-            latest_report_uri: result.latest.as_ref().map(|x| x.report_uri.clone()),
-            previous_report_uri: result.previous.as_ref().map(|x| x.report_uri.clone()),
-            latest_p95_latency_us: result.latest.as_ref().and_then(|x| x.p95_latency_us),
-            previous_p95_latency_us: result.previous.as_ref().and_then(|x| x.p95_latency_us),
-            embedding_provider: result.embedding_provider.clone(),
-            embedding_strict_error: result.embedding_strict_error.clone(),
-            gate_record_uri: result.gate_record_uri.clone(),
+            reasons: result.execution.reasons.clone(),
+            thresholds: ReleaseCheckThresholds {
+                threshold_p95_ms: result.thresholds.threshold_p95_ms,
+                min_top1_accuracy: result.thresholds.min_top1_accuracy,
+                min_stress_top1_accuracy: result.thresholds.min_stress_top1_accuracy,
+                max_p95_regression_pct: result.thresholds.max_p95_regression_pct,
+                max_top1_regression_pct: result.thresholds.max_top1_regression_pct,
+                window_size: result.quorum.window_size,
+                required_passes: result.quorum.required_passes,
+            },
+            run_summary: ReleaseCheckRunSummary {
+                evaluated_runs: result.execution.evaluated_runs,
+                passing_runs: result.execution.passing_runs,
+                latest_report_uri: result
+                    .snapshot
+                    .latest
+                    .as_ref()
+                    .map(|x| x.report_uri.clone()),
+                previous_report_uri: result
+                    .snapshot
+                    .previous
+                    .as_ref()
+                    .map(|x| x.report_uri.clone()),
+                latest_p95_latency_us: result
+                    .snapshot
+                    .latest
+                    .as_ref()
+                    .and_then(|x| x.p95_latency_us),
+                previous_p95_latency_us: result
+                    .snapshot
+                    .previous
+                    .as_ref()
+                    .and_then(|x| x.p95_latency_us),
+            },
+            embedding: ReleaseCheckEmbeddingMetadata {
+                embedding_provider: result.artifacts.embedding_provider.clone(),
+                embedding_strict_error: result.artifacts.embedding_strict_error.clone(),
+            },
+            gate_record_uri: result.artifacts.gate_record_uri.clone(),
         };
         self.fs
             .write(&uri, &serde_json::to_string_pretty(&doc)?, true)?;
@@ -326,7 +349,9 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::models::{
-        BenchmarkGateResult, BenchmarkGateRunResult, BenchmarkSummary, ReleaseCheckDocument,
+        BenchmarkGateArtifacts, BenchmarkGateExecution, BenchmarkGateQuorum, BenchmarkGateResult,
+        BenchmarkGateRunResult, BenchmarkGateSnapshot, BenchmarkGateThresholds, BenchmarkSummary,
+        ReleaseCheckDocument,
     };
     use crate::uri::AxiomUri;
 
@@ -355,52 +380,64 @@ mod tests {
         let result = BenchmarkGateResult {
             passed: false,
             gate_profile: "macmini-release".to_string(),
-            threshold_p95_ms: 10_000,
-            min_top1_accuracy: 0.75,
-            min_stress_top1_accuracy: None,
-            max_p95_regression_pct: None,
-            max_top1_regression_pct: None,
-            window_size: 2,
-            required_passes: 2,
-            evaluated_runs: 2,
-            passing_runs: 1,
-            latest: Some(BenchmarkSummary {
-                run_id: "run-a".to_string(),
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-                executed_cases: 10,
-                top1_accuracy: 0.5,
-                p95_latency_ms: 900,
-                p95_latency_us: Some(899_750),
-                report_uri: "axiom://queue/benchmarks/reports/a.json".to_string(),
-            }),
-            previous: None,
-            regression_pct: None,
-            top1_regression_pct: None,
-            stress_top1_accuracy: None,
-            run_results: vec![BenchmarkGateRunResult {
-                run_id: "run-a".to_string(),
-                passed: false,
-                p95_latency_ms: 900,
-                p95_latency_us: Some(899_750),
-                top1_accuracy: 0.5,
-                stress_top1_accuracy: None,
+            thresholds: BenchmarkGateThresholds {
+                threshold_p95_ms: 10_000,
+                min_top1_accuracy: 0.75,
+                min_stress_top1_accuracy: None,
+                max_p95_regression_pct: None,
+                max_top1_regression_pct: None,
+            },
+            quorum: BenchmarkGateQuorum {
+                window_size: 2,
+                required_passes: 2,
+            },
+            snapshot: BenchmarkGateSnapshot {
+                latest: Some(BenchmarkSummary {
+                    run_id: "run-a".to_string(),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                    executed_cases: 10,
+                    top1_accuracy: 0.5,
+                    p95_latency_ms: 900,
+                    p95_latency_us: Some(899_750),
+                    report_uri: "axiom://queue/benchmarks/reports/a.json".to_string(),
+                }),
+                previous: None,
                 regression_pct: None,
                 top1_regression_pct: None,
+                stress_top1_accuracy: None,
+            },
+            execution: BenchmarkGateExecution {
+                evaluated_runs: 2,
+                passing_runs: 1,
+                run_results: vec![BenchmarkGateRunResult {
+                    run_id: "run-a".to_string(),
+                    passed: false,
+                    p95_latency_ms: 900,
+                    p95_latency_us: Some(899_750),
+                    top1_accuracy: 0.5,
+                    stress_top1_accuracy: None,
+                    regression_pct: None,
+                    top1_regression_pct: None,
+                    reasons: vec![
+                        "release_embedding_provider_required:semantic-lite!=semantic-model-http"
+                            .to_string(),
+                    ],
+                }],
                 reasons: vec![
                     "release_embedding_provider_required:semantic-lite!=semantic-model-http"
                         .to_string(),
+                    "release_embedding_strict_error:semantic-model-http embed request failed"
+                        .to_string(),
                 ],
-            }],
-            gate_record_uri: None,
-            release_check_uri: None,
-            embedding_provider: Some("semantic-lite".to_string()),
-            embedding_strict_error: Some("semantic-model-http embed request failed".to_string()),
-            reasons: vec![
-                "release_embedding_provider_required:semantic-lite!=semantic-model-http"
-                    .to_string(),
-                "release_embedding_strict_error:semantic-model-http embed request failed"
-                    .to_string(),
-            ],
+            },
+            artifacts: BenchmarkGateArtifacts {
+                gate_record_uri: None,
+                release_check_uri: None,
+                embedding_provider: Some("semantic-lite".to_string()),
+                embedding_strict_error: Some(
+                    "semantic-model-http embed request failed".to_string(),
+                ),
+            },
         };
 
         let uri = app
@@ -409,13 +446,16 @@ mod tests {
         let parsed = AxiomUri::parse(&uri).expect("uri parse");
         let raw = app.fs.read(&parsed).expect("read");
         let doc: ReleaseCheckDocument = serde_json::from_str(&raw).expect("doc parse");
-        assert_eq!(doc.embedding_provider.as_deref(), Some("semantic-lite"));
         assert_eq!(
-            doc.embedding_strict_error.as_deref(),
+            doc.embedding.embedding_provider.as_deref(),
+            Some("semantic-lite")
+        );
+        assert_eq!(
+            doc.embedding.embedding_strict_error.as_deref(),
             Some("semantic-model-http embed request failed")
         );
-        assert_eq!(doc.latest_p95_latency_us, Some(899_750));
-        assert_eq!(doc.previous_p95_latency_us, None);
+        assert_eq!(doc.run_summary.latest_p95_latency_us, Some(899_750));
+        assert_eq!(doc.run_summary.previous_p95_latency_us, None);
     }
 
     #[cfg(unix)]

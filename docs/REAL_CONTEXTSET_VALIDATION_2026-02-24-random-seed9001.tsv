@@ -1,0 +1,24 @@
+/Users/axient/Documents/contextSet/tools/methodologies/ai-pair-programming.md	axiom://resources/contextSet/tools/methodologies/ai-pair-programming.md	Phase 3: AI 구현 요청	5	5	1	1	1	1	7	7
+/Users/axient/Documents/contextSet/layers/task/documentation.md	axiom://resources/contextSet/layers/task/documentation.md	성능 최적화	5	5	0	0	0	0	6	6
+/Users/axient/Documents/contextSet/layers/system/agent-communication-style.md	axiom://resources/contextSet/layers/system/agent-communication-style.md	문제 해결	5	5	1	1	1	1	5	5
+/Users/axient/Documents/contextSet/tools/methodologies/tdd-methodology.md	axiom://resources/contextSet/tools/methodologies/tdd-methodology.md	SECTION 4: 필수 작업 절차	5	5	1	1	1	1	6	7
+/Users/axient/Documents/contextSet/INTEGRATION_GUIDE.md	axiom://resources/contextSet/INTEGRATION_GUIDE.md	트러블슈팅	5	5	1	1	1	1	4	4
+/Users/axient/Documents/contextSet/tools/methodologies/ai-pair-programming.md	axiom://resources/contextSet/tools/methodologies/ai-pair-programming.md	Phase 1: 타입 정의 (Type-First Design)	5	5	1	1	1	1	8	8
+/Users/axient/Documents/contextSet/tools/frameworks/actix-web.md	axiom://resources/contextSet/tools/frameworks/actix-web.md	SECTION 6: HTTP 핸들러	5	5	1	1	1	1	7	7
+/Users/axient/Documents/contextSet/tools/languages/kotlin.md	axiom://resources/contextSet/tools/languages/kotlin.md	SECTION 3: 타입 시스템 및 네이밍	5	5	0	1	0	1	6	8
+/Users/axient/Documents/contextSet/layers/domain/software-engineering-fundamentals.md	axiom://resources/contextSet/layers/domain/software-engineering-fundamentals.md	DRY (Don't Repeat Yourself)	5	2	1	1	1	1	7	7
+/Users/axient/Documents/contextSet/layers/system/orchestration.md	axiom://resources/contextSet/layers/system/orchestration.md	Orchestration Workflow	5	2	1	1	1	1	7	7
+/Users/axient/Documents/contextSet/layers/task/task-management.md	axiom://resources/contextSet/layers/task/task-management.md	목적	5	5	0	0	0	0	4	3
+/Users/axient/Documents/contextSet/tools/languages/typescript.md	axiom://resources/contextSet/tools/languages/typescript.md	TypeScript 개발 가이드라인 (Production-Grade)	5	5	1	1	1	1	8	8
+/Users/axient/Documents/contextSet/layers/task/debugging.md	axiom://resources/contextSet/layers/task/debugging.md	AI 기반 오류 분석	5	5	1	1	1	1	6	6
+/Users/axient/Documents/contextSet/tools/platforms/web-platform.md	axiom://resources/contextSet/tools/platforms/web-platform.md	SECTION 0: 문서 범위 및 지침	5	5	0	1	0	1	5	5
+/Users/axient/Documents/contextSet/contexts/action/building.md	axiom://resources/contextSet/contexts/action/building.md	Building Workflow	5	5	1	1	1	1	7	7
+/Users/axient/Documents/contextSet/combinations/development/backend-rust-axum.md	axiom://resources/contextSet/combinations/development/backend-rust-axum.md	🔐 인증 미들웨어	5	3	1	1	1	1	6	5
+/Users/axient/Documents/contextSet/layers/task/testing.md	axiom://resources/contextSet/layers/task/testing.md	지능형 테스트 최적화	5	5	1	1	1	1	6	6
+/Users/axient/Documents/contextSet/layers/system/workflow-management.md	axiom://resources/contextSet/layers/system/workflow-management.md	승인 프로세스	5	5	1	1	1	1	6	6
+/Users/axient/Documents/contextSet/combinations/development/backend-rust-axum.md	axiom://resources/contextSet/combinations/development/backend-rust-axum.md	🧪 테스트 전략	5	5	1	1	1	1	6	6
+/Users/axient/Documents/contextSet/tools/languages/rust-cargo-workspace.md	axiom://resources/contextSet/tools/languages/rust-cargo-workspace.md	전체 워크스페이스	5	1	1	1	1	1	5	6
+/Users/axient/Documents/contextSet/SYSTEM_OVERVIEW.md	axiom://resources/contextSet/SYSTEM_OVERVIEW.md	🚀 User Workspace Structure	5	5	1	1	1	1	7	6
+/Users/axient/Documents/contextSet/layers/task/documentation.md	axiom://resources/contextSet/layers/task/documentation.md	오류 처리 및 복구	5	5	0	1	0	1	6	7
+/Users/axient/Documents/contextSet/expertise/architect/security-architect.md	axiom://resources/contextSet/expertise/architect/security-architect.md	정체성	5	5	0	1	0	1	5	5
+/Users/axient/Documents/contextSet/layers/task/testing.md	axiom://resources/contextSet/layers/task/testing.md	CI/CD 통합	5	5	0	1	0	1	6	7

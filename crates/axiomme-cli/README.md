@@ -10,6 +10,8 @@ Command-line interface crate.
 - Provide filesystem/document parity commands for web workflows:
   - filesystem: `mkdir`, `rm`, `mv`, `tree`
   - document: `document load|preview|save`
+  - relations: `relation list|link|unlink`
+  - relation ownership invariant: every `relation link --uri` target must be inside `--owner-uri` subtree
 
 ## Runtime Policy
 

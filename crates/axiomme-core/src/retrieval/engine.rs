@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -7,17 +6,17 @@ use uuid::Uuid;
 use crate::index::InMemoryIndex;
 use crate::models::{
     ContextHit, FindResult, QueryPlan, RetrievalStep, RetrievalTrace, SearchOptions, TracePoint,
-    TraceStats,
+    TraceStats, classify_hit_buckets,
 };
 
 use super::budget::{ResolvedBudget, resolve_budget};
 use super::config::DrrConfig;
 use super::expansion::run_single_query;
-use super::planner::{PlannedQuery, collect_scope_names, plan_queries};
+use super::planner::{PlannedQuery, collect_scope_names, is_om_hint, plan_queries};
 use super::scoring::{
     fanout_priority_weight, merge_hits, merge_trace_points, scale_hit_scores,
-    scale_trace_point_scores, sorted_trace_points, split_hits, tokenize_keywords,
-    typed_query_plans,
+    scale_trace_point_scores, sort_hits_by_score_desc_uri_asc, sorted_trace_points,
+    tokenize_keywords, typed_query_plans,
 };
 
 #[derive(Debug, Clone)]
@@ -49,7 +48,7 @@ impl DrrEngine {
 
         let limit = options.limit.max(1);
         let mut hits: Vec<_> = fanout.merged_hits.into_values().collect();
-        hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        sort_hits_by_score_desc_uri_asc(&mut hits);
         hits.truncate(limit);
 
         let final_topk = hits
@@ -82,13 +81,25 @@ impl DrrEngine {
             },
         };
 
-        let (memories, resources, skills) = split_hits(&hits);
+        let hit_buckets = classify_hit_buckets(&hits);
         let notes = build_query_notes(options, request_budget, planned_queries.len());
+        let memories = hit_buckets
+            .memories
+            .iter()
+            .filter_map(|&index| hits.get(index).cloned())
+            .collect::<Vec<_>>();
+        let resources = hit_buckets
+            .resources
+            .iter()
+            .filter_map(|&index| hits.get(index).cloned())
+            .collect::<Vec<_>>();
+        let skills = hit_buckets
+            .skills
+            .iter()
+            .filter_map(|&index| hits.get(index).cloned())
+            .collect::<Vec<_>>();
 
         FindResult {
-            memories,
-            resources,
-            skills,
             query_plan: QueryPlan {
                 scopes: collect_scope_names(&planned_queries),
                 keywords: tokenize_keywords(&options.query),
@@ -96,6 +107,10 @@ impl DrrEngine {
                 notes,
             },
             query_results: hits,
+            hit_buckets,
+            memories,
+            resources,
+            skills,
             trace: Some(trace),
             trace_uri: None,
         }
@@ -206,7 +221,7 @@ fn build_query_notes(
         let om_hint_count = options
             .session_hints
             .iter()
-            .filter(|hint| hint.trim_start().to_ascii_lowercase().starts_with("om:"))
+            .filter(|hint| is_om_hint(hint))
             .count();
         notes.push(format!("session_om_hints:{om_hint_count}"));
     }

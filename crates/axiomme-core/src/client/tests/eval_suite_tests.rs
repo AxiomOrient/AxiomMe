@@ -29,14 +29,17 @@ fn eval_loop_generates_report_and_query_set_artifacts() {
         .expect("find failed");
 
     let report = app.run_eval_loop(20, 10, 5).expect("run eval loop");
-    assert!(report.traces_scanned >= 1);
-    assert!(report.executed_cases >= 1);
-    assert_eq!(report.passed + report.failed, report.executed_cases);
+    assert!(report.coverage.traces_scanned >= 1);
+    assert!(report.coverage.executed_cases >= 1);
+    assert_eq!(
+        report.quality.passed + report.quality.failed,
+        report.coverage.executed_cases
+    );
 
-    let report_uri = AxiomUri::parse(&report.report_uri).expect("report uri");
-    let query_set_uri = AxiomUri::parse(&report.query_set_uri).expect("query set uri");
+    let report_uri = AxiomUri::parse(&report.artifacts.report_uri).expect("report uri");
+    let query_set_uri = AxiomUri::parse(&report.artifacts.query_set_uri).expect("query set uri");
     let markdown_report_uri =
-        AxiomUri::parse(&report.markdown_report_uri).expect("markdown report uri");
+        AxiomUri::parse(&report.artifacts.markdown_report_uri).expect("markdown report uri");
     assert!(app.fs.exists(&report_uri));
     assert!(app.fs.exists(&query_set_uri));
     assert!(app.fs.exists(&markdown_report_uri));
@@ -78,7 +81,11 @@ fn eval_loop_emits_required_failure_bucket_metrics() {
         "relation_missing",
     ] {
         assert!(
-            report.buckets.iter().any(|bucket| bucket.name == name),
+            report
+                .quality
+                .buckets
+                .iter()
+                .any(|bucket| bucket.name == name),
             "missing required bucket metric: {name}",
         );
     }
@@ -135,10 +142,10 @@ fn eval_golden_queries_support_add_and_golden_only_run() {
             golden_only: true,
         })
         .expect("run golden only");
-    assert!(report.golden_cases_used >= 1);
-    assert_eq!(report.trace_cases_used, 0);
-    assert!(report.include_golden);
-    assert!(report.golden_only);
+    assert!(report.coverage.golden_cases_used >= 1);
+    assert_eq!(report.coverage.trace_cases_used, 0);
+    assert!(report.selection.include_golden);
+    assert!(report.selection.golden_only);
 }
 
 #[test]
@@ -342,9 +349,10 @@ fn eval_failure_contains_replay_command() {
             golden_only: true,
         })
         .expect("eval run");
-    assert!(report.failed >= 1);
+    assert!(report.quality.failed >= 1);
     assert!(
         report
+            .quality
             .failures
             .iter()
             .any(|f| f.replay_command.contains("axiomme find"))

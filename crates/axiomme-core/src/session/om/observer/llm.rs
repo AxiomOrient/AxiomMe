@@ -13,7 +13,7 @@ use super::parsing::parse_llm_observer_response;
 use super::record::{normalize_observation_text, normalize_text, truncate_chars};
 
 pub(in crate::session::om) fn build_observer_endpoint(config: &OmObserverConfig) -> Result<Url> {
-    parse_local_loopback_endpoint(&config.llm_endpoint, "om observer endpoint", "local host")
+    parse_local_loopback_endpoint(&config.llm.endpoint, "om observer endpoint", "local host")
         .map_err(|err| {
             om_observer_error(
                 OmInferenceFailureKind::Fatal,
@@ -24,7 +24,7 @@ pub(in crate::session::om) fn build_observer_endpoint(config: &OmObserverConfig)
 
 pub(in crate::session::om) fn build_observer_client(config: &OmObserverConfig) -> Result<Client> {
     Client::builder()
-        .timeout(std::time::Duration::from_millis(config.llm_timeout_ms))
+        .timeout(std::time::Duration::from_millis(config.llm.timeout_ms))
         .build()
         .map_err(|err| {
             om_observer_error(
@@ -46,18 +46,18 @@ pub(in crate::session::om) fn build_observer_llm_request(
         scope_key: scope_key.to_string(),
         model: OmInferenceModelConfig {
             provider: "local-http".to_string(),
-            model: config.llm_model.clone(),
-            max_output_tokens: config.llm_max_output_tokens,
-            temperature_milli: config.llm_temperature_milli,
+            model: config.llm.model.clone(),
+            max_output_tokens: config.llm.max_output_tokens,
+            temperature_milli: config.llm.temperature_milli,
         },
         active_observations: truncate_chars(
             &normalize_observation_text(&record.active_observations),
-            config.active_observations_max_chars,
+            config.text_budget.active_observations_max_chars,
         ),
         other_conversations: build_other_conversation_blocks(
             other_conversation_candidates,
             None,
-            config.other_conversation_max_part_chars,
+            config.text_budget.other_conversation_max_part_chars,
         ),
         pending_messages: pending_candidates
             .iter()
@@ -93,7 +93,7 @@ pub(in crate::session::om) fn run_single_thread_observer_response(
         .collect::<Vec<_>>();
     let value = send_observer_llm_request(client, endpoint, config, &system_prompt, &user_prompt)?;
     Ok((
-        parse_llm_observer_response(&value, &known_ids, config.observation_max_chars)?,
+        parse_llm_observer_response(&value, &known_ids, config.text_budget.observation_max_chars)?,
         Vec::new(),
     ))
 }
@@ -106,15 +106,15 @@ pub(in crate::session::om) fn send_observer_llm_request(
     user_prompt: &str,
 ) -> Result<Value> {
     let payload = serde_json::json!({
-        "model": config.llm_model,
+        "model": config.llm.model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt}
         ],
         "stream": false,
         "options": {
-            "temperature": (f64::from(config.llm_temperature_milli) / 1000.0),
-            "num_predict": config.llm_max_output_tokens
+            "temperature": (f64::from(config.llm.temperature_milli) / 1000.0),
+            "num_predict": config.llm.max_output_tokens
         }
     });
     let response = client

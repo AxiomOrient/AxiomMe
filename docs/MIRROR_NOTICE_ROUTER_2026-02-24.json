@@ -1,0 +1,11 @@
+{
+  "generated_at_utc": "2026-02-26T10:01:10Z",
+  "gate_json": "docs/MIRROR_NOTICE_GATE_2026-02-24.json",
+  "gate_status": "ready",
+  "gate_reason": "post_notice_tag_and_strict_gate_passed",
+  "post_notice_tag": "0.1.3",
+  "route_type": "actionable",
+  "route_reason": "ready_or_unknown",
+  "selected_for_next": "NX-009",
+  "action": "Proceed with one-cycle readiness closure for actual notice-date gate."
+}

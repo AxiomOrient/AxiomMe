@@ -27,17 +27,21 @@ fn observer_config(mode: OmObserverMode, model_enabled: bool) -> OmObserverConfi
     OmObserverConfig {
         mode,
         model_enabled,
-        llm_endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
-        llm_model: "qwen2.5:7b-instruct".to_string(),
-        llm_timeout_ms: DEFAULT_OM_OBSERVER_LLM_TIMEOUT_MS,
-        llm_max_output_tokens: DEFAULT_OM_OBSERVER_LLM_MAX_OUTPUT_TOKENS,
-        llm_temperature_milli: DEFAULT_OM_OBSERVER_LLM_TEMPERATURE_MILLI,
-        llm_strict: false,
-        llm_max_chars_per_message: DEFAULT_OM_OBSERVER_LLM_MAX_CHARS_PER_MESSAGE,
-        llm_max_input_tokens: DEFAULT_OM_OBSERVER_LLM_MAX_INPUT_TOKENS,
-        observation_max_chars: limits.observation_max_chars,
-        active_observations_max_chars: limits.observer_active_observations_max_chars,
-        other_conversation_max_part_chars: limits.observer_other_conversation_max_part_chars,
+        llm: OmObserverLlmConfig {
+            endpoint: "http://127.0.0.1:11434/api/chat".to_string(),
+            model: "qwen2.5:7b-instruct".to_string(),
+            timeout_ms: DEFAULT_OM_OBSERVER_LLM_TIMEOUT_MS,
+            max_output_tokens: DEFAULT_OM_OBSERVER_LLM_MAX_OUTPUT_TOKENS,
+            temperature_milli: DEFAULT_OM_OBSERVER_LLM_TEMPERATURE_MILLI,
+            strict: false,
+            max_chars_per_message: DEFAULT_OM_OBSERVER_LLM_MAX_CHARS_PER_MESSAGE,
+            max_input_tokens: DEFAULT_OM_OBSERVER_LLM_MAX_INPUT_TOKENS,
+        },
+        text_budget: OmObserverTextBudget {
+            observation_max_chars: limits.observation_max_chars,
+            active_observations_max_chars: limits.observer_active_observations_max_chars,
+            other_conversation_max_part_chars: limits.observer_other_conversation_max_part_chars,
+        },
     }
 }
 

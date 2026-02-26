@@ -21,4 +21,74 @@ jobs:
         run: cargo install --locked cargo-audit
 
       - name: Run quality gates
+        env:
+          AXIOMME_QUALITY_ENFORCE_MIRROR_NOTICE: ${{ startsWith(github.ref, 'refs/tags/') && 'on' || 'off' }}
         run: bash scripts/quality_gates.sh
+
+      - name: Upload mirror notice gate snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-notice-gate
+          if-no-files-found: warn
+          path: |
+            docs/MIRROR_NOTICE_GATE_2026-02-24.json
+            docs/MIRROR_NOTICE_ROUTER_2026-02-24.json
+
+  release-pack-strict:
+    needs: gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        run: cargo install --locked cargo-audit
+
+      - name: Restore ontology pressure history cache
+        uses: actions/cache/restore@v4
+        with:
+          path: logs/ontology_pressure_history
+          key: ontology-pressure-history-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ontology-pressure-history-${{ github.ref_name }}-
+
+      - name: Run strict release gate pack
+        run: bash scripts/release_pack_strict_gate.sh --workspace-dir "$GITHUB_WORKSPACE" --output logs/release_pack_strict_report.json
+
+      - name: Capture ontology pressure snapshot
+        if: always()
+        run: bash scripts/ontology_pressure_snapshot.sh --workspace-dir "$GITHUB_WORKSPACE" --label ci --output logs/ontology_pressure_snapshot_ci.json
+
+      - name: Run ontology pressure trend gate
+        if: always() && hashFiles('logs/ontology_pressure_snapshot_ci.json') != ''
+        run: bash scripts/ontology_pressure_trend_gate.sh --history-dir logs/ontology_pressure_history --snapshot logs/ontology_pressure_snapshot_ci.json --output logs/ontology_pressure_trend_report_ci.json --min-samples 3 --consecutive-v2-candidate 3
+
+      - name: Ensure ontology pressure history directory exists
+        if: always()
+        run: mkdir -p logs/ontology_pressure_history
+
+      - name: Save ontology pressure history cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: logs/ontology_pressure_history
+          key: ontology-pressure-history-${{ github.ref_name }}-${{ github.run_id }}
+
+      - name: Upload strict release gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-pack-strict-report
+          if-no-files-found: warn
+          path: |
+            logs/release_pack_strict_report.json
+            logs/ontology_pressure_snapshot_ci.json
+            logs/ontology_pressure_trend_report_ci.json
+            logs/ontology_pressure_history

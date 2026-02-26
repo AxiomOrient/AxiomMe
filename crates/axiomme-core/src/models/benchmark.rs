@@ -54,9 +54,7 @@ pub struct BenchmarkAmortizedRunSummary {
     clippy::struct_excessive_bools,
     reason = "report shape mirrors run options for stable serialization and downstream tooling"
 )]
-pub struct BenchmarkAmortizedReport {
-    pub mode: String,
-    pub iterations: usize,
+pub struct BenchmarkAmortizedSelection {
     pub query_limit: usize,
     pub search_limit: usize,
     pub include_golden: bool,
@@ -65,15 +63,32 @@ pub struct BenchmarkAmortizedReport {
     pub trace_expectations: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fixture_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkAmortizedTiming {
     pub wall_total_ms: u128,
     pub wall_avg_ms: f32,
+    pub p95_latency_ms_median: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p95_latency_us_median: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkAmortizedQualitySummary {
     pub executed_cases_total: usize,
     pub top1_accuracy_avg: f32,
     pub ndcg_at_10_avg: f32,
     pub recall_at_10_avg: f32,
-    pub p95_latency_ms_median: u128,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p95_latency_us_median: Option<u128>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkAmortizedReport {
+    pub mode: String,
+    pub iterations: usize,
+    pub selection: BenchmarkAmortizedSelection,
+    pub timing: BenchmarkAmortizedTiming,
+    pub quality: BenchmarkAmortizedQualitySummary,
     pub runs: Vec<BenchmarkAmortizedRunSummary>,
 }
 
@@ -109,10 +124,11 @@ impl Default for BenchmarkGateOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ReleaseSecurityAuditMode {
     Offline,
+    #[default]
     Strict,
 }
 
@@ -132,25 +148,33 @@ impl std::fmt::Display for ReleaseSecurityAuditMode {
     }
 }
 
-impl Default for ReleaseSecurityAuditMode {
-    fn default() -> Self {
-        Self::Strict
-    }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseGateReplayPlan {
+    pub replay_limit: usize,
+    pub replay_max_cycles: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ReleaseGatePackOptions {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_dir: Option<String>,
-    pub replay_limit: usize,
-    pub replay_max_cycles: u32,
+pub struct ReleaseGateOperabilityPlan {
     pub trace_limit: usize,
     pub request_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseGateEvalPlan {
     pub eval_trace_limit: usize,
     pub eval_query_limit: usize,
     pub eval_search_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseGateBenchmarkRunPlan {
     pub benchmark_query_limit: usize,
     pub benchmark_search_limit: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseGateBenchmarkGatePlan {
     pub benchmark_threshold_p95_ms: u128,
     pub benchmark_min_top1_accuracy: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,6 +185,17 @@ pub struct ReleaseGatePackOptions {
     pub benchmark_max_top1_regression_pct: Option<f32>,
     pub benchmark_window_size: usize,
     pub benchmark_required_passes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseGatePackOptions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_dir: Option<String>,
+    pub replay: ReleaseGateReplayPlan,
+    pub operability: ReleaseGateOperabilityPlan,
+    pub eval: ReleaseGateEvalPlan,
+    pub benchmark_run: ReleaseGateBenchmarkRunPlan,
+    pub benchmark_gate: ReleaseGateBenchmarkGatePlan,
     #[serde(default)]
     pub security_audit_mode: ReleaseSecurityAuditMode,
 }
@@ -169,22 +204,32 @@ impl Default for ReleaseGatePackOptions {
     fn default() -> Self {
         Self {
             workspace_dir: None,
-            replay_limit: 100,
-            replay_max_cycles: 8,
-            trace_limit: 200,
-            request_limit: 200,
-            eval_trace_limit: 200,
-            eval_query_limit: 50,
-            eval_search_limit: 10,
-            benchmark_query_limit: 60,
-            benchmark_search_limit: 10,
-            benchmark_threshold_p95_ms: 600,
-            benchmark_min_top1_accuracy: 0.75,
-            benchmark_min_stress_top1_accuracy: None,
-            benchmark_max_p95_regression_pct: None,
-            benchmark_max_top1_regression_pct: None,
-            benchmark_window_size: 1,
-            benchmark_required_passes: 1,
+            replay: ReleaseGateReplayPlan {
+                replay_limit: 100,
+                replay_max_cycles: 8,
+            },
+            operability: ReleaseGateOperabilityPlan {
+                trace_limit: 200,
+                request_limit: 200,
+            },
+            eval: ReleaseGateEvalPlan {
+                eval_trace_limit: 200,
+                eval_query_limit: 50,
+                eval_search_limit: 10,
+            },
+            benchmark_run: ReleaseGateBenchmarkRunPlan {
+                benchmark_query_limit: 60,
+                benchmark_search_limit: 10,
+            },
+            benchmark_gate: ReleaseGateBenchmarkGatePlan {
+                benchmark_threshold_p95_ms: 600,
+                benchmark_min_top1_accuracy: 0.75,
+                benchmark_min_stress_top1_accuracy: None,
+                benchmark_max_p95_regression_pct: None,
+                benchmark_max_top1_regression_pct: None,
+                benchmark_window_size: 1,
+                benchmark_required_passes: 1,
+            },
             security_audit_mode: ReleaseSecurityAuditMode::default(),
         }
     }
@@ -287,57 +332,64 @@ pub struct BenchmarkAcceptanceResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkReport {
-    pub run_id: String,
-    pub created_at: String,
+pub struct BenchmarkRunSelection {
     pub query_limit: usize,
     pub search_limit: usize,
     pub include_golden: bool,
     pub include_trace: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkQualityMetrics {
     pub executed_cases: usize,
     pub passed: usize,
     pub failed: usize,
     pub top1_accuracy: f32,
     pub ndcg_at_10: f32,
     pub recall_at_10: f32,
-    pub p50_latency_ms: u128,
-    pub p95_latency_ms: u128,
-    pub p99_latency_ms: u128,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p50_latency_us: Option<u128>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p95_latency_us: Option<u128>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p99_latency_us: Option<u128>,
-    pub avg_latency_ms: f32,
-    pub search_p50_latency_ms: u128,
-    pub search_p95_latency_ms: u128,
-    pub search_p99_latency_ms: u128,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub search_p50_latency_us: Option<u128>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub search_p95_latency_us: Option<u128>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub search_p99_latency_us: Option<u128>,
-    pub search_avg_latency_ms: f32,
-    pub commit_p50_latency_ms: u128,
-    pub commit_p95_latency_ms: u128,
-    pub commit_p99_latency_ms: u128,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit_p50_latency_us: Option<u128>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit_p95_latency_us: Option<u128>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub commit_p99_latency_us: Option<u128>,
-    pub commit_avg_latency_ms: f32,
     pub error_rate: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkLatencySummary {
+    pub p50_ms: u128,
+    pub p95_ms: u128,
+    pub p99_ms: u128,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p50_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p95_us: Option<u128>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p99_us: Option<u128>,
+    pub avg_ms: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkLatencyProfile {
+    pub find: BenchmarkLatencySummary,
+    pub search: BenchmarkLatencySummary,
+    pub commit: BenchmarkLatencySummary,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkArtifacts {
+    pub report_uri: String,
+    pub markdown_report_uri: String,
+    pub case_set_uri: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkReport {
+    pub run_id: String,
+    pub created_at: String,
+    pub selection: BenchmarkRunSelection,
+    pub quality: BenchmarkQualityMetrics,
+    pub latency: BenchmarkLatencyProfile,
     pub environment: BenchmarkEnvironmentMetadata,
     pub corpus: BenchmarkCorpusMetadata,
     pub query_set: BenchmarkQuerySetMetadata,
     pub acceptance: BenchmarkAcceptanceResult,
-    pub report_uri: String,
-    pub markdown_report_uri: String,
-    pub case_set_uri: String,
+    pub artifacts: BenchmarkArtifacts,
     pub results: Vec<BenchmarkCaseResult>,
 }
 
@@ -396,33 +448,58 @@ pub struct BenchmarkGateRunResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BenchmarkGateResult {
-    pub passed: bool,
-    pub gate_profile: String,
+pub struct BenchmarkGateThresholds {
     pub threshold_p95_ms: u128,
     pub min_top1_accuracy: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_stress_top1_accuracy: Option<f32>,
     pub max_p95_regression_pct: Option<f32>,
     pub max_top1_regression_pct: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkGateQuorum {
     pub window_size: usize,
     pub required_passes: usize,
-    pub evaluated_runs: usize,
-    pub passing_runs: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkGateSnapshot {
     pub latest: Option<BenchmarkSummary>,
     pub previous: Option<BenchmarkSummary>,
     pub regression_pct: Option<f32>,
     pub top1_regression_pct: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stress_top1_accuracy: Option<f32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkGateExecution {
+    pub evaluated_runs: usize,
+    pub passing_runs: usize,
     pub run_results: Vec<BenchmarkGateRunResult>,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkGateArtifacts {
     pub gate_record_uri: Option<String>,
     pub release_check_uri: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub embedding_strict_error: Option<String>,
-    pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BenchmarkGateResult {
+    pub passed: bool,
+    pub gate_profile: String,
+    pub thresholds: BenchmarkGateThresholds,
+    pub quorum: BenchmarkGateQuorum,
+    pub snapshot: BenchmarkGateSnapshot,
+    pub execution: BenchmarkGateExecution,
+    pub artifacts: BenchmarkGateArtifacts,
 }
 
 #[cfg(test)]

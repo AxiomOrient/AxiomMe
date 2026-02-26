@@ -280,6 +280,55 @@ fn reindex_uri_tree_truncates_large_text_files_for_indexing() {
 }
 
 #[test]
+fn reindex_uri_tree_truncated_markdown_appends_tail_heading_keys() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomMe::new(temp.path()).expect("app new");
+    app.initialize().expect("init");
+
+    let uri = AxiomUri::parse("axiom://resources/large-md-index").expect("uri parse");
+    app.fs.create_dir_all(&uri, true).expect("mkdir");
+
+    let mut large_markdown = String::from("# Intro\n");
+    large_markdown.push_str(&"x".repeat(MAX_INDEX_READ_BYTES + 256));
+    large_markdown.push_str("\n## Tail Heading Signal 20260224\n");
+    large_markdown.push_str("tail payload");
+    fs::write(app.fs.resolve_uri(&uri).join("big.md"), large_markdown).expect("write large md");
+
+    fs::write(
+        app.fs.resolve_uri(&uri).join("other.md"),
+        "# Other\nTail Heading Signal reference text",
+    )
+    .expect("write distractor");
+
+    app.reindex_uri_tree(&uri).expect("reindex");
+
+    let big_uri = "axiom://resources/large-md-index/big.md";
+    let index = app.index.read().expect("index read");
+    let record = index.get(big_uri).expect("record");
+    assert!(
+        record.content.contains("[index markdown heading keys]"),
+        "truncated markdown should include heading-key appendix"
+    );
+    assert!(
+        record.content.contains("Tail Heading Signal 20260224"),
+        "tail heading must be available in indexed text"
+    );
+    drop(index);
+
+    let result = app
+        .find(
+            "Tail Heading Signal 20260224",
+            Some("axiom://resources/large-md-index"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find");
+    let first = result.query_results.first().expect("first result");
+    assert_eq!(first.uri, big_uri);
+}
+
+#[test]
 fn reindex_uri_tree_updates_index_state_when_only_mtime_changes() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app new");

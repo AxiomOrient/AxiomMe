@@ -67,11 +67,12 @@ fn operability_evidence_generates_report_artifact() {
     );
     assert!(
         report
+            .coverage
             .trace_metrics_snapshot_uri
             .starts_with("axiom://queue/metrics/traces/snapshots/")
     );
-    assert!(report.traces_analyzed >= 1);
-    assert!(report.request_logs_scanned >= 1);
+    assert!(report.coverage.traces_analyzed >= 1);
+    assert!(report.coverage.request_logs_scanned >= 1);
     assert!(!report.checks.is_empty());
     let report_uri = AxiomUri::parse(&report.report_uri).expect("uri parse");
     assert!(app.fs.exists(&report_uri));
@@ -92,12 +93,12 @@ fn reliability_evidence_generates_report_artifact() {
             .starts_with("axiom://queue/release/reliability/")
     );
     assert!(report.passed, "report must pass: {:?}", report.checks);
-    assert!(report.replay_totals.done >= 1);
-    assert!(report.replay_hit_uri.is_some());
-    assert!(report.restart_hit_uri.is_some());
+    assert!(report.replay_progress.replay_totals.done >= 1);
+    assert!(report.search_probe.replay_hit_uri.is_some());
+    assert!(report.search_probe.restart_hit_uri.is_some());
     let report_uri = AxiomUri::parse(&report.report_uri).expect("uri parse");
     assert!(app.fs.exists(&report_uri));
-    let probe_uri = AxiomUri::parse(&report.queued_root_uri).expect("probe uri parse");
+    let probe_uri = AxiomUri::parse(&report.search_probe.queued_root_uri).expect("probe uri parse");
     assert!(
         !app.fs.exists(&probe_uri),
         "reliability probe data must be cleaned up after report generation"
@@ -193,22 +194,32 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
     .expect("write lockfile");
     let options = crate::models::ReleaseGatePackOptions {
         workspace_dir: Some(workspace.display().to_string()),
-        replay_limit: 20,
-        replay_max_cycles: 2,
-        trace_limit: 20,
-        request_limit: 20,
-        eval_trace_limit: 10,
-        eval_query_limit: 5,
-        eval_search_limit: 5,
-        benchmark_query_limit: 1,
-        benchmark_search_limit: 5,
-        benchmark_threshold_p95_ms: 10_000,
-        benchmark_min_top1_accuracy: 0.0,
-        benchmark_min_stress_top1_accuracy: None,
-        benchmark_max_p95_regression_pct: None,
-        benchmark_max_top1_regression_pct: None,
-        benchmark_window_size: 1,
-        benchmark_required_passes: 1,
+        replay: crate::models::ReleaseGateReplayPlan {
+            replay_limit: 20,
+            replay_max_cycles: 2,
+        },
+        operability: crate::models::ReleaseGateOperabilityPlan {
+            trace_limit: 20,
+            request_limit: 20,
+        },
+        eval: crate::models::ReleaseGateEvalPlan {
+            eval_trace_limit: 10,
+            eval_query_limit: 5,
+            eval_search_limit: 5,
+        },
+        benchmark_run: crate::models::ReleaseGateBenchmarkRunPlan {
+            benchmark_query_limit: 1,
+            benchmark_search_limit: 5,
+        },
+        benchmark_gate: crate::models::ReleaseGateBenchmarkGatePlan {
+            benchmark_threshold_p95_ms: 10_000,
+            benchmark_min_top1_accuracy: 0.0,
+            benchmark_min_stress_top1_accuracy: None,
+            benchmark_max_p95_regression_pct: None,
+            benchmark_max_top1_regression_pct: None,
+            benchmark_window_size: 1,
+            benchmark_required_passes: 1,
+        },
         security_audit_mode: crate::models::ReleaseSecurityAuditMode::Offline,
     };
     let report = with_workspace_command_mocks(
@@ -254,6 +265,19 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
                 true,
                 "test client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok",
             ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    "ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable",
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "test ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok",
+            ),
         ],
         || app.collect_release_gate_pack(&options),
     )
@@ -286,6 +310,29 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
             .passed,
         "G0 should pass when contract execution probe is mocked to succeed"
     );
+    match &report
+        .decisions
+        .iter()
+        .find(|decision| decision.gate_id == ReleaseGateId::ContractIntegrity)
+        .expect("G0 decision")
+        .details
+    {
+        ReleaseGateDetails::ContractIntegrity(details) => {
+            assert!(
+                details
+                    .ontology_policy
+                    .as_ref()
+                    .is_some_and(|policy| policy.required_schema_version == 1)
+            );
+            assert!(
+                details
+                    .ontology_probe
+                    .as_ref()
+                    .is_some_and(|probe| probe.passed)
+            );
+        }
+        other => panic!("expected contract_integrity details, got {other:?}"),
+    }
     assert!(
         report
             .decisions

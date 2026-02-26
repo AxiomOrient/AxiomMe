@@ -5,8 +5,10 @@ use chrono::Utc;
 use crate::catalog::{benchmark_report_json_uri, benchmark_report_markdown_uri};
 use crate::error::{AxiomError, Result};
 use crate::models::{
-    BenchmarkAmortizedReport, BenchmarkAmortizedRunSummary, BenchmarkCaseResult, BenchmarkReport,
-    BenchmarkRunOptions, EvalQueryCase,
+    BenchmarkAmortizedQualitySummary, BenchmarkAmortizedReport, BenchmarkAmortizedRunSummary,
+    BenchmarkAmortizedSelection, BenchmarkAmortizedTiming, BenchmarkArtifacts, BenchmarkCaseResult,
+    BenchmarkLatencyProfile, BenchmarkLatencySummary, BenchmarkQualityMetrics, BenchmarkReport,
+    BenchmarkRunOptions, BenchmarkRunSelection, EvalQueryCase,
 };
 use crate::quality::{
     build_benchmark_acceptance_result, build_benchmark_query_set_metadata, duration_to_latency_ms,
@@ -72,25 +74,25 @@ impl AxiomMe {
 
         for iteration in 0..iterations {
             let report = self.run_benchmark_suite(&options)?;
-            executed_cases_total += report.executed_cases;
-            top1_total += report.top1_accuracy;
-            ndcg_total += report.ndcg_at_10;
-            recall_total += report.recall_at_10;
-            p95_samples.push(report.p95_latency_ms);
-            if let Some(p95_latency_us) = report.p95_latency_us {
+            executed_cases_total += report.quality.executed_cases;
+            top1_total += report.quality.top1_accuracy;
+            ndcg_total += report.quality.ndcg_at_10;
+            recall_total += report.quality.recall_at_10;
+            p95_samples.push(report.latency.find.p95_ms);
+            if let Some(p95_latency_us) = report.latency.find.p95_us {
                 p95_samples_us.push(p95_latency_us);
             }
             runs.push(BenchmarkAmortizedRunSummary {
                 iteration: iteration + 1,
                 run_id: report.run_id,
                 created_at: report.created_at,
-                executed_cases: report.executed_cases,
-                top1_accuracy: report.top1_accuracy,
-                ndcg_at_10: report.ndcg_at_10,
-                recall_at_10: report.recall_at_10,
-                p95_latency_ms: report.p95_latency_ms,
-                p95_latency_us: report.p95_latency_us,
-                report_uri: report.report_uri,
+                executed_cases: report.quality.executed_cases,
+                top1_accuracy: report.quality.top1_accuracy,
+                ndcg_at_10: report.quality.ndcg_at_10,
+                recall_at_10: report.quality.recall_at_10,
+                p95_latency_ms: report.latency.find.p95_ms,
+                p95_latency_us: report.latency.find.p95_us,
+                report_uri: report.artifacts.report_uri,
             });
         }
 
@@ -108,21 +110,27 @@ impl AxiomMe {
         Ok(BenchmarkAmortizedReport {
             mode: "in_process_amortized".to_string(),
             iterations,
-            query_limit: options.query_limit,
-            search_limit: options.search_limit,
-            include_golden: options.include_golden,
-            include_trace: options.include_trace,
-            include_stress: options.include_stress,
-            trace_expectations: options.trace_expectations,
-            fixture_name: options.fixture_name,
-            wall_total_ms,
-            wall_avg_ms: safe_ratio_u128(wall_total_ms, iterations),
-            executed_cases_total,
-            top1_accuracy_avg: safe_ratio_f32(top1_total, iterations),
-            ndcg_at_10_avg: safe_ratio_f32(ndcg_total, iterations),
-            recall_at_10_avg: safe_ratio_f32(recall_total, iterations),
-            p95_latency_ms_median,
-            p95_latency_us_median,
+            selection: BenchmarkAmortizedSelection {
+                query_limit: options.query_limit,
+                search_limit: options.search_limit,
+                include_golden: options.include_golden,
+                include_trace: options.include_trace,
+                include_stress: options.include_stress,
+                trace_expectations: options.trace_expectations,
+                fixture_name: options.fixture_name,
+            },
+            timing: BenchmarkAmortizedTiming {
+                wall_total_ms,
+                wall_avg_ms: safe_ratio_u128(wall_total_ms, iterations),
+                p95_latency_ms_median,
+                p95_latency_us_median,
+            },
+            quality: BenchmarkAmortizedQualitySummary {
+                executed_cases_total,
+                top1_accuracy_avg: safe_ratio_f32(top1_total, iterations),
+                ndcg_at_10_avg: safe_ratio_f32(ndcg_total, iterations),
+                recall_at_10_avg: safe_ratio_f32(recall_total, iterations),
+            },
             runs,
         })
     }
@@ -220,45 +228,59 @@ impl AxiomMe {
         let report = BenchmarkReport {
             run_id: run.run_id.clone(),
             created_at,
-            query_limit: run.query_limit,
-            search_limit: run.search_limit,
-            include_golden: run.include_golden,
-            include_trace: run.include_trace,
-            executed_cases,
-            passed: evaluation.passed,
-            failed: evaluation.failed,
-            top1_accuracy,
-            ndcg_at_10,
-            recall_at_10,
-            p50_latency_ms: find_summary.p50,
-            p95_latency_ms: find_summary.p95,
-            p99_latency_ms: find_summary.p99,
-            p50_latency_us: Some(find_summary_us.p50),
-            p95_latency_us: Some(find_summary_us.p95),
-            p99_latency_us: Some(find_summary_us.p99),
-            avg_latency_ms: find_summary.avg,
-            search_p50_latency_ms: search_summary.p50,
-            search_p95_latency_ms: search_summary.p95,
-            search_p99_latency_ms: search_summary.p99,
-            search_p50_latency_us: Some(search_summary_us.p50),
-            search_p95_latency_us: Some(search_summary_us.p95),
-            search_p99_latency_us: Some(search_summary_us.p99),
-            search_avg_latency_ms: search_summary.avg,
-            commit_p50_latency_ms: commit_summary.p50,
-            commit_p95_latency_ms: commit_summary.p95,
-            commit_p99_latency_ms: commit_summary.p99,
-            commit_p50_latency_us: Some(commit_summary_us.p50),
-            commit_p95_latency_us: Some(commit_summary_us.p95),
-            commit_p99_latency_us: Some(commit_summary_us.p99),
-            commit_avg_latency_ms: commit_summary.avg,
-            error_rate,
+            selection: BenchmarkRunSelection {
+                query_limit: run.query_limit,
+                search_limit: run.search_limit,
+                include_golden: run.include_golden,
+                include_trace: run.include_trace,
+            },
+            quality: BenchmarkQualityMetrics {
+                executed_cases,
+                passed: evaluation.passed,
+                failed: evaluation.failed,
+                top1_accuracy,
+                ndcg_at_10,
+                recall_at_10,
+                error_rate,
+            },
+            latency: BenchmarkLatencyProfile {
+                find: BenchmarkLatencySummary {
+                    p50_ms: find_summary.p50,
+                    p95_ms: find_summary.p95,
+                    p99_ms: find_summary.p99,
+                    p50_us: Some(find_summary_us.p50),
+                    p95_us: Some(find_summary_us.p95),
+                    p99_us: Some(find_summary_us.p99),
+                    avg_ms: find_summary.avg,
+                },
+                search: BenchmarkLatencySummary {
+                    p50_ms: search_summary.p50,
+                    p95_ms: search_summary.p95,
+                    p99_ms: search_summary.p99,
+                    p50_us: Some(search_summary_us.p50),
+                    p95_us: Some(search_summary_us.p95),
+                    p99_us: Some(search_summary_us.p99),
+                    avg_ms: search_summary.avg,
+                },
+                commit: BenchmarkLatencySummary {
+                    p50_ms: commit_summary.p50,
+                    p95_ms: commit_summary.p95,
+                    p99_ms: commit_summary.p99,
+                    p50_us: Some(commit_summary_us.p50),
+                    p95_us: Some(commit_summary_us.p95),
+                    p99_us: Some(commit_summary_us.p99),
+                    avg_ms: commit_summary.avg,
+                },
+            },
             environment,
             corpus,
             query_set,
             acceptance,
-            report_uri: report_uri.to_string(),
-            markdown_report_uri: markdown_report_uri.to_string(),
-            case_set_uri,
+            artifacts: BenchmarkArtifacts {
+                report_uri: report_uri.to_string(),
+                markdown_report_uri: markdown_report_uri.to_string(),
+                case_set_uri,
+            },
             results: evaluation.results,
         };
         self.write_benchmark_report_artifacts(&report)?;

@@ -2,14 +2,15 @@ use anyhow::Result;
 use axiomme_core::AxiomMe;
 use axiomme_core::client::BenchmarkFixtureCreateOptions;
 use axiomme_core::models::{
-    BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, ReleaseGatePackOptions,
-    ReleaseSecurityAuditMode,
+    BenchmarkGateOptions, BenchmarkRunOptions, EvalRunOptions, ReleaseGateBenchmarkGatePlan,
+    ReleaseGateBenchmarkRunPlan, ReleaseGateEvalPlan, ReleaseGateOperabilityPlan,
+    ReleaseGatePackOptions, ReleaseGateReplayPlan, ReleaseSecurityAuditMode,
 };
 
 use crate::cli::{
-    BenchmarkCommand, BenchmarkFixtureCommand, EvalCommand, EvalGoldenCommand, ReleaseCommand,
-    ReleaseSecurityAuditModeArg, SecurityAuditModeArg, SecurityCommand, SessionCommand,
-    TraceCommand,
+    BenchmarkCommand, BenchmarkFixtureCommand, EvalCommand, EvalGoldenCommand, RelationCommand,
+    ReleaseCommand, ReleaseSecurityAuditModeArg, SecurityAuditModeArg, SecurityCommand,
+    SessionCommand, TraceCommand,
 };
 
 use super::print_json;
@@ -133,6 +134,45 @@ pub(super) fn handle_trace(app: &AxiomMe, command: TraceCommand) -> Result<()> {
             if enforce && !report.passed {
                 anyhow::bail!("operability evidence checks failed");
             }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn handle_relation(app: &AxiomMe, command: RelationCommand) -> Result<()> {
+    match command {
+        RelationCommand::List { owner_uri } => {
+            let relations = app.relations(&owner_uri)?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "owner_uri": owner_uri,
+                "relations": relations
+            }))?;
+        }
+        RelationCommand::Link {
+            owner_uri,
+            relation_id,
+            uris,
+            reason,
+        } => {
+            let relation = app.link(&owner_uri, &relation_id, uris, &reason)?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "owner_uri": owner_uri,
+                "relation": relation
+            }))?;
+        }
+        RelationCommand::Unlink {
+            owner_uri,
+            relation_id,
+        } => {
+            let removed = app.unlink(&owner_uri, &relation_id)?;
+            print_json(&serde_json::json!({
+                "status": "ok",
+                "owner_uri": owner_uri,
+                "relation_id": relation_id,
+                "removed": removed
+            }))?;
         }
     }
     Ok(())
@@ -320,22 +360,32 @@ pub(super) fn handle_release(app: &AxiomMe, command: ReleaseCommand) -> Result<(
             };
             let report = app.collect_release_gate_pack(&ReleaseGatePackOptions {
                 workspace_dir,
-                replay_limit,
-                replay_max_cycles,
-                trace_limit,
-                request_limit,
-                eval_trace_limit,
-                eval_query_limit,
-                eval_search_limit,
-                benchmark_query_limit,
-                benchmark_search_limit,
-                benchmark_threshold_p95_ms,
-                benchmark_min_top1_accuracy,
-                benchmark_min_stress_top1_accuracy,
-                benchmark_max_p95_regression_pct,
-                benchmark_max_top1_regression_pct,
-                benchmark_window_size,
-                benchmark_required_passes,
+                replay: ReleaseGateReplayPlan {
+                    replay_limit,
+                    replay_max_cycles,
+                },
+                operability: ReleaseGateOperabilityPlan {
+                    trace_limit,
+                    request_limit,
+                },
+                eval: ReleaseGateEvalPlan {
+                    eval_trace_limit,
+                    eval_query_limit,
+                    eval_search_limit,
+                },
+                benchmark_run: ReleaseGateBenchmarkRunPlan {
+                    benchmark_query_limit,
+                    benchmark_search_limit,
+                },
+                benchmark_gate: ReleaseGateBenchmarkGatePlan {
+                    benchmark_threshold_p95_ms,
+                    benchmark_min_top1_accuracy,
+                    benchmark_min_stress_top1_accuracy,
+                    benchmark_max_p95_regression_pct,
+                    benchmark_max_top1_regression_pct,
+                    benchmark_window_size,
+                    benchmark_required_passes,
+                },
                 security_audit_mode,
             })?;
             print_json(&report)?;

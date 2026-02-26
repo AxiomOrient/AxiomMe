@@ -24,7 +24,7 @@ pub enum DocumentCommand {
     Preview {
         #[arg(long)]
         uri: Option<String>,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         content: Option<String>,
         #[arg(long)]
         from: Option<PathBuf>,
@@ -35,7 +35,7 @@ pub enum DocumentCommand {
         uri: String,
         #[arg(long, value_enum, default_value_t = DocumentMode::Document)]
         mode: DocumentMode,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         content: Option<String>,
         #[arg(long)]
         from: Option<PathBuf>,

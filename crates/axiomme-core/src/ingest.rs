@@ -33,6 +33,12 @@ pub struct IngestFileInfo {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IngestFinalizeMode {
+    ReplaceTarget,
+    MergeIntoTarget,
+}
+
 #[derive(Clone)]
 pub struct IngestManager {
     fs: LocalContextFs,
@@ -172,7 +178,7 @@ impl IngestSession {
         Ok(manifest)
     }
 
-    pub fn finalize_to(&mut self, target_uri: &AxiomUri) -> Result<()> {
+    pub fn finalize_to(&mut self, target_uri: &AxiomUri, mode: IngestFinalizeMode) -> Result<()> {
         let staged_path = self.fs.resolve_uri(&self.staged_uri);
         let target_path = self.fs.resolve_uri(target_uri);
 
@@ -180,15 +186,27 @@ impl IngestSession {
             fs::create_dir_all(parent)?;
         }
 
-        if target_path.exists() {
-            if target_path.is_dir() {
-                fs::remove_dir_all(&target_path)?;
-            } else {
-                fs::remove_file(&target_path)?;
+        match mode {
+            IngestFinalizeMode::ReplaceTarget => {
+                remove_path_if_exists(&target_path)?;
+                fs::rename(&staged_path, &target_path)?;
+            }
+            IngestFinalizeMode::MergeIntoTarget => {
+                if !target_path.exists() {
+                    fs::rename(&staged_path, &target_path)?;
+                } else {
+                    let staged_metadata = fs::symlink_metadata(&staged_path)?;
+                    let target_metadata = fs::symlink_metadata(&target_path)?;
+                    if staged_metadata.is_dir() && target_metadata.is_dir() {
+                        merge_directory_contents(&staged_path, &target_path)?;
+                        fs::remove_dir_all(&staged_path)?;
+                    } else {
+                        remove_path_if_exists(&target_path)?;
+                        fs::rename(&staged_path, &target_path)?;
+                    }
+                }
             }
         }
-
-        fs::rename(&staged_path, &target_path)?;
         self.finalized = true;
 
         // Cleanup session root after staged folder has moved.
@@ -273,6 +291,44 @@ fn copy_dir_contents(src: &Path, dst: &Path) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn merge_directory_contents(source: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target)?;
+
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let target_path = target.join(entry.file_name());
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            if target_path.exists() && !fs::symlink_metadata(&target_path)?.is_dir() {
+                remove_path_if_exists(&target_path)?;
+            }
+            merge_directory_contents(&source_path, &target_path)?;
+            continue;
+        }
+
+        remove_path_if_exists(&target_path)?;
+        fs::rename(&source_path, &target_path)?;
+    }
+
+    Ok(())
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir() {
+        fs::remove_dir_all(path)?;
+    } else {
+        fs::remove_file(path)?;
+    }
     Ok(())
 }
 
@@ -430,12 +486,40 @@ mod tests {
         assert_eq!(manifest.files[0].parser, "markdown");
 
         let target = AxiomUri::parse("axiom://resources/demo").expect("target uri");
-        session.finalize_to(&target).expect("finalize");
+        session
+            .finalize_to(&target, IngestFinalizeMode::ReplaceTarget)
+            .expect("finalize");
 
         assert!(fs.resolve_uri(&target).join("a.md").exists());
         let temp_root = fs.resolve_uri(&AxiomUri::parse("axiom://temp/ingest").expect("temp uri"));
         let entries = fs::read_dir(&temp_root).expect("read temp root");
         assert_eq!(entries.count(), 0);
+    }
+
+    #[test]
+    fn staged_ingest_finalize_merges_existing_target_directory() {
+        let temp = tempdir().expect("tempdir");
+        let fs = LocalContextFs::new(temp.path());
+        fs.initialize().expect("init");
+
+        let manager = IngestManager::new(fs.clone(), ParserRegistry::new());
+        let target = AxiomUri::parse("axiom://resources/merge-demo").expect("target uri");
+
+        let mut first = manager.start_session().expect("first session");
+        first.stage_text("a.md", "# A").expect("stage a");
+        first
+            .finalize_to(&target, IngestFinalizeMode::MergeIntoTarget)
+            .expect("finalize first");
+
+        let mut second = manager.start_session().expect("second session");
+        second.stage_text("b.md", "# B").expect("stage b");
+        second
+            .finalize_to(&target, IngestFinalizeMode::MergeIntoTarget)
+            .expect("finalize second");
+
+        let root = fs.resolve_uri(&target);
+        assert!(root.join("a.md").exists());
+        assert!(root.join("b.md").exists());
     }
 
     #[test]

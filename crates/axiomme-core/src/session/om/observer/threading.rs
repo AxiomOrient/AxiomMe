@@ -17,6 +17,7 @@ use super::parsing::{parse_llm_observer_response, parse_observer_usage_from_valu
 use super::record::{normalize_observation_text, normalize_text, truncate_chars};
 
 const MAX_OBSERVER_BATCH_PARALLELISM: usize = 4;
+const OBSERVER_BATCH_PARALLELISM_ENV: &str = "AXIOMME_OBSERVER_BATCH_PARALLELISM";
 
 pub(in crate::session::om) fn build_observer_thread_messages_for_scope(
     scope: OmScope,
@@ -61,7 +62,7 @@ pub(in crate::session::om) fn run_multi_thread_observer_response(
         batch_results,
         context.bounded_selected,
         context.current_session_id,
-        config.observation_max_chars,
+        config.text_budget.observation_max_chars,
     ))
 }
 
@@ -197,12 +198,16 @@ pub(in crate::session::om) fn execute_observer_batch_task(
         &value,
         current_session_id,
         &known_ids,
-        config.observation_max_chars,
+        config.text_budget.observation_max_chars,
     ) {
         (parsed.response, parsed.thread_states)
     } else {
         (
-            parse_llm_observer_response(&value, &known_ids, config.observation_max_chars)?,
+            parse_llm_observer_response(
+                &value,
+                &known_ids,
+                config.text_budget.observation_max_chars,
+            )?,
             Vec::new(),
         )
     };
@@ -286,7 +291,29 @@ pub(in crate::session::om) fn run_observer_batch_tasks(
 }
 
 fn observer_batch_parallelism(task_count: usize) -> usize {
-    task_count.clamp(1, MAX_OBSERVER_BATCH_PARALLELISM)
+    let available_parallelism = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(MAX_OBSERVER_BATCH_PARALLELISM);
+    let env_raw = std::env::var(OBSERVER_BATCH_PARALLELISM_ENV).ok();
+    let cap = resolve_observer_batch_parallelism_cap(env_raw.as_deref(), available_parallelism);
+    task_count.clamp(1, cap)
+}
+
+fn resolve_observer_batch_parallelism_cap(
+    env_raw: Option<&str>,
+    available_parallelism: usize,
+) -> usize {
+    let default_cap = available_parallelism.clamp(1, MAX_OBSERVER_BATCH_PARALLELISM);
+    let Some(raw) = env_raw else {
+        return default_cap;
+    };
+    let Ok(parsed) = raw.trim().parse::<usize>() else {
+        return default_cap;
+    };
+    if parsed == 0 {
+        return default_cap;
+    }
+    parsed.min(MAX_OBSERVER_BATCH_PARALLELISM)
 }
 
 pub(in crate::session::om) fn build_observer_thread_known_ids(
@@ -479,14 +506,30 @@ pub(in crate::session::om) fn parse_llm_multi_thread_observer_response(
 
 #[cfg(test)]
 mod tests {
-    use super::observer_batch_parallelism;
+    use super::{observer_batch_parallelism, resolve_observer_batch_parallelism_cap};
 
     #[test]
-    fn observer_batch_parallelism_is_bounded_and_explicit() {
+    fn observer_batch_parallelism_is_at_least_one() {
         assert_eq!(observer_batch_parallelism(0), 1);
         assert_eq!(observer_batch_parallelism(1), 1);
-        assert_eq!(observer_batch_parallelism(2), 2);
-        assert_eq!(observer_batch_parallelism(4), 4);
-        assert_eq!(observer_batch_parallelism(8), 4);
+    }
+
+    #[test]
+    fn resolve_parallelism_cap_defaults_to_available_with_hard_ceiling() {
+        assert_eq!(resolve_observer_batch_parallelism_cap(None, 1), 1);
+        assert_eq!(resolve_observer_batch_parallelism_cap(None, 2), 2);
+        assert_eq!(resolve_observer_batch_parallelism_cap(None, 8), 4);
+    }
+
+    #[test]
+    fn resolve_parallelism_cap_honors_valid_env_override() {
+        assert_eq!(resolve_observer_batch_parallelism_cap(Some("2"), 8), 2);
+        assert_eq!(resolve_observer_batch_parallelism_cap(Some("99"), 8), 4);
+    }
+
+    #[test]
+    fn resolve_parallelism_cap_ignores_invalid_env_values() {
+        assert_eq!(resolve_observer_batch_parallelism_cap(Some("0"), 3), 3);
+        assert_eq!(resolve_observer_batch_parallelism_cap(Some("abc"), 3), 3);
     }
 }

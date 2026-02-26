@@ -2,7 +2,7 @@ use crate::error::{AxiomError, Result};
 use crate::models::{ContextHit, FindResult, IndexRecord};
 
 use super::AxiomMe;
-use super::result::{append_query_plan_note, split_hits, sync_trace_final_topk};
+use super::result::{append_query_plan_note, sync_trace_final_topk};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RerankerMode {
@@ -49,6 +49,13 @@ enum DocumentClass {
     General,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DocSignals {
+    doc_class: DocumentClass,
+    uri_or_name_overlap: bool,
+    tag_overlap_count: u8,
+}
+
 pub(super) fn resolve_reranker_mode(raw: Option<&str>) -> RerankerMode {
     let Some(value) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
         return RerankerMode::Off;
@@ -82,7 +89,7 @@ fn query_has_any(tokens: &[String], terms: &[&str]) -> bool {
         .any(|token| terms.iter().any(|term| token == term))
 }
 
-fn classify_document_class(hit: &ContextHit, record: Option<&IndexRecord>) -> DocumentClass {
+fn classify_document_class(hit: &ContextHit, name_lower: &str, uri_lower: &str) -> DocumentClass {
     if hit.context_type == "memory" {
         return DocumentClass::Memory;
     }
@@ -92,17 +99,15 @@ fn classify_document_class(hit: &ContextHit, record: Option<&IndexRecord>) -> Do
     if hit.context_type == "session" || hit.uri.starts_with("axiom://session/") {
         return DocumentClass::Session;
     }
-
-    let (name, uri_lower) = lowercased_name_and_uri(hit, record);
-    let ext = name.rsplit('.').next().unwrap_or_default();
+    let ext = name_lower.rsplit('.').next().unwrap_or_default();
 
     if uri_lower.contains("/spec")
         || uri_lower.contains("/contract")
         || uri_lower.contains("/openapi")
         || uri_lower.contains("/schema")
-        || name.contains("openapi")
-        || name.contains("schema")
-        || name.contains("contract")
+        || name_lower.contains("openapi")
+        || name_lower.contains("schema")
+        || name_lower.contains("contract")
     {
         return DocumentClass::Spec;
     }
@@ -283,28 +288,24 @@ fn query_need_boost(needs: QueryNeeds, doc_class: DocumentClass) -> f32 {
     boost
 }
 
-fn uri_or_name_overlap_boost(query_tokens: &[String], name_lower: &str, uri_lower: &str) -> f32 {
-    if query_tokens
-        .iter()
-        .any(|token| name_lower.contains(token) || uri_lower.contains(token))
-    {
-        0.08
-    } else {
-        0.0
-    }
-}
-
-fn tag_overlap_boost(record: Option<&IndexRecord>, query_tokens: &[String]) -> f32 {
+fn tag_overlap_count(record: Option<&IndexRecord>, query_tokens: &[String]) -> u8 {
     let Some(record) = record else {
-        return 0.0;
+        return 0;
     };
     let overlap = record
         .tags
         .iter()
-        .map(|tag| tag.to_ascii_lowercase())
-        .filter(|tag| query_tokens.iter().any(|token| token == tag))
+        .filter(|tag| {
+            query_tokens
+                .iter()
+                .any(|token| token.eq_ignore_ascii_case(tag))
+        })
         .count()
         .min(3);
+    u8::try_from(overlap).unwrap_or(3)
+}
+
+const fn tag_overlap_boost(overlap: u8) -> f32 {
     match overlap {
         0 => 0.0,
         1 => 0.03,
@@ -313,19 +314,30 @@ fn tag_overlap_boost(record: Option<&IndexRecord>, query_tokens: &[String]) -> f
     }
 }
 
-fn doc_aware_boost(
+fn collect_doc_signals(
     query_tokens: &[String],
-    intent: QueryIntent,
     hit: &ContextHit,
     record: Option<&IndexRecord>,
-) -> f32 {
-    let doc_class = classify_document_class(hit, record);
-    let needs = detect_query_needs(query_tokens, intent);
+) -> DocSignals {
     let (name_lower, uri_lower) = lowercased_name_and_uri(hit, record);
-    let boost = base_doc_class_boost(intent, doc_class)
-        + query_need_boost(needs, doc_class)
-        + uri_or_name_overlap_boost(query_tokens, &name_lower, &uri_lower)
-        + tag_overlap_boost(record, query_tokens);
+    DocSignals {
+        doc_class: classify_document_class(hit, &name_lower, &uri_lower),
+        uri_or_name_overlap: query_tokens
+            .iter()
+            .any(|token| name_lower.contains(token) || uri_lower.contains(token)),
+        tag_overlap_count: tag_overlap_count(record, query_tokens),
+    }
+}
+
+fn doc_aware_boost(intent: QueryIntent, needs: QueryNeeds, signals: DocSignals) -> f32 {
+    let boost = base_doc_class_boost(intent, signals.doc_class)
+        + query_need_boost(needs, signals.doc_class)
+        + if signals.uri_or_name_overlap {
+            0.08
+        } else {
+            0.0
+        }
+        + tag_overlap_boost(signals.tag_overlap_count);
     boost.clamp(0.0, 0.65)
 }
 
@@ -345,37 +357,34 @@ impl AxiomMe {
 
         let query_tokens = crate::embedding::tokenize_vec(query);
         let intent = classify_query_intent(query, &query_tokens);
+        let needs = detect_query_needs(&query_tokens, intent);
         append_query_plan_note(result, &format!("reranker_intent:{}", intent.as_str()));
 
-        let index = self
-            .index
-            .read()
-            .map_err(|_| AxiomError::lock_poisoned("index"))?;
-        let mut reranked = result
-            .query_results
-            .iter()
-            .map(|hit| {
-                let record = index.get(&hit.uri);
-                let boost = doc_aware_boost(&query_tokens, intent, hit, record);
-                let mut out = hit.clone();
-                out.score = (out.score * (1.0 + boost)).max(0.0);
-                out
-            })
-            .collect::<Vec<_>>();
-        drop(index);
+        let signals = {
+            let index = self
+                .index
+                .read()
+                .map_err(|_| AxiomError::lock_poisoned("index"))?;
+            let mut out = Vec::<DocSignals>::with_capacity(result.query_results.len());
+            for hit in &result.query_results {
+                out.push(collect_doc_signals(&query_tokens, hit, index.get(&hit.uri)));
+            }
+            out
+        };
 
-        reranked.sort_by(|a, b| {
+        for (hit, signals) in result.query_results.iter_mut().zip(signals.into_iter()) {
+            let boost = doc_aware_boost(intent, needs, signals);
+            hit.score = (hit.score * (1.0 + boost)).max(0.0);
+        }
+
+        result.query_results.sort_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| a.uri.cmp(&b.uri))
         });
-        reranked.truncate(limit.max(1));
-        let (memories, resources, skills) = split_hits(&reranked);
-        result.query_results = reranked;
-        result.memories = memories;
-        result.resources = resources;
-        result.skills = skills;
+        result.query_results.truncate(limit.max(1));
+        result.rebuild_hit_buckets();
         sync_trace_final_topk(result);
 
         Ok(())

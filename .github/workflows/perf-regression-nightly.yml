@@ -18,11 +18,44 @@ jobs:
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Restore ontology pressure history cache
+        uses: actions/cache/restore@v4
+        with:
+          path: logs/ontology_pressure_history
+          key: ontology-pressure-history-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            ontology-pressure-history-${{ github.ref_name }}-
+
       - name: Run performance regression gate
         run: bash scripts/perf_regression_gate.sh --output logs/perf_regression_report.json
+
+      - name: Run typed-edge enrichment probe
+        run: bash scripts/typed_edge_enrichment_probe.sh --output logs/typed_edge_enrichment_probe.json
+
+      - name: Capture ontology pressure snapshot
+        run: bash scripts/ontology_pressure_snapshot.sh --workspace-dir "$GITHUB_WORKSPACE" --label nightly --output logs/ontology_pressure_snapshot_nightly.json
+
+      - name: Run ontology pressure trend gate
+        run: bash scripts/ontology_pressure_trend_gate.sh --history-dir logs/ontology_pressure_history --snapshot logs/ontology_pressure_snapshot_nightly.json --output logs/ontology_pressure_trend_report_nightly.json --min-samples 3 --consecutive-v2-candidate 3
+
+      - name: Ensure ontology pressure history directory exists
+        if: always()
+        run: mkdir -p logs/ontology_pressure_history
+
+      - name: Save ontology pressure history cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: logs/ontology_pressure_history
+          key: ontology-pressure-history-${{ github.ref_name }}-${{ github.run_id }}
 
       - name: Upload performance report
         uses: actions/upload-artifact@v4
         with:
           name: perf-regression-report
-          path: logs/perf_regression_report.json
+          path: |
+            logs/perf_regression_report.json
+            logs/typed_edge_enrichment_probe.json
+            logs/ontology_pressure_snapshot_nightly.json
+            logs/ontology_pressure_trend_report_nightly.json
+            logs/ontology_pressure_history

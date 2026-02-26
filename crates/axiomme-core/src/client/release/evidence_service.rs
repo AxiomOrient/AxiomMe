@@ -5,7 +5,9 @@ use chrono::Utc;
 use crate::catalog::operability_evidence_report_uri;
 use crate::error::Result;
 use crate::evidence::{build_operability_evidence_checks, evidence_status};
-use crate::models::{OperabilityEvidenceReport, QueueDiagnostics};
+use crate::models::{
+    OperabilityCoverage, OperabilityEvidenceReport, OperabilitySampleWindow, QueueDiagnostics,
+};
 
 use super::AxiomMe;
 
@@ -46,11 +48,15 @@ impl AxiomMe {
                 created_at: Utc::now().to_rfc3339(),
                 passed,
                 status,
-                trace_limit,
-                request_limit,
-                traces_analyzed: runtime.traces_analyzed,
-                request_logs_scanned: runtime.request_logs_scanned,
-                trace_metrics_snapshot_uri: runtime.trace_metrics_snapshot_uri,
+                sample_window: OperabilitySampleWindow {
+                    trace_limit,
+                    request_limit,
+                },
+                coverage: OperabilityCoverage {
+                    traces_analyzed: runtime.traces_analyzed,
+                    request_logs_scanned: runtime.request_logs_scanned,
+                    trace_metrics_snapshot_uri: runtime.trace_metrics_snapshot_uri,
+                },
                 queue: runtime.queue,
                 checks,
                 report_uri: report_uri.to_string(),
@@ -69,12 +75,12 @@ impl AxiomMe {
                     started,
                     None,
                     Some(serde_json::json!({
-                        "trace_limit": report.trace_limit,
-                        "request_limit": report.request_limit,
+                        "trace_limit": report.sample_window.trace_limit,
+                        "request_limit": report.sample_window.request_limit,
                         "passed": report.passed,
-                        "traces_analyzed": report.traces_analyzed,
-                        "request_logs_scanned": report.request_logs_scanned,
-                        "trace_metrics_snapshot_uri": report.trace_metrics_snapshot_uri,
+                        "traces_analyzed": report.coverage.traces_analyzed,
+                        "request_logs_scanned": report.coverage.request_logs_scanned,
+                        "trace_metrics_snapshot_uri": report.coverage.trace_metrics_snapshot_uri,
                         "report_uri": report.report_uri,
                     })),
                 );

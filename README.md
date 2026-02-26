@@ -117,6 +117,27 @@ Convenience script:
 bash scripts/quality_gates.sh
 ```
 
+Real-use random benchmark (contextSet):
+
+```bash
+bash scripts/contextset_random_benchmark.sh \
+  --dataset /Users/axient/Documents/contextSet \
+  --sample-size 24 \
+  --seed 4242 \
+  --report-path docs/REAL_CONTEXTSET_VALIDATION_$(date +%F)-random.md
+
+# Multi-seed matrix benchmark (recommended gate)
+bash scripts/contextset_random_benchmark_matrix.sh \
+  --dataset /Users/axient/Documents/contextSet \
+  --sample-size 24 \
+  --seeds 4242,777,9001 \
+  --report-path docs/REAL_CONTEXTSET_VALIDATION_MATRIX_$(date +%F).md
+
+# Default gate includes:
+# find/search non-empty, find/search top1 (>=65), find/search top5, p95 latency reporting.
+# Heading candidates exclude YAML front matter and fenced code blocks.
+```
+
 Release gate pack:
 
 ```bash

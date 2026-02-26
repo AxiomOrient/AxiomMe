@@ -11,19 +11,26 @@ mod trace;
 
 pub use benchmark::{
     BenchmarkAcceptanceCheck, BenchmarkAcceptanceMeasured, BenchmarkAcceptanceResult,
-    BenchmarkAcceptanceThresholds, BenchmarkAmortizedReport, BenchmarkAmortizedRunSummary,
-    BenchmarkCaseResult, BenchmarkCorpusMetadata, BenchmarkEnvironmentMetadata,
-    BenchmarkFixtureDocument, BenchmarkFixtureSummary, BenchmarkGateOptions, BenchmarkGateResult,
-    BenchmarkGateRunResult, BenchmarkQuerySetMetadata, BenchmarkReport, BenchmarkRunOptions,
-    BenchmarkSummary, BenchmarkTrendReport, ReleaseGatePackOptions, ReleaseSecurityAuditMode,
+    BenchmarkAcceptanceThresholds, BenchmarkAmortizedQualitySummary, BenchmarkAmortizedReport,
+    BenchmarkAmortizedRunSummary, BenchmarkAmortizedSelection, BenchmarkAmortizedTiming,
+    BenchmarkArtifacts, BenchmarkCaseResult, BenchmarkCorpusMetadata, BenchmarkEnvironmentMetadata,
+    BenchmarkFixtureDocument, BenchmarkFixtureSummary, BenchmarkGateArtifacts,
+    BenchmarkGateExecution, BenchmarkGateOptions, BenchmarkGateQuorum, BenchmarkGateResult,
+    BenchmarkGateRunResult, BenchmarkGateSnapshot, BenchmarkGateThresholds,
+    BenchmarkLatencyProfile, BenchmarkLatencySummary, BenchmarkQualityMetrics,
+    BenchmarkQuerySetMetadata, BenchmarkReport, BenchmarkRunOptions, BenchmarkRunSelection,
+    BenchmarkSummary, BenchmarkTrendReport, ReleaseGateBenchmarkGatePlan,
+    ReleaseGateBenchmarkRunPlan, ReleaseGateEvalPlan, ReleaseGateOperabilityPlan,
+    ReleaseGatePackOptions, ReleaseGateReplayPlan, ReleaseSecurityAuditMode,
 };
 pub use eval::{
-    EvalBucket, EvalCaseResult, EvalGoldenAddResult, EvalGoldenDocument, EvalGoldenMergeReport,
-    EvalLoopReport, EvalQueryCase, EvalRunOptions,
+    EvalArtifacts, EvalBucket, EvalCaseResult, EvalCoverageSummary, EvalGoldenAddResult,
+    EvalGoldenDocument, EvalGoldenMergeReport, EvalLoopReport, EvalQualitySummary, EvalQueryCase,
+    EvalRunOptions, EvalRunSelection,
 };
 pub use filesystem::{
-    AddResourceIngestOptions, AddResourceResult, Entry, GlobResult, MarkdownDocument,
-    MarkdownSaveResult, TreeNode, TreeResult,
+    AddResourceIngestOptions, AddResourceRequest, AddResourceResult, Entry, GlobResult,
+    MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
 };
 pub use queue::{
     OmQueueStatus, OmReflectionApplyMetrics, OutboxEvent, QueueCheckpoint, QueueCounts,
@@ -35,17 +42,22 @@ pub use release::{
     BenchmarkGateDetails, BlockerRollupGateDetails, BuildQualityGateDetails, CommandProbeResult,
     ContractIntegrityGateDetails, DependencyAuditStatus, DependencyAuditSummary,
     DependencyInventorySummary, EpisodicSemverPolicy, EpisodicSemverProbeResult,
-    EvalQualityGateDetails, EvidenceStatus, OperabilityEvidenceCheck, OperabilityEvidenceReport,
-    OperabilityGateDetails, ReleaseCheckDocument, ReleaseGateDecision, ReleaseGateDetails,
-    ReleaseGateId, ReleaseGatePackReport, ReleaseGateStatus, ReliabilityEvidenceCheck,
-    ReliabilityEvidenceReport, ReliabilityGateDetails, SecurityAuditCheck,
-    SecurityAuditGateDetails, SecurityAuditReport, SessionMemoryGateDetails,
+    EvalQualityGateDetails, EvidenceStatus, OntologyContractPolicy, OntologyContractProbeResult,
+    OntologyInvariantCheckSummary, OntologySchemaCardinality, OntologySchemaVersionProbe,
+    OperabilityCoverage, OperabilityEvidenceCheck, OperabilityEvidenceReport,
+    OperabilityGateDetails, OperabilitySampleWindow, ReleaseCheckDocument,
+    ReleaseCheckEmbeddingMetadata, ReleaseCheckRunSummary, ReleaseCheckThresholds,
+    ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId, ReleaseGatePackReport,
+    ReleaseGateStatus, ReliabilityEvidenceCheck, ReliabilityEvidenceReport, ReliabilityGateDetails,
+    ReliabilityQueueDelta, ReliabilityReplayPlan, ReliabilityReplayProgress,
+    ReliabilitySearchProbe, SecurityAuditCheck, SecurityAuditGateDetails, SecurityAuditReport,
+    SessionMemoryGateDetails,
 };
 pub use search::{
-    BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, IndexRecord, MetadataFilter,
-    QueryPlan, RelationLink, RelationSummary, RetrievalStep, RetrievalTrace, RuntimeHint,
-    RuntimeHintKind, SearchBudget, SearchFilter, SearchOptions, SearchRequest, TracePoint,
-    TraceStats, TypedQueryPlan,
+    BackendStatus, ContextHit, EmbeddingBackendStatus, FindResult, HitBuckets, IndexRecord,
+    MetadataFilter, QueryPlan, RelationLink, RelationSummary, RetrievalStep, RetrievalTrace,
+    RuntimeHint, RuntimeHintKind, SearchBudget, SearchFilter, SearchOptions, SearchRequest,
+    TracePoint, TraceStats, TypedQueryPlan, classify_hit_buckets,
 };
 pub use session::{
     CommitMode, CommitResult, CommitStats, ContextUsage, MemoryCandidate, MemoryCategory,

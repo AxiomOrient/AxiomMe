@@ -9,6 +9,10 @@ fn bootstrap_initializes_filesystem_without_runtime_index() {
     assert!(temp.path().join("resources").exists());
     assert!(temp.path().join("queue").exists());
     assert!(temp.path().join(".axiomme_state.sqlite3").exists());
+    assert!(
+        temp.path().join("agent/ontology/schema.v1.json").exists(),
+        "bootstrap should seed default ontology schema"
+    );
 
     let resources_root = AxiomUri::root(Scope::Resources);
     let docs_uri = resources_root.join("docs").expect("join docs");

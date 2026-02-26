@@ -321,14 +321,28 @@ echo "${find_imported}" | jq -e '.query_results | length > 0' >/dev/null
 echo "- export file: \`${EXPORT_PATH}\`" >>"${REPORT_PATH}"
 
 append_section "Web" "Executed: \`web\` startup and HTTP probe"
-"${BIN}" --root "${ROOT_DIR}" web --host 127.0.0.1 --port 8799 >"${WEB_LOG}" 2>&1 &
-WEB_PID=$!
-sleep 2
-curl -sS "http://127.0.0.1:8799/api/fs/tree?uri=axiom://resources" | jq -e '.root.uri == "axiom://resources"' >/dev/null
-kill "${WEB_PID}" >/dev/null 2>&1 || true
-wait "${WEB_PID}" >/dev/null 2>&1 || true
-unset WEB_PID
-echo '- web probe: pass (`/api/fs/tree`)' >>"${REPORT_PATH}"
+if [[ -n "${AXIOMME_WEB_VIEWER_BIN:-}" ]] || command -v axiomme-webd >/dev/null 2>&1; then
+  "${BIN}" --root "${ROOT_DIR}" web --host 127.0.0.1 --port 8799 >"${WEB_LOG}" 2>&1 &
+  WEB_PID=$!
+  probe_ok=false
+  for _ in $(seq 1 20); do
+    if curl -sS "http://127.0.0.1:8799/api/fs/tree?uri=axiom://resources" | jq -e '.root.uri == "axiom://resources"' >/dev/null; then
+      probe_ok=true
+      break
+    fi
+    sleep 0.5
+  done
+  if [[ "${probe_ok}" != "true" ]]; then
+    echo "web probe failed; log: ${WEB_LOG}" >&2
+    exit 1
+  fi
+  kill "${WEB_PID}" >/dev/null 2>&1 || true
+  wait "${WEB_PID}" >/dev/null 2>&1 || true
+  unset WEB_PID
+  echo '- web probe: pass (`/api/fs/tree`)' >>"${REPORT_PATH}"
+else
+  echo '- web probe: skipped (external viewer binary `axiomme-webd` not installed in PATH)' >>"${REPORT_PATH}"
+fi
 
 cat >>"${REPORT_PATH}" <<EOF
 

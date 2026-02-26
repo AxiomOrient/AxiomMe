@@ -113,10 +113,20 @@ Ranking behavior (`extension`):
 - Invalid `AXIOMME_RETRIEVAL_BACKEND` token is treated as configuration error (fail-fast).
 - Retrieval query-plan notes include explicit backend policy marker:
   - `backend_policy:memory_only`
+- Retrieval typed-edge enrichment is opt-in:
+  - `AXIOMME_SEARCH_TYPED_EDGE_ENRICHMENT=1|true|yes|on`
+  - when enabled, relation items may include:
+    - `relation_type`
+    - `source_object_type`
+    - `target_object_type`
+  - query-plan notes include:
+    - `typed_edge_enrichment:1`
+    - `typed_edge_links:<count>`
 - Retrieval tokenization is deterministic in the memory search path.
 - Search request logs include backend policy fields:
   - `retrieval_backend`
   - `retrieval_backend_policy`
+  - `typed_edge_enrichment`
 
 Embedding provider behavior (`extension`):
 
@@ -151,6 +161,66 @@ Embedding provider behavior (`extension`):
 - `promote_session_memories(request) -> MemoryPromotionResult` (`extension`)
 - `checkpoint_session_archive_only(session_id) -> CommitResult` (`extension`)
 - `promote_and_checkpoint_archive_only(request) -> MemoryPromotionResult` (`extension`)
+
+### Ontology
+
+- `ontology validate --uri?` validates and compiles schema contract.
+- `ontology pressure --uri?` reports `OntologySchemaV2` escalation pressure from explicit thresholds.
+- `ontology trend --history-dir --min-samples --consecutive-v2-candidate` evaluates trend-based escalation from snapshot history.
+- `ontology action-validate --uri? --action-id --queue-event-type [--input-json|--input-file|--input-stdin]` validates action request contract without side effects.
+- `ontology action-enqueue --uri? --target-uri --action-id --queue-event-type [--input-json|--input-file|--input-stdin]` validates action request contract and enqueues one outbox event.
+- `ontology invariant-check --uri? [--enforce]` evaluates invariant rules and optionally enforces zero failures.
+- Pressure report contract fields:
+  - `schema_version`
+  - `object_type_count`
+  - `link_type_count`
+  - `action_type_count`
+  - `invariant_count`
+  - `action_invariant_total`
+  - `link_types_per_object_basis_points`
+  - `v2_candidate`
+  - `trigger_reasons[]`
+  - `policy` (`min_action_types`, `min_invariants`, `min_action_invariant_total`, `min_link_types_per_object_basis_points`)
+- Trend report contract fields:
+  - `total_samples`
+  - `consecutive_v2_candidate_tail`
+  - `trigger_v2_design`
+  - `status` (`insufficient_samples|monitor|trigger_v2_design`)
+  - `policy` (`min_samples`, `consecutive_v2_candidate`)
+  - `latest_sample_id`
+  - `latest_generated_at_utc`
+  - `latest_v2_candidate`
+- Trend policy input constraints:
+  - `min_samples >= 1`
+  - `consecutive_v2_candidate >= 1`
+- Action validate report contract fields:
+  - `action_id`
+  - `queue_event_type`
+  - `input_contract`
+  - `input_kind` (`null|boolean|number|string|array|object`)
+- Action enqueue payload contract fields:
+  - `schema_version`
+  - `action_id`
+  - `input` (JSON value)
+- Action input source constraints:
+  - at most one input source (`--input-json`, `--input-file`, `--input-stdin`)
+  - when no explicit source is provided, input is `null`
+- Action input contract checks:
+  - recognized contracts: `json-any|json-null|json-boolean|json-number|json-string|json-array|json-object`
+  - unknown contract strings are rejected during schema compile.
+- Invariant check report contract fields:
+  - `total`
+  - `passed`
+  - `failed`
+  - `items[]`:
+    - `id`, `severity`, `rule`, `message`
+    - `status` (`pass|fail`)
+    - `failure_kind?` (`invalid_severity|unsupported_rule|missing_target`)
+    - `failure_detail?`
+- Invariant rule grammar (v1 executable subset):
+  - `object_type_declared:<object_type_id>`
+  - `link_type_declared:<link_type_id>`
+  - `action_type_declared:<action_type_id>`
 
 Session handle:
 
@@ -187,6 +257,9 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
 - `G0` contract integrity:
   - executable contract probe test must pass (`axiomme-core` release contract probe)
   - `episodic` API probe test must pass (`axiomme-core` OM contract probe)
+  - ontology contract probe test must pass (`axiomme-core` ontology contract probe)
+  - ontology default schema contract must parse/compile and match required version (`schema.v1`)
+  - ontology invariant check over compiled schema must have zero failures (`invariant_check_failed == 0`)
   - `crates/axiomme-core/Cargo.toml`의 `episodic` 의존은 semver `0.1.x` 계약을 유지해야 함
   - `Cargo.lock`의 `episodic` 엔트리는 crates.io registry source여야 함 (`registry+https://github.com/rust-lang/crates.io-index`)
 - `G1` build quality: `cargo check --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -D warnings`
@@ -220,13 +293,39 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
 
 ```json
 {
-  "memories": [{"uri":"axiom://...", "score":0.7, "abstract":"...", "relations":[{"uri":"axiom://...", "reason":"..."}]}],
-  "resources": [{"uri":"axiom://...", "score":0.8, "abstract":"...", "relations":[{"uri":"axiom://...", "reason":"..."}]}],
-  "skills": [{"uri":"axiom://...", "score":0.6, "abstract":"...", "relations":[{"uri":"axiom://...", "reason":"..."}]}],
   "query_plan": {},
-  "query_results": []
+  "query_results": [
+    {"uri":"axiom://...", "score":0.8, "abstract":"...", "relations":[{"uri":"axiom://...", "reason":"...", "relation_type":"depends_on", "source_object_type":"resource_doc", "target_object_type":"resource_doc"}]}
+  ],
+  "hit_buckets": {
+    "memories": [1, 4],
+    "resources": [0, 2],
+    "skills": [3]
+  },
+  "memories": [],
+  "resources": [],
+  "skills": []
 }
 ```
+
+- `query_results` is the canonical hit list.
+- `hit_buckets` contains index lists into `query_results` for memory/resource/skill views.
+- `memories/resources/skills` are compatibility mirrors derived from `query_results` + `hit_buckets`.
+
+Compatibility/deprecation plan (`memories/resources/skills`):
+
+- 2026-02-24 (current): compatibility mirrors are still emitted by default.
+- Transition window: consumers should migrate to `query_results` + `hit_buckets` during 2026-Q2.
+- Removal gate: mirror-field removal requires an explicit release note and one-cycle advance notice before enforcement (see `docs/RELEASE_NOTES_2026-02-24.md`).
+- Contract rule: when mirrors exist, they must be generated from `query_results`/`hit_buckets` only (no independent ranking path).
+
+Relation fields:
+
+- `uri` (required)
+- `reason` (required)
+- `relation_type` (optional, typed-edge enrichment enabled only)
+- `source_object_type` (optional, typed-edge enrichment enabled only)
+- `target_object_type` (optional, typed-edge enrichment enabled only)
 
 ### CommitResult
 
@@ -373,7 +472,7 @@ Notes:
 
 Supported `details.kind` values:
 
-- `contract_integrity` (`G0`): `{ policy, contract_probe, episodic_api_probe, episodic_semver_probe }`
+- `contract_integrity` (`G0`): `{ policy, contract_probe, episodic_api_probe, episodic_semver_probe, ontology_policy?, ontology_probe? }`
 - `build_quality` (`G1`): `{ cargo_check, cargo_fmt, cargo_clippy, check_output, fmt_output, clippy_output }`
 - `reliability_evidence` (`G2`): `{ status, replay_done, dead_letter }`
 - `eval_quality` (`G3`): `{ executed_cases, top1_accuracy, min_top1_accuracy, failed, filter_ignored, relation_missing }`

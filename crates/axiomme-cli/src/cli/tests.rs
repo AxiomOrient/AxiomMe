@@ -33,6 +33,302 @@ fn queue_inspect_is_no_longer_supported() {
 }
 
 #[test]
+fn ontology_validate_parses_optional_uri() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "ontology",
+        "validate",
+        "--uri",
+        "axiom://agent/ontology/schema.v1.json",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Ontology(OntologyArgs {
+            command: OntologyCommand::Validate { uri },
+        }) => {
+            assert_eq!(
+                uri.as_deref(),
+                Some("axiom://agent/ontology/schema.v1.json")
+            );
+        }
+        _ => panic!("expected ontology validate command"),
+    }
+}
+
+#[test]
+fn ontology_pressure_parses_thresholds() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "ontology",
+        "pressure",
+        "--uri",
+        "axiom://agent/ontology/schema.v1.json",
+        "--min-action-types",
+        "4",
+        "--min-invariants",
+        "5",
+        "--min-action-invariant-total",
+        "9",
+        "--min-link-types-per-object-basis-points",
+        "12000",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Ontology(OntologyArgs {
+            command:
+                OntologyCommand::Pressure {
+                    uri,
+                    min_action_types,
+                    min_invariants,
+                    min_action_invariant_total,
+                    min_link_types_per_object_basis_points,
+                },
+        }) => {
+            assert_eq!(
+                uri.as_deref(),
+                Some("axiom://agent/ontology/schema.v1.json")
+            );
+            assert_eq!(min_action_types, 4);
+            assert_eq!(min_invariants, 5);
+            assert_eq!(min_action_invariant_total, 9);
+            assert_eq!(min_link_types_per_object_basis_points, 12000);
+        }
+        _ => panic!("expected ontology pressure command"),
+    }
+}
+
+#[test]
+fn ontology_trend_parses_history_and_thresholds() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "ontology",
+        "trend",
+        "--history-dir",
+        "/tmp/ontology-pressure",
+        "--min-samples",
+        "4",
+        "--consecutive-v2-candidate",
+        "3",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Ontology(OntologyArgs {
+            command:
+                OntologyCommand::Trend {
+                    history_dir,
+                    min_samples,
+                    consecutive_v2_candidate,
+                },
+        }) => {
+            assert_eq!(history_dir.to_string_lossy(), "/tmp/ontology-pressure");
+            assert_eq!(min_samples, 4);
+            assert_eq!(consecutive_v2_candidate, 3);
+        }
+        _ => panic!("expected ontology trend command"),
+    }
+}
+
+#[test]
+fn ontology_trend_rejects_zero_thresholds() {
+    let min_samples_error = Cli::try_parse_from([
+        "axiomme",
+        "ontology",
+        "trend",
+        "--history-dir",
+        "/tmp/ontology-pressure",
+        "--min-samples",
+        "0",
+    ]);
+    assert!(min_samples_error.is_err(), "min-samples=0 must be rejected");
+
+    let consecutive_error = Cli::try_parse_from([
+        "axiomme",
+        "ontology",
+        "trend",
+        "--history-dir",
+        "/tmp/ontology-pressure",
+        "--consecutive-v2-candidate",
+        "0",
+    ]);
+    assert!(
+        consecutive_error.is_err(),
+        "consecutive-v2-candidate=0 must be rejected"
+    );
+}
+
+#[test]
+fn ontology_action_validate_parses_input_sources() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "ontology",
+        "action-validate",
+        "--action-id",
+        "sync_doc",
+        "--queue-event-type",
+        "semantic_scan",
+        "--input-json",
+        "{\"uri\":\"axiom://resources/docs/a.md\"}",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Ontology(OntologyArgs {
+            command:
+                OntologyCommand::ActionValidate {
+                    action_id,
+                    queue_event_type,
+                    input_json,
+                    input_file,
+                    input_stdin,
+                    ..
+                },
+        }) => {
+            assert_eq!(action_id, "sync_doc");
+            assert_eq!(queue_event_type, "semantic_scan");
+            assert_eq!(
+                input_json.as_deref(),
+                Some("{\"uri\":\"axiom://resources/docs/a.md\"}")
+            );
+            assert!(input_file.is_none());
+            assert!(!input_stdin);
+        }
+        _ => panic!("expected ontology action-validate command"),
+    }
+}
+
+#[test]
+fn ontology_action_enqueue_parses_target_uri() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "ontology",
+        "action-enqueue",
+        "--target-uri",
+        "axiom://resources/docs/a.md",
+        "--action-id",
+        "sync_doc",
+        "--queue-event-type",
+        "semantic_scan",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Ontology(OntologyArgs {
+            command:
+                OntologyCommand::ActionEnqueue {
+                    target_uri,
+                    action_id,
+                    queue_event_type,
+                    input_json,
+                    input_file,
+                    input_stdin,
+                    ..
+                },
+        }) => {
+            assert_eq!(target_uri, "axiom://resources/docs/a.md");
+            assert_eq!(action_id, "sync_doc");
+            assert_eq!(queue_event_type, "semantic_scan");
+            assert!(input_json.is_none());
+            assert!(input_file.is_none());
+            assert!(!input_stdin);
+        }
+        _ => panic!("expected ontology action-enqueue command"),
+    }
+}
+
+#[test]
+fn ontology_invariant_check_parses_enforce_flag() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "ontology",
+        "invariant-check",
+        "--uri",
+        "axiom://agent/ontology/schema.v1.json",
+        "--enforce",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Ontology(OntologyArgs {
+            command: OntologyCommand::InvariantCheck { uri, enforce },
+        }) => {
+            assert_eq!(
+                uri.as_deref(),
+                Some("axiom://agent/ontology/schema.v1.json")
+            );
+            assert!(enforce);
+        }
+        _ => panic!("expected ontology invariant-check command"),
+    }
+}
+
+#[test]
+fn relation_link_parses_owner_id_and_uris() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "relation",
+        "link",
+        "--owner-uri",
+        "axiom://resources/docs",
+        "--relation-id",
+        "auth-security",
+        "--uri",
+        "axiom://resources/docs/auth.md",
+        "--uri",
+        "axiom://resources/docs/security.md",
+        "--reason",
+        "security dependency",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Relation(RelationArgs {
+            command:
+                RelationCommand::Link {
+                    owner_uri,
+                    relation_id,
+                    uris,
+                    reason,
+                },
+        }) => {
+            assert_eq!(owner_uri, "axiom://resources/docs");
+            assert_eq!(relation_id, "auth-security");
+            assert_eq!(
+                uris,
+                vec![
+                    "axiom://resources/docs/auth.md".to_string(),
+                    "axiom://resources/docs/security.md".to_string()
+                ]
+            );
+            assert_eq!(reason, "security dependency");
+        }
+        _ => panic!("expected relation link command"),
+    }
+}
+
+#[test]
+fn relation_unlink_parses_owner_and_relation_id() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "relation",
+        "unlink",
+        "--owner-uri",
+        "axiom://resources/docs",
+        "--relation-id",
+        "auth-security",
+    ])
+    .expect("parse");
+    match cli.command {
+        Commands::Relation(RelationArgs {
+            command:
+                RelationCommand::Unlink {
+                    owner_uri,
+                    relation_id,
+                },
+        }) => {
+            assert_eq!(owner_uri, "axiom://resources/docs");
+            assert_eq!(relation_id, "auth-security");
+        }
+        _ => panic!("expected relation unlink command"),
+    }
+}
+
+#[test]
 fn document_save_from_file_parses() {
     let cli = Cli::try_parse_from([
         "axiomme",
@@ -65,6 +361,33 @@ fn document_save_from_file_parses() {
 }
 
 #[test]
+fn document_save_content_with_front_matter_parses() {
+    let front_matter = "---\nid: demo\n---\n\n# title\n";
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "document",
+        "save",
+        "axiom://resources/docs/guide.md",
+        "--content",
+        front_matter,
+    ])
+    .expect("parse");
+
+    match cli.command {
+        Commands::Document(DocumentArgs {
+            command: DocumentCommand::Save {
+                uri, content, from, ..
+            },
+        }) => {
+            assert_eq!(uri, "axiom://resources/docs/guide.md");
+            assert_eq!(content.as_deref(), Some(front_matter));
+            assert!(from.is_none());
+        }
+        _ => panic!("expected document save"),
+    }
+}
+
+#[test]
 fn document_preview_from_uri_parses() {
     let cli = Cli::try_parse_from([
         "axiomme",
@@ -91,6 +414,34 @@ fn document_preview_from_uri_parses() {
             assert!(!stdin);
         }
         _ => panic!("expected document preview"),
+    }
+}
+
+#[test]
+fn find_query_with_leading_hyphen_parses() {
+    let cli =
+        Cli::try_parse_from(["axiomme", "find", "--dash-prefixed", "--limit", "7"]).expect("parse");
+
+    match cli.command {
+        Commands::Find(FindArgs { query, limit, .. }) => {
+            assert_eq!(query, "--dash-prefixed");
+            assert_eq!(limit, 7);
+        }
+        _ => panic!("expected find command"),
+    }
+}
+
+#[test]
+fn search_query_with_leading_hyphen_parses() {
+    let cli = Cli::try_parse_from(["axiomme", "search", "--dash-prefixed", "--limit", "4"])
+        .expect("parse");
+
+    match cli.command {
+        Commands::Search(SearchArgs { query, limit, .. }) => {
+            assert_eq!(query, "--dash-prefixed");
+            assert_eq!(limit, 4);
+        }
+        _ => panic!("expected search command"),
     }
 }
 

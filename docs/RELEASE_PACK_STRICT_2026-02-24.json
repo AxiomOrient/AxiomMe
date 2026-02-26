@@ -1,0 +1,208 @@
+{
+  "pack_id": "d0d822ca-4813-405d-9183-0524fcba2e66",
+  "created_at": "2026-02-24T11:20:04.600471+00:00",
+  "workspace_dir": "/Users/axient/repository/AxiomMe",
+  "passed": true,
+  "status": "pass",
+  "unresolved_blockers": 0,
+  "decisions": [
+    {
+      "gate_id": "G0",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "contract_integrity",
+        "data": {
+          "policy": {
+            "required_major": 0,
+            "required_minor": 1,
+            "required_lock_source_prefix": "registry+https://github.com/rust-lang/crates.io-index",
+            "allowed_manifest_operators": [
+              "exact",
+              "caret",
+              "tilde"
+            ]
+          },
+          "contract_probe": {
+            "test_name": "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms",
+            "command_ok": true,
+            "matched": true,
+            "output_excerpt": "\nrunning 1 test\ntest client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finish...",
+            "passed": true
+          },
+          "episodic_api_probe": {
+            "test_name": "client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract",
+            "command_ok": true,
+            "matched": true,
+            "output_excerpt": "\nrunning 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0.00...",
+            "passed": true
+          },
+          "episodic_semver_probe": {
+            "passed": true,
+            "error": null,
+            "manifest_req": "0.1.0",
+            "manifest_req_ok": true,
+            "manifest_uses_path": false,
+            "manifest_uses_git": false,
+            "manifest_source_ok": true,
+            "lock_version": "0.1.0",
+            "lock_version_ok": true,
+            "lock_source": "registry+https://github.com/rust-lang/crates.io-index",
+            "lock_source_ok": true
+          },
+          "ontology_policy": {
+            "schema_uri": "axiom://agent/ontology/schema.v1.json",
+            "required_schema_version": 1,
+            "probe_test_name": "ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable"
+          },
+          "ontology_probe": {
+            "passed": true,
+            "error": null,
+            "command_probe": {
+              "test_name": "ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable",
+              "command_ok": true,
+              "matched": true,
+              "output_excerpt": "\nrunning 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 588 filtered out; finished in 0...",
+              "passed": true
+            },
+            "schema": {
+              "schema_uri": "axiom://agent/ontology/schema.v1.json",
+              "schema_version": 1,
+              "schema_version_ok": true
+            },
+            "cardinality": {
+              "object_type_count": 0,
+              "link_type_count": 0,
+              "action_type_count": 0,
+              "invariant_count": 0
+            },
+            "invariant_checks": {
+              "passed": 0,
+              "failed": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "gate_id": "G1",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "build_quality",
+        "data": {
+          "cargo_check": true,
+          "cargo_fmt": true,
+          "cargo_clippy": true,
+          "check_output": "    Checking axiomme-core v0.1.1 (/Users/axient/repository/AxiomMe/crates/axiomme-core)\n    Checking axiomme-mobile-ffi v0.1.1 (/Users/axient/repository/AxiomMe/crates/axiomme-mobile-ffi)\n    Checking axiomme-cli v0.1.1 (/Users/axient/repos...",
+          "fmt_output": "",
+          "clippy_output": "    Checking axiomme-core v0.1.1 (/Users/axient/repository/AxiomMe/crates/axiomme-core)\n    Checking axiomme-cli v0.1.1 (/Users/axient/repository/AxiomMe/crates/axiomme-cli)\n    Checking axiomme-mobile-ffi v0.1.1 (/Users/axient/repository/A..."
+        }
+      }
+    },
+    {
+      "gate_id": "G2",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "reliability_evidence",
+        "data": {
+          "status": "pass",
+          "replay_done": 1,
+          "dead_letter": 0
+        }
+      },
+      "evidence_uri": "axiom://queue/release/reliability/fde89797-a20e-40e6-84c0-82aee661a5d4.json"
+    },
+    {
+      "gate_id": "G3",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "eval_quality",
+        "data": {
+          "executed_cases": 2,
+          "top1_accuracy": 1.0,
+          "min_top1_accuracy": 0.75,
+          "failed": 0,
+          "filter_ignored": 0,
+          "relation_missing": 0
+        }
+      },
+      "evidence_uri": "axiom://queue/eval/reports/632be778-6ba8-45cb-a7f3-10220ecca74c.json"
+    },
+    {
+      "gate_id": "G4",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "session_memory",
+        "data": {
+          "base_details": "session_id=release-gate-411460b5b8924e4e8349160d1f45d68f memories_extracted=9 hit_count=1 missing_categories=-",
+          "memory_category_miss": 0
+        }
+      }
+    },
+    {
+      "gate_id": "G5",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "security_audit",
+        "data": {
+          "status": "pass",
+          "mode": "strict",
+          "strict_mode_required": true,
+          "strict_mode": true,
+          "audit_status": "passed",
+          "advisories_found": 0,
+          "packages": 278
+        }
+      },
+      "evidence_uri": "axiom://queue/release/security/ac5c19dd-a37b-4bb2-972b-c56338bc0e3b.json"
+    },
+    {
+      "gate_id": "G6",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "benchmark",
+        "data": {
+          "passed": true,
+          "evaluated_runs": 1,
+          "passing_runs": 1,
+          "reasons": [
+            "ok"
+          ]
+        }
+      },
+      "evidence_uri": "axiom://queue/release/gates/931045bd-c598-4255-8882-f73927b6249c.json"
+    },
+    {
+      "gate_id": "G7",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "operability_evidence",
+        "data": {
+          "status": "pass",
+          "traces_analyzed": 3,
+          "request_logs_scanned": 12
+        }
+      },
+      "evidence_uri": "axiom://queue/release/operability/c31cc7ac-2da5-4233-bb38-b70aaea7d358.json"
+    },
+    {
+      "gate_id": "G8",
+      "passed": true,
+      "status": "pass",
+      "details": {
+        "kind": "blocker_rollup",
+        "data": {
+          "unresolved_blockers": 0
+        }
+      }
+    }
+  ],
+  "report_uri": "axiom://queue/release/packs/d0d822ca-4813-405d-9183-0524fcba2e66.json"
+}

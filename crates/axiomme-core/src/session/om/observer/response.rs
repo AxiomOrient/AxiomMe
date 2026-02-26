@@ -69,14 +69,14 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
         return Ok(deterministic_observer_output(
             record,
             selected,
-            config.observation_max_chars,
+            config.text_budget.observation_max_chars,
         ));
     }
     match config.mode {
         OmObserverMode::Deterministic => Ok(deterministic_observer_output(
             record,
             selected,
-            config.observation_max_chars,
+            config.text_budget.observation_max_chars,
         )),
         OmObserverMode::Llm => llm_observer_response(
             record,
@@ -99,13 +99,13 @@ pub(in crate::session::om) fn resolve_observer_response_with_config(
             ) {
                 Ok(output) => Ok(output),
                 Err(err) => {
-                    if config.llm_strict {
+                    if config.llm.strict {
                         Err(err)
                     } else {
                         Ok(deterministic_observer_output(
                             record,
                             selected,
-                            config.observation_max_chars,
+                            config.text_budget.observation_max_chars,
                         ))
                     }
                 }
@@ -168,7 +168,7 @@ pub(in crate::session::om) fn llm_observer_response(
         return Ok(deterministic_observer_output(
             record,
             selected,
-            config.observation_max_chars,
+            config.text_budget.observation_max_chars,
         ));
     }
 
@@ -177,14 +177,14 @@ pub(in crate::session::om) fn llm_observer_response(
 
     let bounded_selected = select_messages_for_observer_llm(
         selected,
-        config.llm_max_chars_per_message,
-        config.llm_max_input_tokens,
+        config.llm.max_chars_per_message,
+        config.llm.max_input_tokens,
     );
     if bounded_selected.is_empty() {
         return Ok(deterministic_observer_output(
             record,
             selected,
-            config.observation_max_chars,
+            config.text_budget.observation_max_chars,
         ));
     }
 
@@ -234,7 +234,7 @@ pub(in crate::session::om) fn llm_observer_response(
         return Ok(deterministic_observer_output(
             record,
             selected,
-            config.observation_max_chars,
+            config.text_budget.observation_max_chars,
         ));
     }
     let selected_messages =

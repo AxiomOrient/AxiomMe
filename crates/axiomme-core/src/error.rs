@@ -83,6 +83,9 @@ pub enum AxiomError {
     #[error("validation failed: {0}")]
     Validation(String),
 
+    #[error("ontology violation: {0}")]
+    OntologyViolation(String),
+
     #[error("om inference failure ({inference_source}/{kind}): {message}")]
     OmInference {
         inference_source: OmInferenceSource,
@@ -144,6 +147,7 @@ impl AxiomError {
             Self::InvalidArchive(_) => "INVALID_ARCHIVE",
             Self::SecurityViolation(_) => "SECURITY_VIOLATION",
             Self::Validation(_) => "VALIDATION_FAILED",
+            Self::OntologyViolation(_) => "ONTOLOGY_VIOLATION",
             Self::OmInference { kind, .. } => match kind {
                 OmInferenceFailureKind::Transient => "OM_INFERENCE_TRANSIENT",
                 OmInferenceFailureKind::Fatal => "OM_INFERENCE_FATAL",

@@ -9,18 +9,33 @@ blocked_prefix="$(printf '%b' '\x6f\x70\x65\x6e')${blocked_word}"
 blocked_scheme="${blocked_word}://"
 pattern="(${blocked_prefix}|${blocked_scheme}|\\b${blocked_word}\\b)"
 
-if rg -n -i \
-    --hidden \
-    --glob '!.git/**' \
-    --glob '!target/**' \
-    --glob '!.axiomme/**' \
-    --glob '!logs/**' \
-    --glob '!Cargo.lock' \
-    "$pattern" \
-    .
-then
-    echo "prohibited token detected"
-    exit 1
+if command -v rg >/dev/null 2>&1; then
+    if rg -n -i \
+        --hidden \
+        --glob '!.git/**' \
+        --glob '!target/**' \
+        --glob '!.axiomme/**' \
+        --glob '!logs/**' \
+        --glob '!Cargo.lock' \
+        "$pattern" \
+        .
+    then
+        echo "prohibited token detected"
+        exit 1
+    fi
+else
+    if grep -RInE \
+        --exclude-dir=.git \
+        --exclude-dir=target \
+        --exclude-dir=.axiomme \
+        --exclude-dir=logs \
+        --exclude=Cargo.lock \
+        "$pattern" \
+        .
+    then
+        echo "prohibited token detected"
+        exit 1
+    fi
 fi
 
 echo "prohibited-token scan passed"

@@ -20,6 +20,31 @@ pub struct AddResourceResult {
     pub message: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AddResourceRequest {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub wait: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub ingest_options: AddResourceIngestOptions,
+}
+
+impl AddResourceRequest {
+    #[must_use]
+    pub fn new(source: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            target: None,
+            wait: false,
+            timeout_secs: None,
+            ingest_options: AddResourceIngestOptions::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AddResourceIngestOptions {
     #[serde(default)]

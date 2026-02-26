@@ -9,7 +9,10 @@ use super::{
     AxiomMe,
     execution_service::{EvalCaseSelection, EvalExecutionOutcome},
     logging_service::EvalRunLogContext,
-    report_service::EvalReportInput,
+    report_service::{
+        EvalReportCoverageInput, EvalReportInput, EvalReportMetaInput, EvalReportOutcomeInput,
+        EvalReportRunConfigInput,
+    },
 };
 
 impl AxiomMe {
@@ -68,23 +71,31 @@ impl AxiomMe {
                 failures,
             } = self.execute_eval_cases(&query_cases, search_limit)?;
             self.write_eval_report(EvalReportInput {
-                run_id: run_id.clone(),
-                created_at,
-                trace_limit,
-                query_limit,
-                search_limit,
-                include_golden,
-                golden_only,
-                traces_scanned,
-                trace_cases_used,
-                golden_cases_used,
-                executed_cases: query_cases.len(),
-                passed,
-                failed,
-                top1_accuracy,
-                buckets,
-                failures,
-                query_set_uri,
+                meta: EvalReportMetaInput {
+                    run_id: run_id.clone(),
+                    created_at,
+                    query_set_uri,
+                },
+                run_config: EvalReportRunConfigInput {
+                    trace_limit,
+                    query_limit,
+                    search_limit,
+                    include_golden,
+                    golden_only,
+                },
+                coverage: EvalReportCoverageInput {
+                    traces_scanned,
+                    trace_cases_used,
+                    golden_cases_used,
+                    executed_cases: query_cases.len(),
+                },
+                outcome: EvalReportOutcomeInput {
+                    passed,
+                    failed,
+                    top1_accuracy,
+                    buckets,
+                    failures,
+                },
             })
         })();
 

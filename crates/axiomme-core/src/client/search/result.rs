@@ -1,8 +1,6 @@
 use serde_json::json;
 
-use crate::models::{
-    ContextHit, FindResult, MetadataFilter, SearchBudget, SearchFilter, TracePoint,
-};
+use crate::models::{FindResult, MetadataFilter, SearchBudget, SearchFilter, TracePoint};
 
 pub(super) fn metadata_filter_to_search_filter(
     filter: Option<MetadataFilter>,
@@ -58,28 +56,6 @@ pub(super) fn sync_trace_final_topk(result: &mut FindResult) {
         .collect();
 }
 
-pub(super) fn split_hits(
-    hits: &[ContextHit],
-) -> (Vec<ContextHit>, Vec<ContextHit>, Vec<ContextHit>) {
-    let mut memories = Vec::new();
-    let mut resources = Vec::new();
-    let mut skills = Vec::new();
-
-    for hit in hits {
-        if hit.uri.starts_with("axiom://user/memories")
-            || hit.uri.starts_with("axiom://agent/memories")
-        {
-            memories.push(hit.clone());
-        } else if hit.uri.starts_with("axiom://agent/skills") {
-            skills.push(hit.clone());
-        } else {
-            resources.push(hit.clone());
-        }
-    }
-
-    (memories, resources, skills)
-}
-
 pub(super) fn append_query_plan_note(result: &mut FindResult, note: &str) {
     result.query_plan.notes.push(note.to_string());
 }
@@ -100,4 +76,88 @@ pub(super) fn annotate_trace_relation_metrics(result: &mut FindResult) {
         .sum();
     trace.metrics.relation_enriched_hits = relation_enriched_hits;
     trace.metrics.relation_enriched_links = relation_enriched_links;
+}
+
+pub(super) fn annotate_typed_edge_query_plan_visibility(result: &mut FindResult, enabled: bool) {
+    if !enabled {
+        return;
+    }
+    append_query_plan_note(result, "typed_edge_enrichment:1");
+    let typed_edges = result
+        .query_results
+        .iter()
+        .flat_map(|hit| hit.relations.iter())
+        .filter(|relation| relation.relation_type.is_some())
+        .count();
+    append_query_plan_note(result, &format!("typed_edge_links:{typed_edges}"));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::annotate_typed_edge_query_plan_visibility;
+    use crate::models::{ContextHit, FindResult, HitBuckets, QueryPlan, RelationSummary};
+
+    fn hit_with_relation(relation_type: Option<&str>) -> ContextHit {
+        ContextHit {
+            uri: "axiom://resources/demo/a.md".to_string(),
+            score: 0.9,
+            abstract_text: "demo".to_string(),
+            context_type: "resource".to_string(),
+            relations: vec![RelationSummary {
+                uri: "axiom://resources/demo/b.md".to_string(),
+                reason: "depends".to_string(),
+                relation_type: relation_type.map(ToString::to_string),
+                source_object_type: None,
+                target_object_type: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn typed_edge_query_plan_visibility_is_disabled_by_flag() {
+        let mut result = FindResult {
+            query_plan: QueryPlan::default(),
+            query_results: vec![hit_with_relation(Some("depends_on"))],
+            hit_buckets: HitBuckets::default(),
+            memories: Vec::new(),
+            resources: Vec::new(),
+            skills: Vec::new(),
+            trace: None,
+            trace_uri: None,
+        };
+        annotate_typed_edge_query_plan_visibility(&mut result, false);
+        assert!(result.query_plan.notes.is_empty());
+    }
+
+    #[test]
+    fn typed_edge_query_plan_visibility_reports_typed_link_count() {
+        let mut result = FindResult {
+            query_plan: QueryPlan::default(),
+            query_results: vec![
+                hit_with_relation(Some("depends_on")),
+                hit_with_relation(None),
+            ],
+            hit_buckets: HitBuckets::default(),
+            memories: Vec::new(),
+            resources: Vec::new(),
+            skills: Vec::new(),
+            trace: None,
+            trace_uri: None,
+        };
+        annotate_typed_edge_query_plan_visibility(&mut result, true);
+        assert!(
+            result
+                .query_plan
+                .notes
+                .iter()
+                .any(|value| value == "typed_edge_enrichment:1")
+        );
+        assert!(
+            result
+                .query_plan
+                .notes
+                .iter()
+                .any(|value| value == "typed_edge_links:1")
+        );
+    }
 }

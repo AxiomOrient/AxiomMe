@@ -1,31 +1,9 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::{ContextHit, TracePoint};
 
 use super::planner::PlannedQuery;
-
-pub(super) fn split_hits(
-    hits: &[ContextHit],
-) -> (Vec<ContextHit>, Vec<ContextHit>, Vec<ContextHit>) {
-    let mut memories = Vec::new();
-    let mut resources = Vec::new();
-    let mut skills = Vec::new();
-
-    for hit in hits {
-        if hit.uri.starts_with("axiom://user/memories")
-            || hit.uri.starts_with("axiom://agent/memories")
-        {
-            memories.push(hit.clone());
-        } else if hit.uri.starts_with("axiom://agent/skills") {
-            skills.push(hit.clone());
-        } else {
-            resources.push(hit.clone());
-        }
-    }
-
-    (memories, resources, skills)
-}
 
 pub(super) fn make_hit(record: &crate::models::IndexRecord, score: f32) -> ContextHit {
     ContextHit {
@@ -38,24 +16,42 @@ pub(super) fn make_hit(record: &crate::models::IndexRecord, score: f32) -> Conte
 }
 
 pub(super) fn tokenize_keywords(query: &str) -> Vec<String> {
-    query
+    let mut out = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+    for token in query
         .to_lowercase()
         .split(|c: char| !c.is_alphanumeric())
         .filter(|x| !x.is_empty())
-        .map(ToString::to_string)
-        .collect()
+    {
+        let token = token.to_string();
+        if seen.insert(token.clone()) {
+            out.push(token);
+        }
+    }
+    out
 }
 
 pub(super) fn merge_hits(acc: &mut HashMap<String, ContextHit>, hits: Vec<ContextHit>) {
     for hit in hits {
-        acc.entry(hit.uri.clone())
-            .and_modify(|existing| {
-                if hit.score > existing.score {
-                    *existing = hit.clone();
-                }
-            })
-            .or_insert(hit);
+        if let Some(existing) = acc.get_mut(&hit.uri) {
+            if hit.score > existing.score {
+                *existing = hit;
+            }
+            continue;
+        }
+        acc.insert(hit.uri.clone(), hit);
     }
+}
+
+fn compare_hit_score_desc_then_uri_asc(a: &ContextHit, b: &ContextHit) -> Ordering {
+    b.score
+        .partial_cmp(&a.score)
+        .unwrap_or(Ordering::Equal)
+        .then_with(|| a.uri.cmp(&b.uri))
+}
+
+pub(super) fn sort_hits_by_score_desc_uri_asc(hits: &mut [ContextHit]) {
+    hits.sort_by(compare_hit_score_desc_then_uri_asc);
 }
 
 pub(super) const fn fanout_priority_weight(priority: u8) -> f32 {
@@ -78,13 +74,13 @@ pub(super) fn scale_hit_scores(hits: &mut [ContextHit], weight: f32) {
 
 pub(super) fn merge_trace_points(acc: &mut HashMap<String, f32>, points: &[TracePoint]) {
     for point in points {
-        acc.entry(point.uri.clone())
-            .and_modify(|score| {
-                if point.score > *score {
-                    *score = point.score;
-                }
-            })
-            .or_insert(point.score);
+        if let Some(score) = acc.get_mut(&point.uri) {
+            if point.score > *score {
+                *score = point.score;
+            }
+            continue;
+        }
+        acc.insert(point.uri.clone(), point.score);
     }
 }
 
@@ -114,20 +110,24 @@ pub(super) fn sorted_trace_points(points: HashMap<String, f32>) -> Vec<TracePoin
 pub(super) fn typed_query_plans(
     planned_queries: &[PlannedQuery],
 ) -> Vec<crate::models::TypedQueryPlan> {
-    planned_queries
-        .iter()
-        .map(|x| crate::models::TypedQueryPlan {
+    let mut out = Vec::with_capacity(planned_queries.len());
+    for x in planned_queries {
+        out.push(crate::models::TypedQueryPlan {
             kind: x.kind.clone(),
             query: x.query.clone(),
             scopes: x.scopes.iter().map(|s| s.as_str().to_string()).collect(),
             priority: x.priority,
-        })
-        .collect()
+        });
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{fanout_priority_weight, merge_hits, scale_hit_scores, scale_trace_point_scores};
+    use super::{
+        fanout_priority_weight, merge_hits, scale_hit_scores, scale_trace_point_scores,
+        sort_hits_by_score_desc_uri_asc, tokenize_keywords,
+    };
     use crate::models::{ContextHit, TracePoint};
     use std::collections::HashMap;
 
@@ -183,5 +183,30 @@ mod tests {
         }];
         scale_trace_point_scores(&mut points, fanout_priority_weight(3));
         assert!((points[0].score - 0.32).abs() < 0.0001);
+    }
+
+    #[test]
+    fn hit_sort_is_deterministic_for_equal_scores_via_uri_tiebreak() {
+        let mut hits = vec![
+            hit("axiom://resources/z.md", 0.70),
+            hit("axiom://resources/a.md", 0.70),
+            hit("axiom://resources/m.md", 0.90),
+        ];
+        sort_hits_by_score_desc_uri_asc(&mut hits);
+        let uris = hits.iter().map(|x| x.uri.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            uris,
+            vec![
+                "axiom://resources/m.md",
+                "axiom://resources/a.md",
+                "axiom://resources/z.md"
+            ]
+        );
+    }
+
+    #[test]
+    fn tokenize_keywords_normalizes_and_deduplicates_in_order() {
+        let tokens = tokenize_keywords("OAuth oauth, token TOKEN refresh");
+        assert_eq!(tokens, vec!["oauth", "token", "refresh"]);
     }
 }

@@ -8,9 +8,10 @@ use chrono::{DateTime, Utc};
 
 use crate::context_ops::default_resource_target;
 use crate::error::{AxiomError, Result};
-use crate::ingest::{IngestManager, IngestSession};
+use crate::ingest::{IngestFinalizeMode, IngestManager, IngestSession};
 use crate::models::{
-    AddResourceIngestOptions, AddResourceResult, GlobResult, QueueCounts, QueueStatus,
+    AddResourceIngestOptions, AddResourceRequest, AddResourceResult, GlobResult, QueueCounts,
+    QueueStatus,
 };
 use crate::pack;
 use crate::uri::{AxiomUri, Scope};
@@ -36,17 +37,20 @@ impl AxiomMe {
             .map_or_else(|| default_resource_target(path_or_url), Ok)?;
         let ingest_manager = IngestManager::new(self.fs.clone(), self.parser_registry.clone());
         let mut ingest = ingest_manager.start_session()?;
-        if let Err(err) =
-            stage_add_resource_source(path_or_url, timeout_secs, &mut ingest, ingest_options)
-        {
-            ingest.abort();
-            return Err(err);
-        }
+        let finalize_mode =
+            match stage_add_resource_source(path_or_url, timeout_secs, &mut ingest, ingest_options)
+            {
+                Ok(mode) => mode,
+                Err(err) => {
+                    ingest.abort();
+                    return Err(err);
+                }
+            };
         if let Err(err) = ingest.write_manifest(path_or_url) {
             ingest.abort();
             return Err(err);
         }
-        if let Err(err) = ingest.finalize_to(&target_uri) {
+        if let Err(err) = ingest.finalize_to(&target_uri, finalize_mode) {
             ingest.abort();
             return Err(err);
         }
@@ -79,37 +83,36 @@ impl AxiomMe {
         wait: bool,
         timeout_secs: Option<u64>,
     ) -> Result<AddResourceResult> {
-        self.add_resource_with_ingest_options(
-            path_or_url,
-            target,
-            _reason,
-            _instruction,
-            wait,
-            timeout_secs,
-            AddResourceIngestOptions::default(),
-        )
+        let mut request = AddResourceRequest::new(path_or_url.to_string());
+        request.target = target.map(ToString::to_string);
+        request.wait = wait;
+        request.timeout_secs = timeout_secs;
+        request.ingest_options = AddResourceIngestOptions::default();
+        self.add_resource_with_ingest_options(request)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "public API keeps explicit call fields while exposing ingest controls"
-    )]
     pub fn add_resource_with_ingest_options(
         &self,
-        path_or_url: &str,
-        target: Option<&str>,
-        _reason: Option<&str>,
-        _instruction: Option<&str>,
-        wait: bool,
-        timeout_secs: Option<u64>,
-        ingest_options: AddResourceIngestOptions,
+        request: AddResourceRequest,
     ) -> Result<AddResourceResult> {
+        let AddResourceRequest {
+            source,
+            target,
+            wait,
+            timeout_secs,
+            ingest_options,
+        } = request;
         let request_id = uuid::Uuid::new_v4().to_string();
         let started = Instant::now();
-        let source = path_or_url.to_string();
-        let target_raw = target.map(ToString::to_string);
-        let output =
-            self.add_resource_core(path_or_url, target, wait, timeout_secs, &ingest_options);
+        let target_raw = target.clone();
+        let target_ref = target.as_deref();
+        let output = self.add_resource_core(
+            source.as_str(),
+            target_ref,
+            wait,
+            timeout_secs,
+            &ingest_options,
+        );
         let ingest_options_json = serde_json::to_value(&ingest_options).unwrap_or_else(|_| {
             serde_json::json!({
                 "markdown_only": ingest_options.markdown_only,
@@ -426,16 +429,7 @@ impl AxiomMe {
                 .index
                 .write()
                 .map_err(|_| AxiomError::lock_poisoned("index"))?;
-            let doomed = index
-                .all_records()
-                .into_iter()
-                .map(|record| record.uri)
-                .filter(|uri| {
-                    AxiomUri::parse(uri)
-                        .map(|parsed| parsed.starts_with(prefix))
-                        .unwrap_or(false)
-                })
-                .collect::<Vec<_>>();
+            let doomed = index.uris_with_prefix(prefix);
             for uri in &doomed {
                 index.remove(uri);
             }
@@ -450,7 +444,7 @@ fn stage_add_resource_source(
     timeout_secs: Option<u64>,
     ingest: &mut IngestSession,
     ingest_options: &AddResourceIngestOptions,
-) -> Result<()> {
+) -> Result<IngestFinalizeMode> {
     if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
         let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(30).max(1));
         let client = reqwest::blocking::Client::builder()
@@ -471,14 +465,20 @@ fn stage_add_resource_source(
             )));
         }
         let text = read_remote_text_limited(resp, MAX_REMOTE_TEXT_BYTES)?;
-        return ingest.stage_text("source.txt", &text);
+        ingest.stage_text("source.txt", &text)?;
+        return Ok(IngestFinalizeMode::MergeIntoTarget);
     }
 
     let src = Path::new(path_or_url);
     if !src.exists() {
         return Err(AxiomError::NotFound(path_or_url.to_string()));
     }
-    ingest.stage_local_path_with_options(src, ingest_options)
+    ingest.stage_local_path_with_options(src, ingest_options)?;
+    if src.is_dir() {
+        Ok(IngestFinalizeMode::ReplaceTarget)
+    } else {
+        Ok(IngestFinalizeMode::MergeIntoTarget)
+    }
 }
 
 fn read_remote_text_limited<R: Read>(mut reader: R, max_bytes: usize) -> Result<String> {
@@ -538,6 +538,7 @@ mod tests {
     use super::*;
     use crate::client::AxiomMe;
     use crate::models::AddResourceIngestOptions;
+    use crate::uri::AxiomUri;
 
     #[test]
     fn read_remote_text_limited_rejects_payload_over_limit() {
@@ -658,16 +659,13 @@ mod tests {
         fs::write(source.join(".obsidian").join("drop.md"), "# drop hidden")
             .expect("write hidden drop");
 
-        app.add_resource_with_ingest_options(
-            source.to_str().expect("source path"),
-            Some("axiom://resources/filtered"),
-            None,
-            None,
-            true,
-            None,
-            AddResourceIngestOptions::markdown_only_defaults(),
-        )
-        .expect("add filtered");
+        let mut request =
+            AddResourceRequest::new(source.to_str().expect("source path").to_string());
+        request.target = Some("axiom://resources/filtered".to_string());
+        request.wait = true;
+        request.ingest_options = AddResourceIngestOptions::markdown_only_defaults();
+        app.add_resource_with_ingest_options(request)
+            .expect("add filtered");
 
         let uris = app
             .state
@@ -694,5 +692,46 @@ mod tests {
                 .iter()
                 .any(|uri| uri == "axiom://resources/filtered/.obsidian/drop.md")
         );
+    }
+
+    #[test]
+    fn add_resource_file_keeps_existing_target_files() {
+        let temp = tempdir().expect("tempdir");
+        let app = AxiomMe::new(temp.path()).expect("app");
+        app.initialize().expect("init");
+
+        let source_dir = temp.path().join("source");
+        fs::create_dir_all(&source_dir).expect("mkdir source");
+        let first = source_dir.join("first.md");
+        let second = source_dir.join("second.md");
+        fs::write(&first, "# first").expect("write first");
+        fs::write(&second, "# second").expect("write second");
+
+        app.add_resource(
+            first.to_str().expect("first path"),
+            Some("axiom://resources/append"),
+            None,
+            None,
+            false,
+            None,
+        )
+        .expect("add first");
+        app.add_resource(
+            second.to_str().expect("second path"),
+            Some("axiom://resources/append"),
+            None,
+            None,
+            false,
+            None,
+        )
+        .expect("add second");
+
+        let first_uri = AxiomUri::parse("axiom://resources/append/first.md").expect("first uri");
+        let second_uri = AxiomUri::parse("axiom://resources/append/second.md").expect("second uri");
+        assert!(
+            app.fs.exists(&first_uri),
+            "first file must remain after second add"
+        );
+        assert!(app.fs.exists(&second_uri), "second file must be present");
     }
 }

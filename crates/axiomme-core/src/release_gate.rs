@@ -16,11 +16,12 @@ use crate::host_tools::{HostCommandResult, HostCommandSpec, run_host_command};
 use crate::models::{
     BenchmarkGateDetails, BenchmarkGateResult, BlockerRollupGateDetails, BuildQualityGateDetails,
     CommandProbeResult, ContractIntegrityGateDetails, EpisodicSemverPolicy,
-    EpisodicSemverProbeResult, EvalLoopReport, EvalQualityGateDetails, OperabilityEvidenceReport,
-    OperabilityGateDetails, ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId,
-    ReleaseGatePackReport, ReleaseGateStatus, ReleaseSecurityAuditMode, ReliabilityEvidenceReport,
-    ReliabilityGateDetails, SecurityAuditGateDetails, SecurityAuditReport,
-    SessionMemoryGateDetails,
+    EpisodicSemverProbeResult, EvalLoopReport, EvalQualityGateDetails, OntologyContractPolicy,
+    OntologyContractProbeResult, OntologyInvariantCheckSummary, OntologySchemaCardinality,
+    OntologySchemaVersionProbe, OperabilityEvidenceReport, OperabilityGateDetails,
+    ReleaseGateDecision, ReleaseGateDetails, ReleaseGateId, ReleaseGatePackReport,
+    ReleaseGateStatus, ReleaseSecurityAuditMode, ReliabilityEvidenceReport, ReliabilityGateDetails,
+    SecurityAuditGateDetails, SecurityAuditReport, SessionMemoryGateDetails,
 };
 use crate::text::{OutputTrimMode, first_non_empty_output, truncate_text};
 use crate::uri::{AxiomUri, Scope};
@@ -30,6 +31,8 @@ const CONTRACT_EXECUTION_TEST_NAME: &str =
     "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms";
 const EPISODIC_API_PROBE_TEST_NAME: &str =
     "client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract";
+const ONTOLOGY_CONTRACT_PROBE_TEST_NAME: &str =
+    "ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable";
 const EPISODIC_DEPENDENCY_NAME: &str = "episodic";
 const EPISODIC_REQUIRED_MAJOR: u64 = 0;
 const EPISODIC_REQUIRED_MINOR: u64 = 1;
@@ -90,6 +93,31 @@ impl EpisodicSemverProbeResult {
     }
 }
 
+impl OntologyContractProbeResult {
+    fn from_error(error: String, command_probe: CommandProbeResult, schema_uri: String) -> Self {
+        Self {
+            passed: false,
+            error: Some(error),
+            command_probe,
+            schema: OntologySchemaVersionProbe {
+                schema_uri,
+                schema_version: None,
+                schema_version_ok: false,
+            },
+            cardinality: OntologySchemaCardinality {
+                object_type_count: 0,
+                link_type_count: 0,
+                action_type_count: 0,
+                invariant_count: 0,
+            },
+            invariant_checks: OntologyInvariantCheckSummary {
+                passed: 0,
+                failed: 0,
+            },
+        }
+    }
+}
+
 pub fn release_gate_pack_report_uri(pack_id: &str) -> Result<AxiomUri> {
     AxiomUri::root(Scope::Queue)
         .join("release")?
@@ -120,8 +148,8 @@ pub fn reliability_evidence_gate_decision(
         report.passed,
         ReleaseGateDetails::ReliabilityEvidence(ReliabilityGateDetails {
             status: report.status,
-            replay_done: report.replay_totals.done,
-            dead_letter: report.final_dead_letter,
+            replay_done: report.replay_progress.replay_totals.done,
+            dead_letter: report.queue_delta.final_dead_letter,
         }),
         Some(report.report_uri.clone()),
     )
@@ -130,22 +158,22 @@ pub fn reliability_evidence_gate_decision(
 pub fn eval_quality_gate_decision(report: &EvalLoopReport) -> ReleaseGateDecision {
     let filter_ignored = eval_bucket_count(report, "filter_ignored");
     let relation_missing = eval_bucket_count(report, "relation_missing");
-    let passed = report.executed_cases > 0
-        && report.top1_accuracy >= RELEASE_EVAL_MIN_TOP1_ACCURACY
+    let passed = report.coverage.executed_cases > 0
+        && report.quality.top1_accuracy >= RELEASE_EVAL_MIN_TOP1_ACCURACY
         && filter_ignored == 0
         && relation_missing == 0;
     gate_decision(
         ReleaseGateId::EvalQuality,
         passed,
         ReleaseGateDetails::EvalQuality(EvalQualityGateDetails {
-            executed_cases: report.executed_cases,
-            top1_accuracy: report.top1_accuracy,
+            executed_cases: report.coverage.executed_cases,
+            top1_accuracy: report.quality.top1_accuracy,
             min_top1_accuracy: RELEASE_EVAL_MIN_TOP1_ACCURACY,
-            failed: report.failed,
+            failed: report.quality.failed,
             filter_ignored,
             relation_missing,
         }),
-        Some(report.report_uri.clone()),
+        Some(report.artifacts.report_uri.clone()),
     )
 }
 
@@ -187,17 +215,18 @@ pub fn security_audit_gate_decision(report: &SecurityAuditReport) -> ReleaseGate
 
 pub fn benchmark_release_gate_decision(report: &BenchmarkGateResult) -> ReleaseGateDecision {
     let evidence_uri = report
+        .artifacts
         .release_check_uri
         .clone()
-        .or_else(|| report.gate_record_uri.clone());
+        .or_else(|| report.artifacts.gate_record_uri.clone());
     gate_decision(
         ReleaseGateId::Benchmark,
         report.passed,
         ReleaseGateDetails::Benchmark(BenchmarkGateDetails {
             passed: report.passed,
-            evaluated_runs: report.evaluated_runs,
-            passing_runs: report.passing_runs,
-            reasons: report.reasons.clone(),
+            evaluated_runs: report.execution.evaluated_runs,
+            passing_runs: report.execution.passing_runs,
+            reasons: report.execution.reasons.clone(),
         }),
         evidence_uri,
     )
@@ -211,8 +240,8 @@ pub fn operability_evidence_gate_decision(
         report.passed,
         ReleaseGateDetails::OperabilityEvidence(OperabilityGateDetails {
             status: report.status,
-            traces_analyzed: report.traces_analyzed,
-            request_logs_scanned: report.request_logs_scanned,
+            traces_analyzed: report.coverage.traces_analyzed,
+            request_logs_scanned: report.coverage.request_logs_scanned,
         }),
         Some(report.report_uri.clone()),
     )
@@ -284,13 +313,20 @@ pub fn evaluate_contract_integrity_gate(workspace_dir: &Path) -> ReleaseGateDeci
     let contract_probe = run_contract_execution_probe(workspace_dir);
     let episodic_semver_probe = run_episodic_semver_probe(workspace_dir);
     let episodic_api_probe = run_episodic_api_probe(workspace_dir);
-    let passed = contract_probe.passed && episodic_semver_probe.passed && episodic_api_probe.passed;
-    let details = ReleaseGateDetails::ContractIntegrity(ContractIntegrityGateDetails {
+    let ontology_policy = ontology_contract_policy();
+    let ontology_probe = run_ontology_contract_probe(workspace_dir, &ontology_policy);
+    let passed = contract_probe.passed
+        && episodic_semver_probe.passed
+        && episodic_api_probe.passed
+        && ontology_probe.passed;
+    let details = ReleaseGateDetails::ContractIntegrity(Box::new(ContractIntegrityGateDetails {
         policy: episodic_semver_policy(),
         contract_probe,
         episodic_api_probe,
         episodic_semver_probe,
-    });
+        ontology_policy: Some(ontology_policy),
+        ontology_probe: Some(ontology_probe),
+    }));
     gate_decision(ReleaseGateId::ContractIntegrity, passed, details, None)
 }
 
@@ -303,6 +339,14 @@ fn episodic_semver_policy() -> EpisodicSemverPolicy {
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
+    }
+}
+
+fn ontology_contract_policy() -> OntologyContractPolicy {
+    OntologyContractPolicy {
+        schema_uri: crate::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string(),
+        required_schema_version: 1,
+        probe_test_name: ONTOLOGY_CONTRACT_PROBE_TEST_NAME.to_string(),
     }
 }
 
@@ -421,6 +465,7 @@ pub fn with_workspace_command_mocks<T>(
 
 fn eval_bucket_count(report: &EvalLoopReport, name: &str) -> usize {
     report
+        .quality
         .buckets
         .iter()
         .find(|bucket| bucket.name == name)
@@ -468,6 +513,112 @@ fn run_episodic_api_probe(workspace_dir: &Path) -> CommandProbeResult {
         ],
     );
     CommandProbeResult::from_test_run(EPISODIC_API_PROBE_TEST_NAME, ok, output)
+}
+
+fn run_ontology_contract_probe(
+    workspace_dir: &Path,
+    policy: &OntologyContractPolicy,
+) -> OntologyContractProbeResult {
+    let schema_uri = policy.schema_uri.clone();
+    let probe = run_workspace_command(
+        workspace_dir,
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "axiomme-core",
+            ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+            "--",
+            "--exact",
+        ],
+    );
+    let command_probe =
+        CommandProbeResult::from_test_run(ONTOLOGY_CONTRACT_PROBE_TEST_NAME, probe.0, probe.1);
+
+    let parsed = match load_bootstrapped_ontology_schema(policy.schema_uri.as_str()) {
+        Ok(value) => value,
+        Err(error) => {
+            return OntologyContractProbeResult::from_error(error, command_probe, schema_uri);
+        }
+    };
+    let schema_version = parsed.version;
+    let schema_version_ok = schema_version == policy.required_schema_version;
+    if !schema_version_ok {
+        return OntologyContractProbeResult::from_error(
+            format!(
+                "ontology_schema_version_mismatch: expected={} got={}",
+                policy.required_schema_version, schema_version
+            ),
+            command_probe,
+            schema_uri,
+        );
+    }
+
+    let object_type_count = parsed.object_types.len();
+    let link_type_count = parsed.link_types.len();
+    let action_type_count = parsed.action_types.len();
+    let invariant_count = parsed.invariants.len();
+
+    let compiled = match crate::ontology::compile_schema(parsed) {
+        Ok(value) => value,
+        Err(err) => {
+            return OntologyContractProbeResult::from_error(
+                format!("ontology_schema_compile_failed: {err}"),
+                command_probe,
+                schema_uri,
+            );
+        }
+    };
+    let invariant_report = crate::ontology::evaluate_invariants(&compiled);
+    let invariants_ok = invariant_report.failed == 0;
+    let error = if invariants_ok {
+        None
+    } else {
+        Some(format!(
+            "ontology_invariant_check_failed: failed={} passed={}",
+            invariant_report.failed, invariant_report.passed
+        ))
+    };
+
+    let passed = command_probe.passed && schema_version_ok && invariants_ok;
+    OntologyContractProbeResult {
+        passed,
+        error,
+        command_probe,
+        schema: OntologySchemaVersionProbe {
+            schema_uri,
+            schema_version: Some(schema_version),
+            schema_version_ok,
+        },
+        cardinality: OntologySchemaCardinality {
+            object_type_count,
+            link_type_count,
+            action_type_count,
+            invariant_count,
+        },
+        invariant_checks: OntologyInvariantCheckSummary {
+            passed: invariant_report.passed,
+            failed: invariant_report.failed,
+        },
+    }
+}
+
+fn load_bootstrapped_ontology_schema(
+    schema_uri: &str,
+) -> std::result::Result<crate::ontology::OntologySchemaV1, String> {
+    let probe_root = std::env::temp_dir().join(format!(
+        "axiomme-ontology-contract-probe-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let app = crate::AxiomMe::new(&probe_root)
+        .map_err(|err| format!("ontology_probe_app_new_failed: {err}"))?;
+    let loaded = (|| -> Result<crate::ontology::OntologySchemaV1> {
+        app.bootstrap()?;
+        let raw = app.read(schema_uri)?;
+        crate::ontology::parse_schema_v1(&raw)
+    })();
+    let _ = fs::remove_dir_all(&probe_root);
+    loaded.map_err(|err| format!("ontology_probe_schema_load_failed: {err}"))
 }
 
 fn run_episodic_semver_probe(workspace_dir: &Path) -> EpisodicSemverProbeResult {
@@ -642,31 +793,40 @@ mod tests {
 
     use super::*;
     use crate::models::{
-        BenchmarkGateRunResult, BenchmarkSummary, DependencyAuditSummary,
-        DependencyInventorySummary, EvalBucket, EvalCaseResult,
+        BenchmarkGateArtifacts, BenchmarkGateExecution, BenchmarkGateQuorum,
+        BenchmarkGateRunResult, BenchmarkGateSnapshot, BenchmarkGateThresholds, BenchmarkSummary,
+        DependencyAuditSummary, DependencyInventorySummary, EvalBucket, EvalCaseResult,
     };
 
     fn eval_report(executed_cases: usize, top1_accuracy: f32) -> EvalLoopReport {
         EvalLoopReport {
             run_id: "run-1".to_string(),
             created_at: "2026-01-01T00:00:00Z".to_string(),
-            trace_limit: 10,
-            query_limit: 10,
-            search_limit: 5,
-            include_golden: true,
-            golden_only: false,
-            traces_scanned: 10,
-            trace_cases_used: 5,
-            golden_cases_used: 5,
-            executed_cases,
-            passed: 0,
-            failed: 0,
-            top1_accuracy,
-            buckets: Vec::<EvalBucket>::new(),
-            report_uri: "axiom://queue/eval/reports/x.json".to_string(),
-            query_set_uri: "axiom://queue/eval/query_sets/x.json".to_string(),
-            markdown_report_uri: "axiom://queue/eval/reports/x.md".to_string(),
-            failures: Vec::<EvalCaseResult>::new(),
+            selection: crate::models::EvalRunSelection {
+                trace_limit: 10,
+                query_limit: 10,
+                search_limit: 5,
+                include_golden: true,
+                golden_only: false,
+            },
+            coverage: crate::models::EvalCoverageSummary {
+                traces_scanned: 10,
+                trace_cases_used: 5,
+                golden_cases_used: 5,
+                executed_cases,
+            },
+            quality: crate::models::EvalQualitySummary {
+                passed: 0,
+                failed: 0,
+                top1_accuracy,
+                buckets: Vec::<EvalBucket>::new(),
+                failures: Vec::<EvalCaseResult>::new(),
+            },
+            artifacts: crate::models::EvalArtifacts {
+                report_uri: "axiom://queue/eval/reports/x.json".to_string(),
+                query_set_uri: "axiom://queue/eval/query_sets/x.json".to_string(),
+                markdown_report_uri: "axiom://queue/eval/reports/x.md".to_string(),
+            },
         }
     }
 
@@ -677,44 +837,54 @@ mod tests {
         BenchmarkGateResult {
             passed: true,
             gate_profile: "rc-release".to_string(),
-            threshold_p95_ms: 1000,
-            min_top1_accuracy: 0.75,
-            min_stress_top1_accuracy: None,
-            max_p95_regression_pct: Some(0.1),
-            max_top1_regression_pct: Some(2.0),
-            window_size: 3,
-            required_passes: 1,
-            evaluated_runs: 1,
-            passing_runs: 1,
-            latest: Some(BenchmarkSummary {
-                run_id: "run".to_string(),
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-                executed_cases: 10,
-                top1_accuracy: 0.9,
-                p95_latency_ms: 700,
-                p95_latency_us: Some(699_420),
-                report_uri: "axiom://queue/benchmarks/reports/run.json".to_string(),
-            }),
-            previous: None,
-            regression_pct: None,
-            top1_regression_pct: None,
-            stress_top1_accuracy: None,
-            run_results: vec![BenchmarkGateRunResult {
-                run_id: "run".to_string(),
-                passed: true,
-                p95_latency_ms: 700,
-                p95_latency_us: Some(699_420),
-                top1_accuracy: 0.9,
-                stress_top1_accuracy: None,
+            thresholds: BenchmarkGateThresholds {
+                threshold_p95_ms: 1000,
+                min_top1_accuracy: 0.75,
+                min_stress_top1_accuracy: None,
+                max_p95_regression_pct: Some(0.1),
+                max_top1_regression_pct: Some(2.0),
+            },
+            quorum: BenchmarkGateQuorum {
+                window_size: 3,
+                required_passes: 1,
+            },
+            snapshot: BenchmarkGateSnapshot {
+                latest: Some(BenchmarkSummary {
+                    run_id: "run".to_string(),
+                    created_at: "2026-01-01T00:00:00Z".to_string(),
+                    executed_cases: 10,
+                    top1_accuracy: 0.9,
+                    p95_latency_ms: 700,
+                    p95_latency_us: Some(699_420),
+                    report_uri: "axiom://queue/benchmarks/reports/run.json".to_string(),
+                }),
+                previous: None,
                 regression_pct: None,
                 top1_regression_pct: None,
+                stress_top1_accuracy: None,
+            },
+            execution: BenchmarkGateExecution {
+                evaluated_runs: 1,
+                passing_runs: 1,
+                run_results: vec![BenchmarkGateRunResult {
+                    run_id: "run".to_string(),
+                    passed: true,
+                    p95_latency_ms: 700,
+                    p95_latency_us: Some(699_420),
+                    top1_accuracy: 0.9,
+                    stress_top1_accuracy: None,
+                    regression_pct: None,
+                    top1_regression_pct: None,
+                    reasons: vec!["ok".to_string()],
+                }],
                 reasons: vec!["ok".to_string()],
-            }],
-            gate_record_uri: gate_record_uri.map(ToString::to_string),
-            release_check_uri: release_check_uri.map(ToString::to_string),
-            embedding_provider: Some("semantic-model-http".to_string()),
-            embedding_strict_error: None,
-            reasons: vec!["ok".to_string()],
+            },
+            artifacts: BenchmarkGateArtifacts {
+                gate_record_uri: gate_record_uri.map(ToString::to_string),
+                release_check_uri: release_check_uri.map(ToString::to_string),
+                embedding_provider: Some("semantic-model-http".to_string()),
+                embedding_strict_error: None,
+            },
         }
     }
 
@@ -733,7 +903,7 @@ mod tests {
     #[test]
     fn eval_quality_gate_decision_fails_when_filter_or_relation_buckets_exist() {
         let mut report = eval_report(10, 0.9);
-        report.buckets = vec![
+        report.quality.buckets = vec![
             EvalBucket {
                 name: "filter_ignored".to_string(),
                 count: 1,
@@ -1099,6 +1269,8 @@ path = "../../../episodic"
         let output = format!("running 1 test\ntest {CONTRACT_EXECUTION_TEST_NAME} ... ok\n");
         let episodic_output =
             format!("running 1 test\ntest {EPISODIC_API_PROBE_TEST_NAME} ... ok\n");
+        let ontology_output =
+            format!("running 1 test\ntest {ONTOLOGY_CONTRACT_PROBE_TEST_NAME} ... ok\n");
         let decision = with_workspace_command_mocks(
             &[
                 (
@@ -1127,6 +1299,19 @@ path = "../../../episodic"
                     true,
                     &episodic_output,
                 ),
+                (
+                    "cargo",
+                    &[
+                        "test",
+                        "-p",
+                        "axiomme-core",
+                        ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                        "--",
+                        "--exact",
+                    ],
+                    true,
+                    &ontology_output,
+                ),
             ],
             || evaluate_contract_integrity_gate(temp.path()),
         );
@@ -1141,6 +1326,18 @@ path = "../../../episodic"
                 );
                 assert!(value.episodic_semver_probe.passed);
                 assert_eq!(value.policy.required_minor, EPISODIC_REQUIRED_MINOR);
+                assert!(
+                    value
+                        .ontology_policy
+                        .as_ref()
+                        .is_some_and(|policy| policy.required_schema_version == 1)
+                );
+                assert!(
+                    value
+                        .ontology_probe
+                        .as_ref()
+                        .is_some_and(|probe| probe.passed)
+                );
             }
             other => panic!("expected contract_integrity details, got {other:?}"),
         }
@@ -1182,6 +1379,19 @@ path = "../../../episodic"
                     ],
                     true,
                     "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+                ),
+                (
+                    "cargo",
+                    &[
+                        "test",
+                        "-p",
+                        "axiomme-core",
+                        ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                        "--",
+                        "--exact",
+                    ],
+                    true,
+                    "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
                 ),
             ],
             || evaluate_contract_integrity_gate(temp.path()),
@@ -1232,6 +1442,19 @@ path = "../../../episodic"
                     ],
                     true,
                     "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+                ),
+                (
+                    "cargo",
+                    &[
+                        "test",
+                        "-p",
+                        "axiomme-core",
+                        ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                        "--",
+                        "--exact",
+                    ],
+                    true,
+                    "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
                 ),
             ],
             || evaluate_contract_integrity_gate(temp.path()),

@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::fs;
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -10,6 +10,8 @@ use crate::error::Result;
 use crate::uri::AxiomUri;
 
 pub(super) const MAX_INDEX_READ_BYTES: usize = 512 * 1024;
+pub(super) const MAX_TRUNCATED_MARKDOWN_TAIL_HEADING_KEYS: usize = 64;
+const MAX_MARKDOWN_HEADING_CHARS: usize = 160;
 
 #[derive(Debug, Clone)]
 pub(super) struct TierEntry {
@@ -57,6 +59,76 @@ pub(super) fn should_skip_indexing_file(name: &str) -> bool {
         name,
         ".abstract.md" | ".overview.md" | ".meta.json" | ".relations.json" | "messages.jsonl"
     )
+}
+
+pub(super) fn is_markdown_file(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown")
+}
+
+fn markdown_heading_text(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if !trimmed.starts_with('#') {
+        return None;
+    }
+    let heading = trimmed.trim_start_matches('#').trim();
+    if heading.is_empty() {
+        return None;
+    }
+    Some(heading.to_string())
+}
+
+fn is_fence_delimiter_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
+fn clip_string_to_char_limit(input: &str, char_limit: usize) -> String {
+    if input.chars().count() <= char_limit {
+        return input.to_string();
+    }
+    input.chars().take(char_limit).collect()
+}
+
+pub(super) fn collect_markdown_tail_heading_keys(path: &Path, limit: usize) -> Result<Vec<String>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let file = fs::File::open(path)?;
+    let reader = BufReader::new(file);
+    let mut tail = VecDeque::<String>::with_capacity(limit);
+    let mut seen = HashSet::<String>::new();
+    let mut in_fence_block = false;
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim_start();
+        if is_fence_delimiter_line(trimmed) {
+            in_fence_block = !in_fence_block;
+            continue;
+        }
+        if in_fence_block {
+            continue;
+        }
+
+        let Some(heading) = markdown_heading_text(trimmed) else {
+            continue;
+        };
+
+        let clipped = clip_string_to_char_limit(&heading, MAX_MARKDOWN_HEADING_CHARS);
+        let canonical = clipped.to_lowercase();
+        if canonical.is_empty() || !seen.insert(canonical) {
+            continue;
+        }
+
+        tail.push_back(clipped);
+        if tail.len() > limit {
+            tail.pop_front();
+        }
+    }
+
+    Ok(tail.into_iter().collect())
 }
 
 pub(super) fn index_state_changed(current: Option<&(String, i64)>, hash: &str, mtime: i64) -> bool {

@@ -2,11 +2,13 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock, Weak};
+use std::time::SystemTime;
 
 use crate::config::AppConfig;
 use crate::error::{AxiomError, Result};
 use crate::fs::LocalContextFs;
 use crate::index::InMemoryIndex;
+use crate::ontology::CompiledOntologySchema;
 use crate::parse::ParserRegistry;
 use crate::retrieval::{DrrConfig, DrrEngine};
 use crate::state::SqliteStateStore;
@@ -32,6 +34,18 @@ pub use benchmark::BenchmarkFixtureCreateOptions;
 type DocumentEditGate = Arc<RwLock<()>>;
 type WeakDocumentEditGate = Weak<RwLock<()>>;
 const MARKDOWN_EDIT_GATE_SWEEP_THRESHOLD: usize = 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OntologySchemaFingerprint {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+#[derive(Debug, Clone)]
+struct OntologySchemaCacheEntry {
+    fingerprint: OntologySchemaFingerprint,
+    compiled: Arc<CompiledOntologySchema>,
+}
 
 #[derive(Debug, Default)]
 struct MarkdownEditGates {
@@ -74,6 +88,7 @@ pub struct AxiomMe {
     pub index: Arc<RwLock<InMemoryIndex>>,
     config: Arc<AppConfig>,
     markdown_edit_gates: Arc<MarkdownEditGates>,
+    ontology_schema_cache: Arc<RwLock<Option<OntologySchemaCacheEntry>>>,
     parser_registry: ParserRegistry,
     drr: DrrEngine,
 }
@@ -100,6 +115,7 @@ impl AxiomMe {
             index,
             config,
             markdown_edit_gates: Arc::new(MarkdownEditGates::default()),
+            ontology_schema_cache: Arc::new(RwLock::new(None)),
             parser_registry: ParserRegistry::new(),
             drr: DrrEngine::new(DrrConfig::default()),
         })
@@ -107,6 +123,7 @@ impl AxiomMe {
 
     pub fn bootstrap(&self) -> Result<()> {
         self.fs.initialize()?;
+        self.ensure_default_ontology_schema()?;
         Ok(())
     }
 
@@ -123,6 +140,21 @@ impl AxiomMe {
 
     fn markdown_gate_for_uri(&self, uri: &AxiomUri) -> Result<DocumentEditGate> {
         self.markdown_edit_gates.gate_for(uri)
+    }
+
+    fn ensure_default_ontology_schema(&self) -> Result<()> {
+        let schema_uri =
+            AxiomUri::parse(crate::ontology::ONTOLOGY_SCHEMA_URI_V1).map_err(|err| {
+                AxiomError::Internal(format!("invalid ontology schema URI constant: {err}"))
+            })?;
+        if self.fs.exists(&schema_uri) {
+            return Ok(());
+        }
+        self.fs.write(
+            &schema_uri,
+            crate::ontology::DEFAULT_ONTOLOGY_SCHEMA_V1_JSON,
+            true,
+        )
     }
 }
 #[cfg(test)]
