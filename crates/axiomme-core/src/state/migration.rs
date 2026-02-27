@@ -1,6 +1,7 @@
 use rusqlite::Connection;
 
 use crate::error::{AxiomError, Result};
+use crate::models::{QueueEventStatus, ReconcileRunStatus};
 
 use super::SqliteStateStore;
 
@@ -22,7 +23,7 @@ const MIGRATION_SCHEMA_SQL: &str = r"
         payload_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         attempt_count INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('new', 'processing', 'done', 'dead_letter')),
         next_attempt_at TEXT NOT NULL,
         lane TEXT NOT NULL
     );
@@ -38,7 +39,7 @@ const MIGRATION_SCHEMA_SQL: &str = r"
         started_at TEXT NOT NULL,
         ended_at TEXT,
         drift_count INTEGER NOT NULL DEFAULT 0,
-        status TEXT NOT NULL
+        status TEXT NOT NULL CHECK(status IN ('running', 'dry_run', 'success', 'failed'))
     );
 
     CREATE TABLE IF NOT EXISTS trace_index (
@@ -243,10 +244,89 @@ impl SqliteStateStore {
             "reflector_trigger_count_total",
             "unsupported om_records schema: reflector_trigger_count_total is missing; reset workspace state database",
         )?;
+        ensure_required_column(
+            &conn,
+            "reconcile_runs",
+            "status",
+            "unsupported reconcile_runs schema: status is missing; reset workspace state database",
+        )?;
+        normalize_status_column(&conn, "outbox", "status")?;
+        validate_status_domain(
+            &conn,
+            "outbox",
+            "status",
+            &outbox_status_domain_values(),
+            "unsupported outbox schema",
+        )?;
+        normalize_status_column(&conn, "reconcile_runs", "status")?;
+        validate_status_domain(
+            &conn,
+            "reconcile_runs",
+            "status",
+            &reconcile_run_status_domain_values(),
+            "unsupported reconcile_runs schema",
+        )?;
         conn.execute("DROP TABLE IF EXISTS search_docs_fts", [])?;
         drop(conn);
         Ok(())
     }
+}
+
+fn outbox_status_domain_values() -> [&'static str; 4] {
+    [
+        QueueEventStatus::New.as_str(),
+        QueueEventStatus::Processing.as_str(),
+        QueueEventStatus::Done.as_str(),
+        QueueEventStatus::DeadLetter.as_str(),
+    ]
+}
+
+fn reconcile_run_status_domain_values() -> [&'static str; 4] {
+    [
+        ReconcileRunStatus::Running.as_str(),
+        ReconcileRunStatus::DryRun.as_str(),
+        ReconcileRunStatus::Success.as_str(),
+        ReconcileRunStatus::Failed.as_str(),
+    ]
+}
+
+fn normalize_status_column(conn: &Connection, table: &str, column: &str) -> Result<()> {
+    conn.execute(
+        &format!(
+            "UPDATE {table} SET {column} = lower(trim({column})) WHERE {column} <> lower(trim({column}))"
+        ),
+        [],
+    )?;
+    Ok(())
+}
+
+fn validate_status_domain(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    allowed: &[&str],
+    error_prefix: &str,
+) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("SELECT DISTINCT {column} FROM {table}"))?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut invalid = Vec::<String>::new();
+    for row in rows {
+        let value = row?.trim().to_ascii_lowercase();
+        if !allowed.contains(&value.as_str()) {
+            invalid.push(value);
+        }
+    }
+
+    if invalid.is_empty() {
+        return Ok(());
+    }
+
+    invalid.sort();
+    invalid.dedup();
+    Err(AxiomError::Validation(format!(
+        "{error_prefix}: invalid status value(s): {}",
+        invalid.join(", ")
+    )))
 }
 
 fn has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {

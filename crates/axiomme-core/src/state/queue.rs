@@ -6,7 +6,7 @@ use std::str::FromStr;
 use crate::error::Result;
 use crate::models::{
     OutboxEvent, QueueCheckpoint, QueueCounts, QueueDeadLetterRate, QueueEventStatus,
-    QueueLaneStatus, QueueStatus,
+    QueueLaneStatus, QueueStatus, ReconcileRunStatus,
 };
 
 use super::SqliteStateStore;
@@ -262,9 +262,13 @@ impl SqliteStateStore {
             conn.execute(
                 r"
                 INSERT OR REPLACE INTO reconcile_runs(run_id, started_at, drift_count, status)
-                VALUES (?1, ?2, 0, 'running')
+                VALUES (?1, ?2, 0, ?3)
                 ",
-                params![run_id, Utc::now().to_rfc3339()],
+                params![
+                    run_id,
+                    Utc::now().to_rfc3339(),
+                    ReconcileRunStatus::Running.as_str()
+                ],
             )?;
             Ok(())
         })
@@ -274,7 +278,7 @@ impl SqliteStateStore {
         &self,
         run_id: &str,
         drift_count: usize,
-        status: &str,
+        status: ReconcileRunStatus,
     ) -> Result<()> {
         self.with_conn(|conn| {
             conn.execute(
@@ -287,7 +291,7 @@ impl SqliteStateStore {
                     run_id,
                     Utc::now().to_rfc3339(),
                     usize_to_i64_saturating(drift_count),
-                    status
+                    status.as_str()
                 ],
             )?;
             Ok(())
@@ -296,6 +300,10 @@ impl SqliteStateStore {
 
     pub fn queue_snapshot(&self) -> Result<(QueueCounts, QueueStatus)> {
         let now = Utc::now().to_rfc3339();
+        let status_new = QueueEventStatus::New.as_str();
+        let status_processing = QueueEventStatus::Processing.as_str();
+        let status_done = QueueEventStatus::Done.as_str();
+        let status_dead_letter = QueueEventStatus::DeadLetter.as_str();
         self.with_conn(|conn| {
             let mut counts = QueueCounts::default();
             let mut semantic = QueueLaneStatus::default();
@@ -316,18 +324,27 @@ impl SqliteStateStore {
                 )
                 SELECT
                     lane_norm,
-                    SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_total,
-                    SUM(CASE WHEN status = 'new' AND due_at <= ?4 THEN 1 ELSE 0 END) AS new_due,
-                    SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing,
-                    SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
-                    SUM(CASE WHEN status = 'dead_letter' THEN 1 ELSE 0 END) AS dead_letter,
-                    MIN(CASE WHEN status = 'new' THEN due_at ELSE NULL END) AS earliest_new_due_at
+                    SUM(CASE WHEN status = ?4 THEN 1 ELSE 0 END) AS new_total,
+                    SUM(CASE WHEN status = ?4 AND due_at <= ?5 THEN 1 ELSE 0 END) AS new_due,
+                    SUM(CASE WHEN status = ?6 THEN 1 ELSE 0 END) AS processing,
+                    SUM(CASE WHEN status = ?7 THEN 1 ELSE 0 END) AS done,
+                    SUM(CASE WHEN status = ?8 THEN 1 ELSE 0 END) AS dead_letter,
+                    MIN(CASE WHEN status = ?4 THEN due_at ELSE NULL END) AS earliest_new_due_at
                 FROM normalized
                 GROUP BY lane_norm
                 ",
             )?;
             let rows = stmt.query_map(
-                params![LANE_SEMANTIC, LANE_EMBEDDING, LANE_SEMANTIC, now],
+                params![
+                    LANE_SEMANTIC,
+                    LANE_EMBEDDING,
+                    LANE_SEMANTIC,
+                    status_new,
+                    now,
+                    status_processing,
+                    status_done,
+                    status_dead_letter
+                ],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -381,19 +398,20 @@ impl SqliteStateStore {
     }
 
     pub fn queue_dead_letter_rates_by_event_type(&self) -> Result<Vec<QueueDeadLetterRate>> {
+        let status_dead_letter = QueueEventStatus::DeadLetter.as_str();
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 r"
                 SELECT
                     event_type,
                     COUNT(*) AS total,
-                    SUM(CASE WHEN status = 'dead_letter' THEN 1 ELSE 0 END) AS dead_letter
+                    SUM(CASE WHEN status = ?1 THEN 1 ELSE 0 END) AS dead_letter
                 FROM outbox
                 GROUP BY event_type
                 ORDER BY event_type ASC
                 ",
             )?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(params![status_dead_letter], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,

@@ -89,16 +89,10 @@ impl InMemoryIndex {
         };
         let parent_uri = record.parent_uri.clone();
         let exact_keys = ExactRecordKeys::from_record(&record);
-        let text = [
-            record.name.as_str(),
-            record.abstract_text.as_str(),
-            record.content.as_str(),
-            &record.tags.join(" "),
-        ]
-        .join(" ");
+        let text = build_upsert_text(&record);
         let text_lower = text.to_lowercase();
         let tokens = crate::embedding::tokenize_vec(&text);
-        let mut term_freq = HashMap::new();
+        let mut term_freq = HashMap::with_capacity(tokens.len());
         for token in tokens {
             *term_freq.entry(token).or_insert(0) += 1;
         }
@@ -453,6 +447,32 @@ impl InMemoryIndex {
 
         Some(allowed_uris)
     }
+}
+
+fn build_upsert_text(record: &IndexRecord) -> String {
+    let tags_len = record.tags.iter().map(String::len).sum::<usize>();
+    let tag_gap_len = record.tags.len().saturating_sub(1);
+    let mut text = String::with_capacity(
+        record.name.len()
+            + record.abstract_text.len()
+            + record.content.len()
+            + tags_len
+            + tag_gap_len
+            + 3,
+    );
+    text.push_str(&record.name);
+    text.push(' ');
+    text.push_str(&record.abstract_text);
+    text.push(' ');
+    text.push_str(&record.content);
+    text.push(' ');
+    for (index, tag) in record.tags.iter().enumerate() {
+        if index > 0 {
+            text.push(' ');
+        }
+        text.push_str(tag);
+    }
+    text
 }
 
 #[derive(Debug)]
@@ -1287,6 +1307,56 @@ mod tests {
 
     use super::*;
     use crate::models::SearchFilter;
+
+    #[test]
+    fn build_upsert_text_matches_legacy_join_shape_with_tags() {
+        let record = IndexRecord {
+            id: "1".to_string(),
+            uri: "axiom://resources/docs/a.md".to_string(),
+            parent_uri: Some("axiom://resources/docs".to_string()),
+            is_leaf: true,
+            context_type: "resource".to_string(),
+            name: "name".to_string(),
+            abstract_text: "abstract".to_string(),
+            content: "content".to_string(),
+            tags: vec!["tag1".to_string(), "tag2".to_string()],
+            updated_at: Utc::now(),
+            depth: 3,
+        };
+        let legacy = [
+            record.name.as_str(),
+            record.abstract_text.as_str(),
+            record.content.as_str(),
+            &record.tags.join(" "),
+        ]
+        .join(" ");
+        assert_eq!(build_upsert_text(&record), legacy);
+    }
+
+    #[test]
+    fn build_upsert_text_matches_legacy_join_shape_without_tags() {
+        let record = IndexRecord {
+            id: "1".to_string(),
+            uri: "axiom://resources/docs/a.md".to_string(),
+            parent_uri: Some("axiom://resources/docs".to_string()),
+            is_leaf: true,
+            context_type: "resource".to_string(),
+            name: "name".to_string(),
+            abstract_text: "abstract".to_string(),
+            content: "content".to_string(),
+            tags: vec![],
+            updated_at: Utc::now(),
+            depth: 3,
+        };
+        let legacy = [
+            record.name.as_str(),
+            record.abstract_text.as_str(),
+            record.content.as_str(),
+            &record.tags.join(" "),
+        ]
+        .join(" ");
+        assert_eq!(build_upsert_text(&record), legacy);
+    }
 
     #[test]
     fn search_prioritizes_matching_doc() {

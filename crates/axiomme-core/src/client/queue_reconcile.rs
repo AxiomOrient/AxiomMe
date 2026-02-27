@@ -1,7 +1,10 @@
 use std::time::Instant;
 
 use crate::error::{AxiomError, Result};
-use crate::models::{OutboxEvent, QueueEventStatus, ReconcileOptions, ReconcileReport, ReplayReport};
+use crate::models::{
+    OutboxEvent, QueueEventStatus, ReconcileOptions, ReconcileReport, ReconcileRunStatus,
+    ReplayReport,
+};
 use crate::queue_policy::{
     default_scope_set, push_drift_sample, retry_backoff_seconds, should_retry_event_error,
 };
@@ -43,16 +46,18 @@ impl AxiomMe {
                     Ok(handled) => {
                         report.processed += 1;
                         if handled {
-                            self.state
-                                .mark_outbox_status(event.id, QueueEventStatus::Done, false)?;
+                            self.state.mark_outbox_status(
+                                event.id,
+                                QueueEventStatus::Done,
+                                false,
+                            )?;
                             report.done += 1;
                         } else {
-                            self.state
-                                .mark_outbox_status(
-                                    event.id,
-                                    QueueEventStatus::DeadLetter,
-                                    false,
-                                )?;
+                            self.state.mark_outbox_status(
+                                event.id,
+                                QueueEventStatus::DeadLetter,
+                                false,
+                            )?;
                             report.dead_letter += 1;
                         }
                         self.state.set_checkpoint("replay", event.id)?;
@@ -65,12 +70,11 @@ impl AxiomMe {
                             )?;
                             report.requeued += 1;
                         } else {
-                            self.state
-                                .mark_outbox_status(
-                                    event.id,
-                                    QueueEventStatus::DeadLetter,
-                                    false,
-                                )?;
+                            self.state.mark_outbox_status(
+                                event.id,
+                                QueueEventStatus::DeadLetter,
+                                false,
+                            )?;
                             self.try_cleanup_om_reflection_flags_after_terminal_failure(&event)?;
                             report.dead_letter += 1;
                         }
@@ -166,7 +170,7 @@ impl AxiomMe {
             reindexed_scopes,
             dry_run: options.dry_run,
             drift_uris_sample: stats.drift_uris_sample,
-            status: reconcile_status(options.dry_run).to_string(),
+            status: reconcile_status(options.dry_run),
         })
     }
 
@@ -272,10 +276,12 @@ impl AxiomMe {
         match result {
             Ok(report) => {
                 self.state
-                    .finish_reconcile_run(run_id, report.drift_count, &report.status)?;
+                    .finish_reconcile_run(run_id, report.drift_count, report.status)?;
             }
             Err(_) => {
-                let _ = self.state.finish_reconcile_run(run_id, 0, "failed");
+                let _ = self
+                    .state
+                    .finish_reconcile_run(run_id, 0, ReconcileRunStatus::Failed);
             }
         }
         Ok(())
@@ -295,7 +301,7 @@ impl AxiomMe {
                 self.log_request_status(
                     request_id,
                     "reconcile.run",
-                    &report.status,
+                    report.status.as_str(),
                     started,
                     None,
                     Some(serde_json::json!({
@@ -375,8 +381,12 @@ fn resolve_reconcile_scope_selection(options: &ReconcileOptions) -> ReconcileSco
     }
 }
 
-const fn reconcile_status(dry_run: bool) -> &'static str {
-    if dry_run { "dry_run" } else { "success" }
+const fn reconcile_status(dry_run: bool) -> ReconcileRunStatus {
+    if dry_run {
+        ReconcileRunStatus::DryRun
+    } else {
+        ReconcileRunStatus::Success
+    }
 }
 
 fn parse_om_reflection_cleanup_target(

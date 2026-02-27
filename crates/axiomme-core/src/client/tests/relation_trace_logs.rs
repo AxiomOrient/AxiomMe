@@ -1151,7 +1151,7 @@ fn request_logs_capture_extended_core_operations() {
             max_drift_sample: 20,
         })
         .expect("reconcile");
-    assert_eq!(reconcile.status, "dry_run");
+    assert_eq!(reconcile.status, crate::models::ReconcileRunStatus::DryRun);
 
     let export_base = temp.path().join("request-log-extended-pack");
     let export_path = app

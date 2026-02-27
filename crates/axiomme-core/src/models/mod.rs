@@ -37,7 +37,7 @@ pub use queue::{
     QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus, QueueOverview,
     QueueStatus, ReplayReport,
 };
-pub use reconcile::{ReconcileOptions, ReconcileReport};
+pub use reconcile::{ReconcileOptions, ReconcileReport, ReconcileRunStatus};
 pub use release::{
     BenchmarkGateDetails, BlockerRollupGateDetails, BuildQualityGateDetails, CommandProbeResult,
     ContractIntegrityGateDetails, DependencyAuditStatus, DependencyAuditSummary,
