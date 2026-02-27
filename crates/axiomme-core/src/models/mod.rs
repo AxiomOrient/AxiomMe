@@ -34,8 +34,8 @@ pub use filesystem::{
 };
 pub use queue::{
     OmQueueStatus, OmReflectionApplyMetrics, OutboxEvent, QueueCheckpoint, QueueCounts,
-    QueueDeadLetterRate, QueueDiagnostics, QueueLaneStatus, QueueOverview, QueueStatus,
-    ReplayReport,
+    QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus, QueueOverview,
+    QueueStatus, ReplayReport,
 };
 pub use reconcile::{ReconcileOptions, ReconcileReport};
 pub use release::{

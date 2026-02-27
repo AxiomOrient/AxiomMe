@@ -29,12 +29,14 @@ pub mod pack;
 pub mod parse;
 pub(crate) mod quality;
 pub(crate) mod queue_policy;
+pub(crate) mod relation_documents;
 pub(crate) mod release_gate;
 pub mod retrieval;
 pub(crate) mod security_audit;
 pub mod session;
 pub mod state;
 pub(crate) mod text;
+pub(crate) mod tier_documents;
 pub mod uri;
 
 pub use client::AxiomMe;

@@ -4,8 +4,8 @@ use std::path::Path;
 use tempfile::{TempDir, tempdir};
 
 use crate::models::{
-    ContextHit, FindResult, IndexRecord, QueryPlan, RuntimeHint, RuntimeHintKind, SearchBudget,
-    SearchOptions, SearchRequest, classify_hit_buckets,
+    ContextHit, FindResult, IndexRecord, QueryPlan, QueueEventStatus, RuntimeHint,
+    RuntimeHintKind, SearchBudget, SearchOptions, SearchRequest, classify_hit_buckets,
 };
 use crate::om::{OmOriginType, OmRecord, OmScope, build_scope_key};
 
@@ -744,7 +744,7 @@ fn search_with_runtime_hints_has_no_message_or_outbox_side_effect() {
     );
     let before_outbox = app
         .state
-        .fetch_outbox("new", 100)
+        .fetch_outbox(QueueEventStatus::New, 100)
         .expect("outbox before")
         .len();
 
@@ -769,7 +769,7 @@ fn search_with_runtime_hints_has_no_message_or_outbox_side_effect() {
 
     let after_outbox = app
         .state
-        .fetch_outbox("new", 100)
+        .fetch_outbox(QueueEventStatus::New, 100)
         .expect("outbox after")
         .len();
     assert_eq!(before_outbox, after_outbox);

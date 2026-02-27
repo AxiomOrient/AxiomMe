@@ -25,7 +25,7 @@ const MAX_EXACT_CONTENT_LINE_KEYS: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct ScoredRecord {
-    pub uri: String,
+    pub uri: Arc<str>,
     pub is_leaf: bool,
     pub depth: usize,
     pub exact: f32,
@@ -38,7 +38,7 @@ pub struct ScoredRecord {
 
 #[derive(Debug, Clone)]
 pub struct IndexChildRecord {
-    pub uri: String,
+    pub uri: Arc<str>,
     pub is_leaf: bool,
     pub depth: usize,
 }
@@ -177,7 +177,7 @@ impl InMemoryIndex {
         let mut out = Vec::<IndexChildRecord>::with_capacity(children.len());
         for (uri, entry) in children {
             out.push(IndexChildRecord {
-                uri: uri.to_string(),
+                uri: uri.clone(),
                 is_leaf: entry.is_leaf,
                 depth: entry.depth,
             });
@@ -220,7 +220,7 @@ impl InMemoryIndex {
         let now = Utc::now();
 
         let mut scored = Vec::new();
-        for record in self.records.values() {
+        for (arc_uri, record) in self.records.iter() {
             if let Some(target) = target_uri_text.as_deref()
                 && !uri_path_prefix_match(&record.uri, target)
             {
@@ -276,7 +276,7 @@ impl InMemoryIndex {
             }
 
             scored.push(ScoredRecord {
-                uri: uri.to_string(),
+                uri: arc_uri.clone(),
                 is_leaf: record.is_leaf,
                 depth: record.depth,
                 exact,
@@ -1321,7 +1321,7 @@ mod tests {
         let result = index.search("oauth flow", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/docs/auth"
+            std::sync::Arc::from("axiom://resources/docs/auth")
         );
     }
 
@@ -1411,8 +1411,8 @@ mod tests {
 
         let children = index.children_of("axiom://resources/docs");
         assert_eq!(children.len(), 2);
-        assert_eq!(children[0].uri, "axiom://resources/docs/a.md");
-        assert_eq!(children[1].uri, "axiom://resources/docs/b.md");
+        assert_eq!(children[0].uri, "axiom://resources/docs/a.md".into());
+        assert_eq!(children[1].uri, "axiom://resources/docs/b.md".into());
         assert!(children.iter().all(|child| child.is_leaf));
         assert!(children.iter().all(|child| child.depth == 3));
     }
@@ -1452,7 +1452,7 @@ mod tests {
         assert!(index.children_of("axiom://resources/docs").is_empty());
         let relocated = index.children_of("axiom://resources/relocated");
         assert_eq!(relocated.len(), 1);
-        assert_eq!(relocated[0].uri, uri);
+        assert_eq!(relocated[0].uri, uri.into());
 
         index.remove(uri);
         assert!(index.children_of("axiom://resources/relocated").is_empty());
@@ -1507,7 +1507,7 @@ mod tests {
         let result = index.search(query, None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/logs/exact"
+            std::sync::Arc::from("axiom://resources/logs/exact")
         );
         assert!(result.first().expect("no result").sparse >= result[1].sparse);
     }
@@ -1545,14 +1545,14 @@ mod tests {
         let with_ext = index.search("FILE_STRUCTURE.md", None, 10, None, None);
         assert_eq!(
             with_ext.first().expect("no result").uri,
-            "axiom://resources/manual/FILE_STRUCTURE.md"
+            std::sync::Arc::from("axiom://resources/manual/FILE_STRUCTURE.md")
         );
         assert!(with_ext.first().expect("no result").exact > 0.0);
 
         let stem_only = index.search("FILE_STRUCTURE", None, 10, None, None);
         assert_eq!(
             stem_only.first().expect("no result").uri,
-            "axiom://resources/manual/FILE_STRUCTURE.md"
+            std::sync::Arc::from("axiom://resources/manual/FILE_STRUCTURE.md")
         );
         assert!(stem_only.first().expect("no result").exact > 0.0);
     }
@@ -1590,7 +1590,7 @@ mod tests {
         let result = index.search("QA Guide", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/notes/title-guide.md"
+            std::sync::Arc::from("axiom://resources/notes/title-guide.md")
         );
         assert!(result.first().expect("no result").exact > result[1].exact);
     }
@@ -1628,7 +1628,7 @@ mod tests {
         let result = index.search("File Structure (Lean Architecture)", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/context/FILE_STRUCTURE.md"
+            std::sync::Arc::from("axiom://resources/context/FILE_STRUCTURE.md")
         );
         assert!(result.first().expect("no result").exact >= 0.95);
     }
@@ -1666,7 +1666,7 @@ mod tests {
         let result = index.search("아키텍트 페르소나", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/expertise/system-architect.md"
+            std::sync::Arc::from("axiom://resources/expertise/system-architect.md")
         );
         assert!(result.first().expect("no result").exact >= 0.95);
     }
@@ -1704,7 +1704,7 @@ mod tests {
         let result = index.search("RULE_2_2: 절대 리젝 방지 규칙", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/rules/macos-platform.md"
+            std::sync::Arc::from("axiom://resources/rules/macos-platform.md")
         );
         assert!(result.first().expect("no result").exact >= 0.97);
     }
@@ -1780,7 +1780,7 @@ mod tests {
         let result = index.search("SECTION 39", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/guide/deep-outline.md"
+            std::sync::Arc::from("axiom://resources/guide/deep-outline.md")
         );
         assert!(
             result.first().expect("no result").exact >= 0.97,
@@ -1838,7 +1838,7 @@ mod tests {
         let result = index.search("의존성 캐싱 최적화", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/rules/backend-platform.md"
+            std::sync::Arc::from("axiom://resources/rules/backend-platform.md")
         );
         assert!(result.first().expect("no result").exact >= 0.97);
     }
@@ -1876,7 +1876,7 @@ mod tests {
         let result = index.search("qaguide", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/manual/QA_GUIDE.md"
+            std::sync::Arc::from("axiom://resources/manual/QA_GUIDE.md")
         );
         assert!(result.first().expect("no result").exact >= 0.89);
     }
@@ -1914,7 +1914,7 @@ mod tests {
         let result = index.search("guidd", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/manual/guide.md"
+            std::sync::Arc::from("axiom://resources/manual/guide.md")
         );
         assert!(result.first().expect("no result").exact >= 0.84);
     }
@@ -1952,7 +1952,7 @@ mod tests {
         let result = index.search("gudie", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/manual/guide.md"
+            std::sync::Arc::from("axiom://resources/manual/guide.md")
         );
         assert!(result.first().expect("no result").exact >= 0.84);
     }
@@ -1990,7 +1990,7 @@ mod tests {
         let result = index.search("웹플랫폼생태계가이x", None, 10, None, None);
         assert_eq!(
             result.first().expect("no result").uri,
-            "axiom://resources/notes/korean-title.md"
+            std::sync::Arc::from("axiom://resources/notes/korean-title.md")
         );
         assert!(result.first().expect("no result").exact >= 0.70);
     }
@@ -2043,16 +2043,20 @@ mod tests {
             mime: None,
         };
         let result = index.search("docs", None, 20, None, Some(&filter));
-        assert!(result.iter().any(|x| x.uri == "axiom://resources/docs"));
         assert!(
             result
                 .iter()
-                .any(|x| x.uri == "axiom://resources/docs/auth.md")
+                .any(|x| x.uri == "axiom://resources/docs".into())
+        );
+        assert!(
+            result
+                .iter()
+                .any(|x| x.uri == "axiom://resources/docs/auth.md".into())
         );
         assert!(
             !result
                 .iter()
-                .any(|x| x.uri == "axiom://resources/docs/storage.md")
+                .any(|x| x.uri == "axiom://resources/docs/storage.md".into())
         );
     }
 
@@ -2117,21 +2121,25 @@ mod tests {
             mime: None,
         };
         let result = index.search("docs", None, 20, None, Some(&filter));
-        assert!(result.iter().any(|x| x.uri == "axiom://resources/docs"));
         assert!(
             result
                 .iter()
-                .any(|x| x.uri == "axiom://resources/docs/guides")
+                .any(|x| x.uri == "axiom://resources/docs".into())
         );
         assert!(
             result
                 .iter()
-                .any(|x| x.uri == "axiom://resources/docs/guides/auth.md")
+                .any(|x| x.uri == "axiom://resources/docs/guides".into())
+        );
+        assert!(
+            result
+                .iter()
+                .any(|x| x.uri == "axiom://resources/docs/guides/auth.md".into())
         );
         assert!(
             !result
                 .iter()
-                .any(|x| x.uri == "axiom://resources/docs/guides/storage.md")
+                .any(|x| x.uri == "axiom://resources/docs/guides/storage.md".into())
         );
     }
 
@@ -2331,12 +2339,12 @@ mod tests {
         let hits = index.search("guide", Some(&target), 20, None, None);
         assert!(
             hits.iter()
-                .any(|hit| hit.uri == "axiom://resources/docs/auth/guide.md")
+                .any(|hit| hit.uri == "axiom://resources/docs/auth/guide.md".into())
         );
         assert!(
             !hits
                 .iter()
-                .any(|hit| hit.uri == "axiom://resources/docs/authz.md")
+                .any(|hit| hit.uri == "axiom://resources/docs/authz.md".into())
         );
     }
 }

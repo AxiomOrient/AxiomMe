@@ -11,7 +11,8 @@ pub use model::{
 };
 pub use parse::parse_schema_v1;
 pub use pressure::{
-    OntologyV2PressurePolicy, OntologyV2PressureReport, OntologyV2PressureSample,
+    OntologyPressureTrigger, OntologyV2PressurePolicy, OntologyV2PressureReport,
+    OntologyV2PressureSample,
     OntologyV2PressureTrendPolicy, OntologyV2PressureTrendReport, OntologyV2PressureTrendStatus,
     evaluate_v2_pressure, evaluate_v2_pressure_trend, validate_v2_pressure_trend_policy,
 };

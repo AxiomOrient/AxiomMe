@@ -16,16 +16,17 @@ use crate::uri::AxiomUri;
 
 mod benchmark;
 mod eval;
-mod indexing_service;
-mod markdown_editor_service;
-mod mirror_outbox_service;
-mod om_bridge_service;
-mod queue_reconcile_service;
-mod relation_service;
+mod indexing;
+mod markdown_editor;
+mod mirror_outbox;
+mod om_bridge;
+mod ontology;
+mod queue_reconcile;
+mod relation;
 mod release;
-mod request_log_service;
-mod resource_service;
-mod runtime_service;
+mod request_log;
+mod resource;
+mod runtime;
 mod search;
 mod trace;
 

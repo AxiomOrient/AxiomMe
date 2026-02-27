@@ -151,6 +151,26 @@ run_text() {
   "${BIN}" --root "${ROOT_DIR}" "$@"
 }
 
+resolve_web_viewer_bin() {
+  if [[ -n "${AXIOMME_WEB_VIEWER_BIN:-}" ]] && [[ -x "${AXIOMME_WEB_VIEWER_BIN}" ]]; then
+    printf '%s' "${AXIOMME_WEB_VIEWER_BIN}"
+    return 0
+  fi
+
+  if command -v axiomme-webd >/dev/null 2>&1; then
+    command -v axiomme-webd
+    return 0
+  fi
+
+  local external_repo_candidate="/Users/axient/repository/AxiomMe-web/target/debug/axiomme-webd"
+  if [[ -x "${external_repo_candidate}" ]]; then
+    printf '%s' "${external_repo_candidate}"
+    return 0
+  fi
+
+  return 1
+}
+
 append_section "Bootstrap" 'Executed: `init`'
 run_text init >/tmp/axiomme-init.out
 
@@ -335,8 +355,9 @@ echo "${find_imported}" | jq -e '.query_results | length > 0' >/dev/null
 echo "- export file: \`${EXPORT_PATH}\`" >>"${REPORT_PATH}"
 
 append_section "Web" "Executed: \`web\` startup and HTTP probe"
-if [[ -n "${AXIOMME_WEB_VIEWER_BIN:-}" ]] || command -v axiomme-webd >/dev/null 2>&1; then
-  "${BIN}" --root "${ROOT_DIR}" web --host 127.0.0.1 --port 8799 >"${WEB_LOG}" 2>&1 &
+if WEB_VIEWER_BIN="$(resolve_web_viewer_bin)"; then
+  AXIOMME_WEB_VIEWER_BIN="${WEB_VIEWER_BIN}" \
+    "${BIN}" --root "${ROOT_DIR}" web --host 127.0.0.1 --port 8799 >"${WEB_LOG}" 2>&1 &
   WEB_PID=$!
   probe_ok=false
   for _ in $(seq 1 20); do
@@ -353,9 +374,10 @@ if [[ -n "${AXIOMME_WEB_VIEWER_BIN:-}" ]] || command -v axiomme-webd >/dev/null 
   kill "${WEB_PID}" >/dev/null 2>&1 || true
   wait "${WEB_PID}" >/dev/null 2>&1 || true
   unset WEB_PID
+  echo "- web viewer bin: \`${WEB_VIEWER_BIN}\`" >>"${REPORT_PATH}"
   echo '- web probe: pass (`/api/fs/tree`)' >>"${REPORT_PATH}"
 else
-  echo '- web probe: skipped (external viewer binary `axiomme-webd` not installed in PATH)' >>"${REPORT_PATH}"
+  echo '- web probe: skipped (external viewer binary not configured/found)' >>"${REPORT_PATH}"
 fi
 
 cat >>"${REPORT_PATH}" <<EOF

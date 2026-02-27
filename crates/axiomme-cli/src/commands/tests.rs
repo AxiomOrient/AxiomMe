@@ -10,6 +10,7 @@ use crate::cli::{
     QueueCommand, ReconcileArgs, RelationArgs, RelationCommand, TraceArgs, TraceCommand, WebArgs,
 };
 use axiomme_core::AxiomMe;
+use axiomme_core::models::QueueEventStatus;
 
 fn run(app: &AxiomMe, root: &Path, command: Commands) -> anyhow::Result<()> {
     super::validate_command_preflight(&command)?;
@@ -534,7 +535,7 @@ fn ontology_action_validate_and_enqueue_run_with_schema_contract() {
     )
     .expect("action enqueue");
 
-    let outbox = app.state.fetch_outbox("new", 200).expect("fetch outbox");
+    let outbox = app.state.fetch_outbox(QueueEventStatus::New, 200).expect("fetch outbox");
     let queued = outbox
         .iter()
         .find(|event| {

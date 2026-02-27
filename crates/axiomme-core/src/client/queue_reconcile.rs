@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use crate::error::{AxiomError, Result};
-use crate::models::{OutboxEvent, ReconcileOptions, ReconcileReport, ReplayReport};
+use crate::models::{OutboxEvent, QueueEventStatus, ReconcileOptions, ReconcileReport, ReplayReport};
 use crate::queue_policy::{
     default_scope_set, push_drift_sample, retry_backoff_seconds, should_retry_event_error,
 };
@@ -21,10 +21,12 @@ impl AxiomMe {
             recovered_processing = self
                 .state
                 .recover_timed_out_processing_events(PROCESSING_TIMEOUT_RECOVERY_SECS)?;
-            let mut events = self.state.fetch_outbox("new", limit)?;
+            let mut events = self.state.fetch_outbox(QueueEventStatus::New, limit)?;
             if include_dead_letter && events.len() < limit {
                 let remaining = limit - events.len();
-                let mut dead = self.state.fetch_outbox("dead_letter", remaining)?;
+                let mut dead = self
+                    .state
+                    .fetch_outbox(QueueEventStatus::DeadLetter, remaining)?;
                 events.append(&mut dead);
             }
 
@@ -35,17 +37,22 @@ impl AxiomMe {
 
             for event in events {
                 self.state
-                    .mark_outbox_status(event.id, "processing", true)?;
+                    .mark_outbox_status(event.id, QueueEventStatus::Processing, true)?;
                 let attempt = event.attempt_count.saturating_add(1);
                 match self.handle_outbox_event(&event) {
                     Ok(handled) => {
                         report.processed += 1;
                         if handled {
-                            self.state.mark_outbox_status(event.id, "done", false)?;
+                            self.state
+                                .mark_outbox_status(event.id, QueueEventStatus::Done, false)?;
                             report.done += 1;
                         } else {
                             self.state
-                                .mark_outbox_status(event.id, "dead_letter", false)?;
+                                .mark_outbox_status(
+                                    event.id,
+                                    QueueEventStatus::DeadLetter,
+                                    false,
+                                )?;
                             report.dead_letter += 1;
                         }
                         self.state.set_checkpoint("replay", event.id)?;
@@ -59,7 +66,11 @@ impl AxiomMe {
                             report.requeued += 1;
                         } else {
                             self.state
-                                .mark_outbox_status(event.id, "dead_letter", false)?;
+                                .mark_outbox_status(
+                                    event.id,
+                                    QueueEventStatus::DeadLetter,
+                                    false,
+                                )?;
                             self.try_cleanup_om_reflection_flags_after_terminal_failure(&event)?;
                             report.dead_letter += 1;
                         }

@@ -16,6 +16,7 @@ use crate::models::{
     MemoryPromotionRequest, MemoryPromotionResult, PromotionApplyMode,
 };
 use crate::state::PromotionCheckpointPhase;
+use crate::tier_documents::write_tiers;
 use crate::uri::{AxiomUri, Scope};
 
 use super::Session;
@@ -215,17 +216,21 @@ impl Session {
         fs::write(messages_path, "")?;
 
         let session_summary = summarize_messages(&active_messages);
-        self.fs.write_tiers(
+        write_tiers(
+            &self.fs,
             &archive_uri,
             &session_summary,
             &format!("# Archive {archive_num}\n\n{session_summary}"),
+            true,
         )?;
 
         let session_uri = self.session_uri()?;
-        self.fs.write_tiers(
+        write_tiers(
+            &self.fs,
             &session_uri,
             &format!("Session {} latest commit", self.session_id),
             &format!("# Session Overview\n\nLatest archive: {archive_num}"),
+            true,
         )?;
 
         let mut candidates_len = 0usize;

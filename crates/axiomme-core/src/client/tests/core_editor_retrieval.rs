@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::QueueEventStatus;
 
 #[test]
 fn end_to_end_add_and_find() {
@@ -45,7 +46,7 @@ fn mkdir_enforces_scope_policy_and_enqueues_reindex_event() {
 
     let queued = app
         .state
-        .fetch_outbox("new", 100)
+        .fetch_outbox(QueueEventStatus::New, 100)
         .expect("fetch new events");
     assert!(queued.iter().any(|event| {
         event.event_type == "reindex"

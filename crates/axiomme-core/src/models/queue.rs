@@ -1,4 +1,45 @@
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueEventStatus {
+    New,
+    Processing,
+    Done,
+    DeadLetter,
+}
+
+impl QueueEventStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Processing => "processing",
+            Self::Done => "done",
+            Self::DeadLetter => "dead_letter",
+        }
+    }
+}
+
+impl std::fmt::Display for QueueEventStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for QueueEventStatus {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        match raw {
+            "new" => Ok(Self::New),
+            "processing" => Ok(Self::Processing),
+            "done" => Ok(Self::Done),
+            "dead_letter" => Ok(Self::DeadLetter),
+            other => Err(format!("unknown queue event status: {other}")),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct QueueLaneStatus {
@@ -96,7 +137,7 @@ pub struct OutboxEvent {
     pub event_type: String,
     pub uri: String,
     pub payload_json: serde_json::Value,
-    pub status: String,
+    pub status: QueueEventStatus,
     pub attempt_count: u32,
     pub next_attempt_at: Option<String>,
 }

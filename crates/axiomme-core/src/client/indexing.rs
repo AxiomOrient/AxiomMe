@@ -10,6 +10,10 @@ use crate::config::{resolve_internal_tier_policy, resolve_tier_synthesis_mode};
 use crate::context_ops::{RecordInput, build_record, classify_context, infer_tags};
 use crate::error::{AxiomError, Result};
 use crate::models::IndexRecord;
+use crate::models::QueueEventStatus;
+use crate::tier_documents::{
+    abstract_path, overview_path, read_abstract, read_overview, write_tiers,
+};
 use crate::uri::{AxiomUri, Scope};
 
 use super::AxiomMe;
@@ -108,8 +112,8 @@ impl AxiomMe {
             fs::create_dir_all(&path)?;
         }
 
-        let abs_path = self.fs.abstract_path(uri);
-        let ov_path = self.fs.overview_path(uri);
+        let abs_path = abstract_path(&self.fs, uri);
+        let ov_path = overview_path(&self.fs, uri);
 
         let mode = self.config.indexing.tier_synthesis_mode;
         let (abstract_text, overview) = synthesize_directory_tiers(uri, &path, mode)?;
@@ -126,7 +130,7 @@ impl AxiomMe {
         };
 
         if needs_write {
-            self.fs.write_tiers(uri, &abstract_text, &overview)?;
+            write_tiers(&self.fs, uri, &abstract_text, &overview, true)?;
         }
 
         Ok(())
@@ -165,7 +169,8 @@ impl AxiomMe {
             let event_id =
                 self.state
                     .enqueue("upsert", &uri, serde_json::json!({"kind": outbox_kind}))?;
-            self.state.mark_outbox_status(event_id, "done", false)?;
+            self.state
+                .mark_outbox_status(event_id, QueueEventStatus::Done, false)?;
         }
         Ok(())
     }
@@ -181,13 +186,13 @@ impl AxiomMe {
             return synthesize_directory_tiers(uri, path, tier_mode);
         }
         if let (Ok(abstract_text), Ok(overview_text)) =
-            (self.fs.read_abstract(uri), self.fs.read_overview(uri))
+            (read_abstract(&self.fs, uri), read_overview(&self.fs, uri))
         {
             return Ok((abstract_text, overview_text));
         }
 
         let (abstract_text, overview_text) = synthesize_directory_tiers(uri, path, tier_mode)?;
-        self.fs.write_tiers(uri, &abstract_text, &overview_text)?;
+        write_tiers(&self.fs, uri, &abstract_text, &overview_text, true)?;
         Ok((abstract_text, overview_text))
     }
 

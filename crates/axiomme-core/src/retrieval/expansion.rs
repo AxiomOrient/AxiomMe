@@ -28,7 +28,7 @@ pub(super) struct SingleRunResult {
 struct QueryInitialization {
     trace_start: Vec<TracePoint>,
     frontier: BinaryHeap<Node>,
-    score_map: HashMap<String, f32>,
+    score_map: HashMap<Arc<str>, f32>,
     global_rank: Vec<ScoredRecord>,
     filter_projection: Option<HashSet<Arc<str>>>,
 }
@@ -111,7 +111,7 @@ struct ExpansionLoopInput<'a> {
     filter_projection: Option<&'a HashSet<Arc<str>>>,
     query_cutoffs: &'a QueryCutoffs,
     limit: usize,
-    score_map: &'a HashMap<String, f32>,
+    score_map: &'a HashMap<Arc<str>, f32>,
     frontier: BinaryHeap<Node>,
     run_start: Instant,
 }
@@ -276,7 +276,7 @@ fn run_identifier_query_fast_path(input: IdentifierFastPathInput<'_>) -> Option<
         .iter()
         .take(3)
         .map(|item| TracePoint {
-            uri: item.uri.clone(),
+            uri: item.uri.to_string(),
             score: item.score,
         })
         .collect::<Vec<_>>();
@@ -357,11 +357,11 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
             {
                 continue;
             }
-            let local_score = *score_map.get(&child.uri).unwrap_or(&0.0);
+            let local_score = *score_map.get(child.uri.as_ref()).unwrap_or(&0.0);
             let propagated = local_score.mul_add(config.alpha, (1.0 - config.alpha) * node.score);
             if child.is_leaf {
-                if query_cutoffs.allows_uri(index, &child.uri, propagated)
-                    && let Some(record) = index.get(&child.uri)
+                if query_cutoffs.allows_uri(index, child.uri.as_ref(), propagated)
+                    && let Some(record) = index.get(child.uri.as_ref())
                 {
                     let hit = make_hit(record, propagated);
                     upsert_hit_if_higher(&mut selected, hit);
@@ -379,7 +379,7 @@ fn execute_expansion_loop(input: ExpansionLoopInput<'_>) -> ExpansionLoopState {
 
         steps.push(RetrievalStep {
             round,
-            current_uri: node.uri,
+            current_uri: node.uri.to_string(),
             children_examined,
             children_selected,
             queue_size_after: frontier.len(),
@@ -526,10 +526,10 @@ fn initialize_query_frontier(input: QueryFrontierInput<'_>) -> QueryInitializati
     let mut frontier = BinaryHeap::new();
     let mut seen_start = HashSet::new();
     for root in &root_records {
-        let uri = root.uri.clone();
+        let uri: Arc<str> = Arc::from(root.uri.as_str());
         if seen_start.insert(uri.clone()) {
             trace_start.push(TracePoint {
-                uri: uri.clone(),
+                uri: uri.to_string(),
                 score: 0.0,
             });
             frontier.push(Node {
@@ -543,7 +543,7 @@ fn initialize_query_frontier(input: QueryFrontierInput<'_>) -> QueryInitializati
         let uri = dir.uri.clone();
         if seen_start.insert(uri.clone()) {
             trace_start.push(TracePoint {
-                uri: uri.clone(),
+                uri: uri.to_string(),
                 score: dir.score,
             });
             frontier.push(Node {
@@ -653,7 +653,7 @@ fn finalize_single_query_run(
 
 #[derive(Debug, Clone)]
 struct Node {
-    uri: String,
+    uri: Arc<str>,
     score: f32,
     depth: usize,
 }

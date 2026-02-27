@@ -1,8 +1,8 @@
 # Manual Usecase Validation
 
 Date: 2026-02-26
-Root: `/tmp/axiomme-manual-root-RGvGet`
-Dataset: `/tmp/axiomme-manual-data-YnNI3C`
+Root: `/tmp/axiomme-manual-root-pFtdbI`
+Dataset: `/tmp/axiomme-manual-data-WM2Cih`
 
 ## Summary
 
@@ -27,7 +27,7 @@ Executed: `ls/glob/read/abstract/overview/mkdir/mv/tree`
 ## Document Editor
 
 Executed: `document load/save/preview` in markdown and document modes
-- markdown save reindex_ms: 10
+- markdown save reindex_ms: 4
 - json save reindex_ms: 3
 
 ## Retrieval
@@ -38,7 +38,7 @@ Executed: `find/search/backend` with distinct keywords
 ## Queue
 
 Executed: `queue status/wait/replay/work/daemon/evidence`
-- queue evidence report_id: 48b8aaee-1a5b-4b14-ab7d-e04945766419
+- queue evidence report_id: 7d1a2d35-0a8d-492b-b306-de4dada95e87
 
 ## Session
 
@@ -48,12 +48,12 @@ Executed: `session create/add/commit/list/delete`
 ## Trace
 
 Executed: `trace requests/list/get/replay/stats/snapshot/snapshots/trend/evidence`
-- trace id used: 632b7dcb-ac4a-4c2c-83b3-30929622d50d
+- trace id used: ca9e319b-22a5-4965-9692-24a0bf62053b
 
 ## Eval
 
 Executed: `eval golden list/add/merge-from-traces + eval run`
-- eval run_id: cc360b45-4ce5-4c39-8b4b-5c7d16a3b3aa
+- eval run_id: 983d9115-02c5-4ba9-9b3b-d76ea112a244
 
 ## Benchmark
 
@@ -63,20 +63,21 @@ Executed: `benchmark run/amortized/list/trend/gate`
 ## Security/Release/Reconcile
 
 Executed: `security audit(offline) + release pack(offline) + reconcile`
-- security report_id: 5c8df59a-aa3f-4bcb-bd89-06263062c8b9
-- release pack id: af1899bc-b18e-425c-9205-cea4e5d2424c
+- security report_id: cbfb0259-0b15-428c-80df-c0168a9b846b
+- release pack id: ed2090f7-0857-4b92-8972-059c823db703
 - release pack passed: false
 - release pack unresolved_blockers: 1
 
 ## Package IO
 
 Executed: `export-ovpack/import-ovpack/rm`
-- export file: `/tmp/axiomme-manual-export-jPNrLO.ovpack`
+- export file: `/tmp/axiomme-manual-export-Sx3OW6.ovpack`
 
 ## Web
 
 Executed: `web` startup and HTTP probe
-- web probe: skipped (external viewer binary `axiomme-webd` not installed in PATH)
+- web viewer bin: `/Users/axient/repository/AxiomMe-web/target/debug/axiomme-webd`
+- web probe: pass (`/api/fs/tree`)
 
 ## Validation Outcome
 

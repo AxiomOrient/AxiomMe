@@ -1,7 +1,7 @@
 use chrono::{Duration, Utc};
 use tempfile::tempdir;
 
-use crate::models::{IndexRecord, OmReflectionApplyMetrics};
+use crate::models::{IndexRecord, OmReflectionApplyMetrics, QueueEventStatus};
 use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope};
 
 use super::*;
@@ -21,7 +21,7 @@ fn migrate_and_enqueue() {
         .expect("enqueue failed");
     assert!(id > 0);
 
-    let events = store.fetch_outbox("new", 10).expect("fetch failed");
+    let events = store.fetch_outbox(QueueEventStatus::New, 10).expect("fetch failed");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].uri, "axiom://resources/demo");
 }
@@ -966,15 +966,15 @@ fn requeue_with_delay_hides_event_until_due() {
         )
         .expect("enqueue");
     store
-        .mark_outbox_status(id, "processing", true)
+        .mark_outbox_status(id, QueueEventStatus::Processing, true)
         .expect("mark processing");
     store.requeue_outbox_with_delay(id, 60).expect("requeue");
 
-    let visible = store.fetch_outbox("new", 10).expect("fetch");
+    let visible = store.fetch_outbox(QueueEventStatus::New, 10).expect("fetch");
     assert!(visible.is_empty());
 
     store.force_outbox_due_now(id).expect("force due");
-    let visible2 = store.fetch_outbox("new", 10).expect("fetch2");
+    let visible2 = store.fetch_outbox(QueueEventStatus::New, 10).expect("fetch2");
     assert_eq!(visible2.len(), 1);
     assert_eq!(visible2[0].id, id);
 }
@@ -993,7 +993,7 @@ fn recover_timed_out_processing_events_requeues_stale_events() {
         )
         .expect("enqueue");
     store
-        .mark_outbox_status(id, "processing", true)
+        .mark_outbox_status(id, QueueEventStatus::Processing, true)
         .expect("mark processing");
     let stale_at = (Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
     store
@@ -1005,7 +1005,7 @@ fn recover_timed_out_processing_events_requeues_stale_events() {
         .expect("recover stale processing");
     assert_eq!(recovered, 1);
 
-    let visible = store.fetch_outbox("new", 10).expect("fetch new");
+    let visible = store.fetch_outbox(QueueEventStatus::New, 10).expect("fetch new");
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].id, id);
 }
@@ -1179,9 +1179,9 @@ fn queue_counts_and_checkpoints_report_expected_values() {
         )
         .expect("enqueue");
     store
-        .mark_outbox_status(id, "processing", true)
+        .mark_outbox_status(id, QueueEventStatus::Processing, true)
         .expect("processing");
-    store.mark_outbox_status(id, "done", false).expect("done");
+    store.mark_outbox_status(id, QueueEventStatus::Done, false).expect("done");
 
     let dead_id = store
         .enqueue(
@@ -1191,7 +1191,7 @@ fn queue_counts_and_checkpoints_report_expected_values() {
         )
         .expect("enqueue dead");
     store
-        .mark_outbox_status(dead_id, "dead_letter", true)
+        .mark_outbox_status(dead_id, QueueEventStatus::DeadLetter, true)
         .expect("dead");
 
     store.set_checkpoint("replay", id).expect("set checkpoint");
@@ -1221,14 +1221,14 @@ fn queue_status_splits_semantic_and_embedding_lanes() {
         )
         .expect("enqueue semantic");
     store
-        .mark_outbox_status(semantic_done, "done", false)
+        .mark_outbox_status(semantic_done, QueueEventStatus::Done, false)
         .expect("mark semantic done");
 
     let embedding_done = store
         .enqueue("upsert", "axiom://resources/a.md", serde_json::json!({}))
         .expect("enqueue upsert");
     store
-        .mark_outbox_status(embedding_done, "done", false)
+        .mark_outbox_status(embedding_done, QueueEventStatus::Done, false)
         .expect("mark embedding done");
 
     let embedding_dead = store
@@ -1239,7 +1239,7 @@ fn queue_status_splits_semantic_and_embedding_lanes() {
         )
         .expect("enqueue embedding failure");
     store
-        .mark_outbox_status(embedding_dead, "dead_letter", false)
+        .mark_outbox_status(embedding_dead, QueueEventStatus::DeadLetter, false)
         .expect("mark embedding dead");
 
     let status = store.queue_status().expect("queue status");
@@ -1288,7 +1288,7 @@ fn queue_status_reports_lane_pending_and_processing_counts() {
         )
         .expect("enqueue embedding processing");
     store
-        .mark_outbox_status(embedding_processing, "processing", true)
+        .mark_outbox_status(embedding_processing, QueueEventStatus::Processing, true)
         .expect("mark processing");
 
     let status = store.queue_status().expect("queue status");
@@ -1302,7 +1302,7 @@ fn queue_status_reports_lane_pending_and_processing_counts() {
     assert_eq!(status.embedding.processed, 0);
 
     store
-        .mark_outbox_status(semantic_new, "done", false)
+        .mark_outbox_status(semantic_new, QueueEventStatus::Done, false)
         .expect("mark semantic done");
 }
 
@@ -1316,7 +1316,7 @@ fn queue_status_treats_unknown_lane_rows_as_semantic() {
         .enqueue("upsert", "axiom://resources/a.md", serde_json::json!({}))
         .expect("enqueue embedding event");
     store
-        .mark_outbox_status(id, "done", false)
+        .mark_outbox_status(id, QueueEventStatus::Done, false)
         .expect("mark done");
 
     {
@@ -1365,7 +1365,7 @@ fn queue_counts_match_lane_totals() {
         )
         .expect("enqueue semantic done");
     store
-        .mark_outbox_status(semantic_done, "done", false)
+        .mark_outbox_status(semantic_done, QueueEventStatus::Done, false)
         .expect("mark semantic done");
 
     let embedding_processing = store
@@ -1376,7 +1376,7 @@ fn queue_counts_match_lane_totals() {
         )
         .expect("enqueue embedding processing");
     store
-        .mark_outbox_status(embedding_processing, "processing", true)
+        .mark_outbox_status(embedding_processing, QueueEventStatus::Processing, true)
         .expect("mark embedding processing");
 
     let embedding_dead = store
@@ -1387,7 +1387,7 @@ fn queue_counts_match_lane_totals() {
         )
         .expect("enqueue embedding dead");
     store
-        .mark_outbox_status(embedding_dead, "dead_letter", false)
+        .mark_outbox_status(embedding_dead, QueueEventStatus::DeadLetter, false)
         .expect("mark embedding dead");
 
     let counts = store.queue_counts().expect("queue counts");
@@ -1430,7 +1430,7 @@ fn queue_dead_letter_rates_by_event_type_reports_om_event_ratios() {
         )
         .expect("enqueue om done");
     store
-        .mark_outbox_status(om_done, "done", false)
+        .mark_outbox_status(om_done, QueueEventStatus::Done, false)
         .expect("mark om done");
 
     let om_dead = store
@@ -1441,7 +1441,7 @@ fn queue_dead_letter_rates_by_event_type_reports_om_event_ratios() {
         )
         .expect("enqueue om dead");
     store
-        .mark_outbox_status(om_dead, "dead_letter", false)
+        .mark_outbox_status(om_dead, QueueEventStatus::DeadLetter, false)
         .expect("mark om dead");
 
     let other_dead = store
@@ -1452,7 +1452,7 @@ fn queue_dead_letter_rates_by_event_type_reports_om_event_ratios() {
         )
         .expect("enqueue semantic dead");
     store
-        .mark_outbox_status(other_dead, "dead_letter", false)
+        .mark_outbox_status(other_dead, QueueEventStatus::DeadLetter, false)
         .expect("mark semantic dead");
 
     let rates = store

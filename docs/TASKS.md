@@ -1,7 +1,7 @@
 # Tasks
 
-Date: 2026-02-26
-Scope: dev-branch-first implementation and verification workflow
+Date: 2026-02-26 to 2026-02-27
+Scope: dev-branch-first implementation, verification, and refactoring follow-up workflow
 
 ## Task Table
 
@@ -20,7 +20,18 @@ Scope: dev-branch-first implementation and verification workflow
 | TASK-011 | DONE | P0 | ai | Re-validate full quality gates locally on `dev` after merge. | `bash scripts/quality_gates.sh` (exit 0, 2026-02-26) |
 | TASK-012 | DONE | P0 | ai | Validate remote CI on `dev` (no new tag) and capture artifact evidence. | `gh run view 22445209109` (`conclusion=success`, jobs `gates` + `release-pack-strict` success); `gh api .../runs/22445209109/artifacts` (`mirror-notice-gate`, `release-pack-strict-report`) |
 | TASK-013 | DONE | P0 | merged | Execute feature-completeness/UAT gate and produce signoff record with verdict. | `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`; `docs/MANUAL_USECASE_VALIDATION_2026-02-26.md`; `scripts/manual_usecase_validation.sh` |
-| TASK-014 | BLOCKED | P0 | merged | Unblock final release signoff: satisfy FR-011 runtime dependency and collect human UAT approval. | owner:`platform+release-manager`; `command -v axiomme-webd` -> `missing`; `axiomme-cli web` -> external viewer not found; re-check after dependency install + signoff update |
+| TASK-014 | DONE | P0 | merged | Finalize release signoff with recorded final release decision after FR-011 runtime probe evidence update. | `scripts/record_release_signoff.sh --decision GO --name aiden`; `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`rc=0`); `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` (`Final Release Decision: DONE`); `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`Overall: READY`) |
+| TASK-015 | DONE | P0 | ai | Harden zero-copy retrieval frontier after `Arc<str>` migration and synchronize refactoring evidence docs. | `crates/axiomme-core/src/retrieval/expansion.rs`; `docs/REFACTORING_TASKS.md`; `cargo check -p axiomme-core --lib`; `cargo test -p axiomme-core --lib`; `cargo check --workspace --all-targets` |
+| TASK-016 | DONE | P1 | merged | Complete Phase 2 decoupling: move relation/tier domain logic out of `LocalContextFs` into domain modules used by client/session layers. | `crates/axiomme-core/src/relation_documents.rs`; `crates/axiomme-core/src/tier_documents.rs`; updated call sites in `client/*` and `session/*`; `cargo test --workspace`; `cargo audit -q` |
+| TASK-017 | DONE | P1 | merged | Complete Phase 3 Task 3.1: encapsulate ontology enqueue orchestration in core API and thin CLI handler. | `crates/axiomme-core/src/client/ontology.rs`; `crates/axiomme-cli/src/commands/mod.rs`; `crates/axiomme-core/src/client/tests/ontology_enqueue.rs`; `cargo test --workspace`; `cargo audit -q` |
+| TASK-018 | DONE | P1 | merged | Complete Phase 3 Task 3.2: rename client `_service` modules to domain-focused module names and update module tree wiring. | renamed modules in `crates/axiomme-core/src/client.rs`; file moves in `crates/axiomme-core/src/client/*.rs`; `cargo test --workspace`; `cargo audit -q` |
+| TASK-019 | DONE | P1 | merged | Complete Phase 4 Task 4.1: introduce strongly typed queue event status and migrate queue API signatures away from raw status strings. | `crates/axiomme-core/src/models/queue.rs`; `crates/axiomme-core/src/state/queue.rs`; queue call-site/test migrations in `crates/axiomme-core/src/client/*`, `crates/axiomme-core/src/state/tests.rs`, `crates/axiomme-core/src/session/tests.rs`; `cargo check --workspace --all-targets`; `cargo test --workspace`; `cargo audit -q` |
+| TASK-020 | DONE | P1 | merged | Complete Phase 4 Task 4.2: replace ontology pressure magic string triggers with a structured trigger enum and keep string-array API contract via serialization boundary. | `crates/axiomme-core/src/ontology/pressure.rs`; `crates/axiomme-core/src/ontology/mod.rs`; `cargo check --workspace --all-targets`; `cargo test --workspace`; `cargo audit -q` |
+| TASK-021 | DONE | P0 | merged | Prepare deterministic release signoff request packet for `TASK-014` owners with evidence links and completion checklist. | `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`; updated references in `docs/TASKS.md` and `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` |
+| TASK-022 | DONE | P0 | ai | Validate reviewer-reported `Arc<str>` type mismatch regressions and re-run workspace build/quality gates. | reviewer targets: `crates/axiomme-core/src/retrieval/expansion.rs` + `crates/axiomme-core/src/index.rs`; `cargo check -p axiomme-core --lib`; `cargo test -p axiomme-core --lib`; `cargo check --workspace --all-targets`; `cargo test --workspace`; `cargo audit -q` |
+| TASK-023 | DONE | P0 | merged | Add deterministic release-signoff status probe script and generate current status artifact for external approval follow-up. | `scripts/release_signoff_status.sh`; `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`rc=2`); `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` |
+| TASK-024 | DONE | P0 | merged | Add minimal signoff-apply script to execute `NX-022` with explicit human decisions and auto-refresh status artifact. | `scripts/record_release_signoff.sh`; `scripts/record_release_signoff.sh --help`; `bash -n scripts/record_release_signoff.sh` |
+| TASK-025 | DONE | P0 | merged | Simplify release signoff flow from dual-role approval to single final release decision model. | `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`; `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`; `scripts/release_signoff_status.sh`; `scripts/record_release_signoff.sh` |
 
 ## Lifecycle Log
 
@@ -56,8 +67,74 @@ Scope: dev-branch-first implementation and verification workflow
       - `command -v axiomme-webd`
       - `target/debug/axiomme-cli --root <tmp-root> web --host 127.0.0.1 --port 8899`
       - updated signoff entry in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`
+15. `2026-02-27` `TASK-015` `TODO -> DOING -> DONE`
+    - Evidence: retrieval frontier now carries `Arc<str>` in `Node`/visited/frontier propagation; local+workspace checks pass.
+16. `2026-02-27` `TASK-016` `TODO -> DOING -> DONE`
+    - Evidence: `LocalContextFs` no longer owns relation/tier read-write-validation logic; domain modules (`relation_documents`, `tier_documents`) now serve client/session flows; workspace tests and audit pass.
+17. `2026-02-27` `TASK-017` `TODO -> DOING -> DONE`
+    - Evidence: `OntologyCommand::ActionEnqueue` now delegates to `AxiomMe::enqueue_ontology_action`; schema parse/compile/validate+enqueue orchestration moved into core API with regression coverage.
+18. `2026-02-27` `TASK-018` `TODO -> DOING -> DONE`
+    - Evidence: `_service` suffix removed from top-level client module/file names (`indexing`, `relation`, `resource`, `runtime`, etc.) and module tree wiring updated with green workspace tests/audit.
+19. `2026-02-27` `TASK-019` `TODO -> DOING -> DONE`
+    - Evidence: queue status is now strongly typed via `QueueEventStatus` enum and migrated API/call sites; verification passed with `cargo check --workspace --all-targets`, `cargo test --workspace`, `cargo audit -q`.
+20. `2026-02-27` `TASK-020` `TODO -> DOING -> DONE`
+    - Evidence: `OntologyPressureTrigger` enum introduced with typed variants + string-contract serde; pressure/trend logic migrated to typed trigger vectors and workspace checks/tests/audit passed.
+21. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
+    - Evidence delta: external viewer runtime probe passed via explicit override path (`AXIOMME_WEB_VIEWER_BIN=/Users/axient/repository/AxiomMe-web/target/debug/axiomme-webd` with `/api/fs/tree` probe `probe_rc=0`).
+    - Remaining blocker owner/system: `release-owner` (final release decision not recorded).
+    - Deterministic re-check evidence:
+      - signoff entry in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` (`Final Release Decision`)
+22. `2026-02-27` `TASK-021` `TODO -> DOING -> DONE`
+    - Evidence: release signoff request packet created with required decision fields, reviewed evidence links, and deterministic completion steps (`docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`).
+23. `2026-02-27` `TASK-022` `TODO -> DOING -> DONE`
+    - Evidence: reviewer-reported type mismatch sites were rechecked and already aligned (`Node.uri: Arc<str>`, `uri_path_prefix_match` tests call with `&str`); local and workspace gates passed (`cargo check/test`, `cargo audit -q`).
+24. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
+    - Evidence delta: technical mergeability gates revalidated after review comments (`cargo check --workspace --all-targets`, `cargo test --workspace`, `cargo audit -q` all pass).
+    - Remaining blocker owner/system: `release-owner` (final release decision not recorded).
+    - Deterministic re-check evidence:
+      - signoff entry in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` (`Final Release Decision`)
+      - signoff packet `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`
+25. `2026-02-27` `TASK-023` `TODO -> DOING -> DONE`
+    - Evidence: release signoff status probe script added and executed (`scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` => `rc=2`), with artifact output at `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`.
+26. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
+    - Evidence delta: automated probe confirms decision is still pending (`Overall: BLOCKED`, `Final Release Decision=PENDING`).
+    - Remaining blocker owner/system: `release-owner` (final release decision not recorded).
+    - Deterministic re-check evidence:
+      - `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
+      - `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
+      - signoff entries in `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`
+27. `2026-02-27` `TASK-024` `TODO -> DOING -> DONE`
+    - Evidence: added signoff apply command (`scripts/record_release_signoff.sh`) that writes both signoff docs and refreshes status artifact in one step.
+28. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
+    - Evidence delta: `NX-022` now has a single deterministic execution command and required human input schema.
+    - Remaining blocker owner/system: `release-owner` (explicit decision/name/date not provided yet).
+    - Deterministic re-check evidence:
+      - `scripts/record_release_signoff.sh --decision <GO|NO-GO> --name <name>`
+      - `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
+29. `2026-02-27` `TASK-025` `TODO -> DOING -> DONE`
+    - Evidence: signoff model simplified to one final release decision (single owner/single command path).
+30. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> BLOCKED`
+    - Evidence delta: blocker now depends only on `Final Release Decision` entry (`PENDING`) and no longer requires dual role fields.
+    - Remaining blocker owner/system: `release-owner` (decision/name/date not provided yet).
+    - Deterministic re-check evidence:
+      - `scripts/record_release_signoff.sh --decision <GO|NO-GO> --name <name>`
+      - `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
+31. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> DONE`
+    - Evidence: final release decision recorded (`GO`, signer `aiden`) and probe turned `READY` (`scripts/release_signoff_status.sh ...` => `rc=0`).
 
 ## Next Action Mapping
 
-- [NX-015] source:merged priority:P0 status:blocked action:Install/configure `axiomme-webd`, rerun FR-011 web probe, and capture human UAT/release signoff in gate document evidence: `TASK-014` in this file + updated `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`
-- Selected For Next: NX-015
+- [NX-015] source:merged priority:P0 status:done action:Legacy FR-011 unblock path is superseded by explicit viewer override verification and dedicated human-signoff follow-up queue evidence: `NX-021` and `NX-022` entries in this file
+- [NX-016] source:merged priority:P1 status:done action:Implement Phase 2 Task 2.1/2.2 by moving relation/tier domain logic from `fs.rs` to domain modules consumed by client/session layers evidence: `TASK-016` in this file + `crates/axiomme-core/src/relation_documents.rs` + `crates/axiomme-core/src/tier_documents.rs`
+- [NX-017] source:merged priority:P1 status:done action:Implement Phase 3 Task 3.1 by moving ontology action enqueue orchestration from CLI handler into core `AxiomMe` method evidence: `TASK-017` in this file + `crates/axiomme-core/src/client/ontology.rs` + `crates/axiomme-cli/src/commands/mod.rs`
+- [NX-018] source:merged priority:P1 status:done action:Implement Phase 3 Task 3.2 by renaming client `_service` modules to domain module names and updating module tree references evidence: `TASK-018` in this file + renamed `crates/axiomme-core/src/client/*.rs` modules + `crates/axiomme-core/src/client.rs`
+- [NX-019] source:merged priority:P1 status:done action:Implement Phase 4 Task 4.1 by replacing raw queue status string API with strongly typed queue status enum across enqueue/fetch/status transitions evidence: `TASK-019` in this file + `crates/axiomme-core/src/models/queue.rs` + `crates/axiomme-core/src/state/queue.rs` + `cargo test --workspace`
+- [NX-020] source:merged priority:P1 status:done action:Implement Phase 4 Task 4.2 by replacing ontology pressure trigger magic strings with `OntologyPressureTrigger` enum and explicit serialization at API boundary evidence: `TASK-020` in this file + `crates/axiomme-core/src/ontology/pressure.rs` + `crates/axiomme-core/src/ontology/mod.rs` + `cargo test --workspace`
+- [NX-021] source:merged priority:P0 status:done action:Unblock FR-011 runtime dependency by validating web probe through explicit viewer override path and updating gate evidence evidence: `TASK-014` lifecycle entry `2026-02-27` + `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md` (`Platform/Tooling` signoff row) + `probe_rc=0`
+- [NX-022] source:merged priority:P0 status:done action:Record final release decision (`GO` or `NO-GO`) to close final release gate evidence: `TASK-014` completion entry in this file + `scripts/record_release_signoff.sh --decision GO --name aiden` + `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`Overall: READY`)
+- [NX-023] source:merged priority:P0 status:done action:Create a deterministic signoff request packet for release owners with explicit approval fields and completion steps evidence: `TASK-021` in this file + `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`
+- [NX-024] source:merged priority:P0 status:done action:Validate reviewer-reported compile/type mismatch findings and confirm workspace mergeability gates evidence: `TASK-022` in this file + `cargo check/test` + `cargo audit -q`
+- [NX-025] source:merged priority:P0 status:done action:Add automated release-signoff status probe and publish latest pending-role artifact for deterministic external follow-up evidence: `TASK-023` in this file + `scripts/release_signoff_status.sh` + `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
+- [NX-026] source:merged priority:P0 status:done action:Add one-command signoff apply path for NX-022 with explicit decision inputs evidence: `TASK-024` in this file + `scripts/record_release_signoff.sh`
+- [NX-027] source:merged priority:P0 status:done action:Simplify release signoff model to a single final decision evidence: `TASK-025` in this file + simplified gate/request/status scripts/docs
+- Selected For Next: NONE

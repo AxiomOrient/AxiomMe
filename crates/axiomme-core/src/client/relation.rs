@@ -8,6 +8,7 @@ use crate::ontology::{
     CompiledOntologySchema, ONTOLOGY_SCHEMA_URI_V1, compile_schema, parse_schema_v1,
     validate_relation_link,
 };
+use crate::relation_documents::{read_relations, write_relations};
 use crate::uri::AxiomUri;
 
 use super::{AxiomMe, OntologySchemaCacheEntry, OntologySchemaFingerprint};
@@ -16,7 +17,7 @@ impl AxiomMe {
     pub fn relations(&self, owner_uri: &str) -> Result<Vec<RelationLink>> {
         let owner = AxiomUri::parse(owner_uri)?;
         validate_relation_owner_scope(&owner)?;
-        self.fs.read_relations(&owner)
+        read_relations(&self.fs, &owner)
     }
 
     pub fn link(
@@ -67,13 +68,13 @@ impl AxiomMe {
             reason: reason.to_string(),
         };
 
-        let mut existing = self.fs.read_relations(&owner)?;
+        let mut existing = read_relations(&self.fs, &owner)?;
         if let Some(record) = existing.iter_mut().find(|record| record.id == next.id) {
             *record = next.clone();
         } else {
             existing.push(next.clone());
         }
-        self.fs.write_relations(&owner, &existing, false)?;
+        write_relations(&self.fs, &owner, &existing, false)?;
         Ok(next)
     }
 
@@ -87,13 +88,13 @@ impl AxiomMe {
             ));
         }
 
-        let mut existing = self.fs.read_relations(&owner)?;
+        let mut existing = read_relations(&self.fs, &owner)?;
         let before = existing.len();
         existing.retain(|record| record.id != relation_id);
         if existing.len() == before {
             return Ok(false);
         }
-        self.fs.write_relations(&owner, &existing, false)?;
+        write_relations(&self.fs, &owner, &existing, false)?;
         Ok(true)
     }
 
@@ -239,7 +240,7 @@ impl AxiomMe {
             return Ok(Arc::clone(cached));
         }
 
-        let loaded = match self.fs.read_relations(owner) {
+        let loaded = match read_relations(&self.fs, owner) {
             Ok(items) => items,
             Err(AxiomError::Validation(_)) => Vec::new(),
             Err(err) => return Err(err),

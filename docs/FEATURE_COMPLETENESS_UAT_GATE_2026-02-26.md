@@ -32,7 +32,7 @@ Scope: `TASK-013` pre-release completeness and UAT gate
 | FR-008 | Naming migration (`axiom://`) | `scripts/check_prohibited_tokens.sh`, `bash scripts/quality_gates.sh` (`prohibited-token scan passed`) | PASS | obsolete naming guard remains active in quality gate. |
 | FR-009 | Replacement equivalence validation | `crates/axiomme-core/src/client/tests/queue_reconcile_lifecycle.rs` | PASS | sync/async ingest equivalence tests present. |
 | FR-010 | Embedding reliability and gates | `docs/MANUAL_USECASE_VALIDATION_2026-02-26.md` (`Benchmark`, `Eval`) | PASS | benchmark gate and eval quality executed with explicit metrics. |
-| FR-011 | Markdown web viewer/edit API and lock/security behavior | `docs/MANUAL_USECASE_VALIDATION_2026-02-26.md` (`Document Editor`), `command -v axiomme-webd` output, `axiomme-cli web` startup error | BLOCKED | External web viewer binary missing in this environment (`axiomme-webd`). |
+| FR-011 | Markdown web viewer/edit API and lock/security behavior | `docs/MANUAL_USECASE_VALIDATION_2026-02-26.md` (`Document Editor`), `AXIOMME_WEB_VIEWER_BIN=/Users/axient/repository/AxiomMe-web/target/debug/axiomme-webd target/debug/axiomme-cli --root <tmp-root> web --host 127.0.0.1 --port 8899`, `/api/fs/tree` probe (`probe_rc=0`) | PASS | Runtime dependency is satisfied via explicit viewer override path; `command -v axiomme-webd` remains `missing` in PATH but is not required for FR behavior when override is provided. |
 | FR-013 | Ontology contract layer and invariant/action tooling | `crates/axiomme-cli/src/commands/tests.rs` (ontology commands), `gh run view 22445209109` (`release-pack-strict` success) | PASS | ontology contract gates and command tests are present and green in CI. |
 
 ## Acceptance Scenario Coverage
@@ -58,24 +58,24 @@ Result: script now completes with `PASS` and produces `docs/MANUAL_USECASE_VALID
 
 ## Gate Verdict
 
-- Verdict: `BLOCKED`
+- Verdict: `READY`
 - Reason:
-  1. FR-011 environment dependency unresolved (`axiomme-webd` missing).
-  2. Human UAT/release signoff has not been recorded yet.
+  1. Final release decision has been recorded (`GO`).
 
 ## Required Unblock Actions
 
-1. Install/configure web viewer binary and re-run web probe.
-   - Owner: platform/tooling
-   - Deterministic re-check:
-     - `command -v axiomme-webd`
-     - `target/debug/axiomme-cli --root <tmp-root> web --host 127.0.0.1 --port 8899`
-2. Record final human signoff for release decision.
-   - Owner: release manager/product owner
+1. Record final human signoff for release decision.
+   - Owner: release owner
    - Deterministic re-check: signoff entry appended to this file or dedicated signoff log.
+   - Signoff packet: `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`
+   - One-command apply path: `scripts/record_release_signoff.sh --decision <GO|NO-GO> --name <name>`
+   - Automated status probe: `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
+   - Latest probe result: `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`Overall: READY`)
 
 ## Signoff
 
-- Platform/Tooling (FR-011 unblock): `PENDING`
-- Product Owner UAT: `PENDING`
-- Release Manager Go/No-Go: `PENDING`
+- Platform/Tooling (FR-011 unblock): `DONE (2026-02-27)`
+  - Evidence:
+    - `command -v axiomme-webd` => `missing`
+    - `AXIOMME_WEB_VIEWER_BIN=/Users/axient/repository/AxiomMe-web/target/debug/axiomme-webd target/debug/axiomme-cli --root <tmp-root> web --host 127.0.0.1 --port 8899` + `/api/fs/tree` probe => `probe_rc=0`
+- Final Release Decision: `DONE (2026-02-27, aiden, GO)`

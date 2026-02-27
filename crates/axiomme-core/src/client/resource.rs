@@ -14,6 +14,7 @@ use crate::models::{
     QueueStatus,
 };
 use crate::pack;
+use crate::tier_documents::{read_abstract, read_overview};
 use crate::uri::{AxiomUri, Scope};
 
 use super::AxiomMe;
@@ -221,12 +222,12 @@ impl AxiomMe {
 
     pub fn abstract_text(&self, uri: &str) -> Result<String> {
         let uri = AxiomUri::parse(uri)?;
-        self.fs.read_abstract(&uri)
+        read_abstract(&self.fs, &uri)
     }
 
     pub fn overview(&self, uri: &str) -> Result<String> {
         let uri = AxiomUri::parse(uri)?;
-        self.fs.read_overview(&uri)
+        read_overview(&self.fs, &uri)
     }
 
     pub fn mkdir(&self, uri: &str) -> Result<()> {

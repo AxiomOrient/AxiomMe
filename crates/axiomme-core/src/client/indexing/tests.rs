@@ -4,6 +4,7 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::config::TierSynthesisMode;
+use crate::tier_documents::{abstract_path, overview_path, read_overview};
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 
@@ -94,25 +95,25 @@ fn initialize_honors_internal_tier_policy_for_internal_scopes() {
     let temp_root = AxiomUri::root(Scope::Temp);
     let internal_should_persist = matches!(policy, InternalTierPolicy::Persist);
     assert_eq!(
-        app.fs.abstract_path(&queue_root).exists(),
+        abstract_path(&app.fs, &queue_root).exists(),
         internal_should_persist
     );
     assert_eq!(
-        app.fs.overview_path(&queue_root).exists(),
+        overview_path(&app.fs, &queue_root).exists(),
         internal_should_persist
     );
     assert_eq!(
-        app.fs.abstract_path(&temp_root).exists(),
+        abstract_path(&app.fs, &temp_root).exists(),
         internal_should_persist
     );
     assert_eq!(
-        app.fs.overview_path(&temp_root).exists(),
+        overview_path(&app.fs, &temp_root).exists(),
         internal_should_persist
     );
 
     let resources_root = AxiomUri::root(Scope::Resources);
-    assert!(app.fs.abstract_path(&resources_root).exists());
-    assert!(app.fs.overview_path(&resources_root).exists());
+    assert!(abstract_path(&app.fs, &resources_root).exists());
+    assert!(overview_path(&app.fs, &resources_root).exists());
 }
 
 #[test]
@@ -244,13 +245,13 @@ fn ensure_directory_tiers_rewrites_when_directory_contents_change() {
         .expect("write alpha");
 
     app.ensure_directory_tiers(&uri).expect("first synth");
-    let before = app.fs.read_overview(&uri).expect("before overview");
+    let before = read_overview(&app.fs, &uri).expect("before overview");
 
     app.fs
         .write(&uri.join("beta.md").expect("join"), "beta payload", true)
         .expect("write beta");
     app.ensure_directory_tiers(&uri).expect("second synth");
-    let after = app.fs.read_overview(&uri).expect("after overview");
+    let after = read_overview(&app.fs, &uri).expect("after overview");
 
     assert_ne!(before, after);
     assert!(after.contains("beta.md"));

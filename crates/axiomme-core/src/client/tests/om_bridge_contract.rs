@@ -1,4 +1,5 @@
 use super::*;
+use crate::models::QueueEventStatus;
 
 #[test]
 fn om_bridge_append_message_writes_session_scope_and_returns_scope_key() {
@@ -377,14 +378,14 @@ fn om_bridge_replay_om_only_does_not_process_non_om_events() {
         .get_outbox_event(non_om_event_id)
         .expect("non-om lookup")
         .expect("non-om missing");
-    assert_eq!(non_om_event.status, "new");
+    assert_eq!(non_om_event.status, QueueEventStatus::New);
 
     let om_event = app
         .state
         .get_outbox_event(om_enqueue.event_id)
         .expect("om lookup")
         .expect("om missing");
-    assert_eq!(om_event.status, "done");
+    assert_eq!(om_event.status, QueueEventStatus::Done);
 }
 
 #[test]
@@ -467,7 +468,7 @@ fn om_bridge_replay_om_only_clears_reflection_flags_after_dead_lettered_reflect_
         .get_outbox_event(event_id)
         .expect("event lookup")
         .expect("event missing");
-    assert_eq!(event_after.status, "dead_letter");
+    assert_eq!(event_after.status, QueueEventStatus::DeadLetter);
 }
 
 #[test]

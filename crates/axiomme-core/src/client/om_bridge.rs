@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::om::build_scope_key;
 
 use crate::error::{AxiomError, Result};
-use crate::models::{OutboxEvent, ReplayReport};
+use crate::models::{OutboxEvent, QueueEventStatus, ReplayReport};
 use crate::om_bridge::{
     OM_OUTBOX_SCHEMA_VERSION_V1, OmHintReadRequestV1, OmHintReadStateV1, OmMessageAppendRequestV1,
     OmMessageAppendResultV1, OmObserveBufferRequestedV1, OmOutboxEnqueueResultV1,
@@ -246,14 +246,19 @@ impl AxiomMe {
         include_dead_letter: bool,
     ) -> Result<OmOnlyReplayOutcome> {
         let scan_limit = limit.saturating_mul(OM_REPLAY_SCAN_FACTOR).max(limit);
-        let selected_new = fetch_outbox_om_events(self, "new", scan_limit, limit)?;
+        let selected_new = fetch_outbox_om_events(self, QueueEventStatus::New, scan_limit, limit)?;
         let mut events = selected_new.events;
         let mut scanned_count = selected_new.scanned_count;
         let mut om_candidate_count = selected_new.om_candidate_count;
         if include_dead_letter && events.len() < limit {
             let remaining = limit - events.len();
             let mut selected_dead =
-                fetch_outbox_om_events(self, "dead_letter", scan_limit, remaining)?;
+                fetch_outbox_om_events(
+                    self,
+                    QueueEventStatus::DeadLetter,
+                    scan_limit,
+                    remaining,
+                )?;
             scanned_count = scanned_count.saturating_add(selected_dead.scanned_count);
             om_candidate_count =
                 om_candidate_count.saturating_add(selected_dead.om_candidate_count);
@@ -347,7 +352,7 @@ fn is_om_event_type(event_type: &str) -> bool {
 
 fn fetch_outbox_om_events(
     app: &AxiomMe,
-    status: &str,
+    status: QueueEventStatus,
     scan_limit: usize,
     take_limit: usize,
 ) -> Result<OmReplaySelection> {
@@ -377,11 +382,13 @@ fn process_replay_events(
     };
 
     for event in events {
-        app.state.mark_outbox_status(event.id, "processing", true)?;
+        app.state
+            .mark_outbox_status(event.id, QueueEventStatus::Processing, true)?;
         let attempt = event.attempt_count.saturating_add(1);
         match app.handle_outbox_event(&event) {
             Ok(handled) => {
-                app.state.mark_outbox_status(event.id, "done", false)?;
+                app.state
+                    .mark_outbox_status(event.id, QueueEventStatus::Done, false)?;
                 report.processed += 1;
                 report.done += 1;
                 if !handled {
@@ -398,7 +405,7 @@ fn process_replay_events(
                     report.requeued += 1;
                 } else {
                     app.state
-                        .mark_outbox_status(event.id, "dead_letter", false)?;
+                        .mark_outbox_status(event.id, QueueEventStatus::DeadLetter, false)?;
                     app.try_cleanup_om_reflection_flags_after_terminal_failure(&event)?;
                     report.dead_letter += 1;
                 }

@@ -398,25 +398,13 @@ fn handle_ontology_command(app: &AxiomMe, command: OntologyCommand) -> Result<()
         } => {
             let uri =
                 uri.unwrap_or_else(|| axiomme_core::ontology::ONTOLOGY_SCHEMA_URI_V1.to_string());
-            let raw = app.read(&uri)?;
-            let parsed = axiomme_core::ontology::parse_schema_v1(&raw)?;
-            let compiled = axiomme_core::ontology::compile_schema(parsed)?;
             let input = read_ontology_action_input(input_json, input_file, input_stdin)?;
-            let request = axiomme_core::ontology::OntologyActionRequestV1 {
-                action_id,
-                queue_event_type,
+            let (event_id, target_uri, report) = app.enqueue_ontology_action(
+                &uri,
+                &target_uri,
+                &action_id,
+                &queue_event_type,
                 input,
-            };
-            let report = axiomme_core::ontology::validate_action_request(&compiled, &request)?;
-            let target_uri = axiomme_core::AxiomUri::parse(&target_uri)?.to_string();
-            let event_id = app.state.enqueue(
-                report.queue_event_type.as_str(),
-                target_uri.as_str(),
-                serde_json::json!({
-                    "schema_version": 1,
-                    "action_id": report.action_id.clone(),
-                    "input": request.input
-                }),
             )?;
             print_json(&serde_json::json!({
                 "status": "ok",
