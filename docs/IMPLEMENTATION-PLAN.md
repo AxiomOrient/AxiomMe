@@ -326,3 +326,61 @@ Scope: `/Users/axient/repository/AxiomMe` (worktree integration on `dev` + `TASK
 4. Expected outputs:
    - `TASK-014` transitions to `DONE`.
    - `NX-022` transitions to `done` and queue selection becomes `NONE`.
+
+## Continuation Run 14 (2026-02-27)
+
+1. Target `TASK-ID`: `TASK-026` (Gemini analysis cross-validation and correction routing).
+2. Scope:
+   - `crates/axiomme-core/src/fs.rs`
+   - `crates/axiomme-core/src/relation_documents.rs`
+   - `crates/axiomme-core/src/tier_documents.rs`
+   - `crates/axiomme-core/src/index.rs`
+   - `crates/axiomme-core/src/state/queue.rs`
+   - `crates/axiomme-core/src/state/migration.rs`
+   - `crates/axiomme-core/src/security_audit.rs`
+   - `crates/axiomme-core/src/client.rs`
+   - `crates/axiomme-core/src/client/ontology.rs`
+   - `docs/TASKS.md`
+3. Verification map:
+   - Narrow: static claim-to-code matching via `rg` and line-level file inspection.
+   - Medium: `cargo check -p axiomme-core --lib` and `cargo test -p axiomme-core --lib`.
+   - Broader: `cargo audit -q`.
+4. Approach options (comparison):
+   - Option A (fast spot-check): validate only the files named in the external report.
+     - Tradeoff: cheapest, but high risk of missing contradictory evidence in adjacent modules.
+   - Option B (selected): validate named files plus adjacent call sites/contracts, then run targeted build/tests.
+     - Tradeoff: moderate cost with materially stronger evidence and lower false-positive/false-negative risk.
+   - Option C (full repo audit): re-review all crates and subsystems before concluding.
+     - Tradeoff: strongest breadth but excessive scope for this request and poor time efficiency.
+5. Decision:
+   - Select Option B because it balances determinism and completeness for claim verification without expanding into an unrelated full audit.
+6. Expected outputs:
+   - claim-by-claim verdict matrix (`accurate` / `partially accurate` / `incorrect`) with line evidence.
+   - explicit correction list for overstatements in queue typing, service flattening, and security-audit execution path description.
+   - follow-up backlog sync in `docs/TASKS.md` as `TASK-027`..`TASK-029`, with `NX-028` selected for next.
+
+## Continuation Run 15 (2026-02-27)
+
+1. Target `TASK-ID`: `TASK-027`, `TASK-028`, `TASK-029` (typed status completion + DB guardrails + write-path allocation reduction).
+2. Scope:
+   - `crates/axiomme-core/src/models/reconcile.rs`
+   - `crates/axiomme-core/src/models/mod.rs`
+   - `crates/axiomme-core/src/client/queue_reconcile.rs`
+   - `crates/axiomme-core/src/state/queue.rs`
+   - `crates/axiomme-core/src/state/migration.rs`
+   - `crates/axiomme-core/src/state/tests.rs`
+   - `crates/axiomme-core/src/index.rs`
+   - `crates/axiomme-core/src/client/tests/relation_trace_logs.rs`
+   - `docs/TASKS.md`
+3. Verification map:
+   - Narrow: targeted regression tests for changed paths:
+     - `cargo test -p axiomme-core --lib open_rejects_outbox_with_invalid_status_domain_value open_normalizes_whitespace_and_case_for_status_columns`
+     - `cargo test -p axiomme-core --lib build_upsert_text_matches_legacy_join_shape_with_tags build_upsert_text_matches_legacy_join_shape_without_tags`
+   - Medium: `cargo test -p axiomme-core --lib`.
+   - Broader: `cargo audit -q`.
+4. Expected outputs:
+   - reconcile run status is modeled as enum and propagated through state/client boundaries.
+   - queue snapshot/dead-letter aggregation path no longer relies on hard-coded status literals.
+   - migration schema and open-time validation enforce outbox/reconcile status domains.
+   - `InMemoryIndex::upsert` reduces write-path transient allocations by replacing multi-join text materialization with a single preallocated builder.
+   - `docs/TASKS.md` marks `TASK-027`..`TASK-029` complete and canonical queue selection becomes `NONE`.

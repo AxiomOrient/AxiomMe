@@ -32,6 +32,10 @@ Scope: dev-branch-first implementation, verification, and refactoring follow-up 
 | TASK-023 | DONE | P0 | merged | Add deterministic release-signoff status probe script and generate current status artifact for external approval follow-up. | `scripts/release_signoff_status.sh`; `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` (`rc=2`); `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md` |
 | TASK-024 | DONE | P0 | merged | Add minimal signoff-apply script to execute `NX-022` with explicit human decisions and auto-refresh status artifact. | `scripts/record_release_signoff.sh`; `scripts/record_release_signoff.sh --help`; `bash -n scripts/record_release_signoff.sh` |
 | TASK-025 | DONE | P0 | merged | Simplify release signoff flow from dual-role approval to single final release decision model. | `docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md`; `docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md`; `scripts/release_signoff_status.sh`; `scripts/record_release_signoff.sh` |
+| TASK-026 | DONE | P0 | user | Cross-validate Gemini project analysis claim-by-claim against actual code, then produce corrected verdicts with executable evidence. | `cargo check -p axiomme-core --lib`; `cargo test -p axiomme-core --lib`; `cargo audit -q`; file evidence in `crates/axiomme-core/src/{fs.rs,index.rs,state/queue.rs,state/migration.rs,security_audit.rs,client.rs,client/ontology.rs,relation_documents.rs,tier_documents.rs}` |
+| TASK-027 | DONE | P1 | ai | Remove remaining queue status/reconcile magic string literals from SQL aggregation and reconcile-run state paths by centralizing typed status constants/usages. | `crates/axiomme-core/src/models/reconcile.rs`; `crates/axiomme-core/src/client/queue_reconcile.rs`; `crates/axiomme-core/src/state/queue.rs`; `crates/axiomme-core/src/client/tests/relation_trace_logs.rs`; `cargo test -p axiomme-core --lib` |
+| TASK-028 | DONE | P1 | ai | Add DB-level guardrails for queue/reconcile status domains (migration-time check/normalization strategy) to prevent invalid persisted statuses. | `crates/axiomme-core/src/state/migration.rs`; `crates/axiomme-core/src/state/tests.rs`; `cargo test -p axiomme-core --lib open_rejects_outbox_with_invalid_status_domain_value open_normalizes_whitespace_and_case_for_status_columns` |
+| TASK-029 | DONE | P2 | ai | Reduce `InMemoryIndex::upsert` write-path allocation pressure (tokenization/text materialization) and preserve output compatibility. | `crates/axiomme-core/src/index.rs`; `cargo test -p axiomme-core --lib build_upsert_text_matches_legacy_join_shape_with_tags build_upsert_text_matches_legacy_join_shape_without_tags`; `cargo test -p axiomme-core --lib` |
 
 ## Lifecycle Log
 
@@ -121,6 +125,14 @@ Scope: dev-branch-first implementation, verification, and refactoring follow-up 
       - `scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
 31. `2026-02-27` `TASK-014` `BLOCKED -> DOING -> DONE`
     - Evidence: final release decision recorded (`GO`, signer `aiden`) and probe turned `READY` (`scripts/release_signoff_status.sh ...` => `rc=0`).
+32. `2026-02-27` `TASK-026` `TODO -> DOING -> DONE`
+    - Evidence: claim-level cross-validation completed with direct code inspection + executable gates (`cargo check -p axiomme-core --lib`, `cargo test -p axiomme-core --lib`, `cargo audit -q`).
+33. `2026-02-27` `TASK-027` `TODO -> DOING -> DONE`
+    - Evidence: `ReconcileRunStatus` enum added and wired through reconcile run path; queue aggregation/dead-letter SQL now uses enum-derived status parameters (`crates/axiomme-core/src/models/reconcile.rs`, `crates/axiomme-core/src/client/queue_reconcile.rs`, `crates/axiomme-core/src/state/queue.rs`).
+34. `2026-02-27` `TASK-028` `TODO -> DOING -> DONE`
+    - Evidence: DB schema now enforces status `CHECK` domains for fresh DBs and migration adds normalization+validation guardrails for legacy rows with regression tests (`crates/axiomme-core/src/state/migration.rs`, `crates/axiomme-core/src/state/tests.rs`).
+35. `2026-02-27` `TASK-029` `TODO -> DOING -> DONE`
+    - Evidence: `InMemoryIndex::upsert` now builds text in one preallocated pass (`build_upsert_text`) and preallocates term-frequency map; compatibility tests confirm legacy text shape (`crates/axiomme-core/src/index.rs`).
 
 ## Next Action Mapping
 
@@ -137,4 +149,7 @@ Scope: dev-branch-first implementation, verification, and refactoring follow-up 
 - [NX-025] source:merged priority:P0 status:done action:Add automated release-signoff status probe and publish latest pending-role artifact for deterministic external follow-up evidence: `TASK-023` in this file + `scripts/release_signoff_status.sh` + `docs/RELEASE_SIGNOFF_STATUS_2026-02-27.md`
 - [NX-026] source:merged priority:P0 status:done action:Add one-command signoff apply path for NX-022 with explicit decision inputs evidence: `TASK-024` in this file + `scripts/record_release_signoff.sh`
 - [NX-027] source:merged priority:P0 status:done action:Simplify release signoff model to a single final decision evidence: `TASK-025` in this file + simplified gate/request/status scripts/docs
+- [NX-028] source:ai priority:P1 status:done action:Implement typed queue status usage end-to-end in aggregate/reconcile paths (remove remaining hard-coded status literals in queue SQL/runtime) evidence: `TASK-027` in this file + `crates/axiomme-core/src/models/reconcile.rs` + `crates/axiomme-core/src/state/queue.rs`
+- [NX-029] source:ai priority:P1 status:done action:Enforce queue/reconcile status domain at DB schema boundary to block invalid persisted values evidence: `TASK-028` in this file + `crates/axiomme-core/src/state/migration.rs` + `crates/axiomme-core/src/state/tests.rs`
+- [NX-030] source:ai priority:P2 status:done action:Reduce write-path allocation pressure in `InMemoryIndex::upsert` while preserving output compatibility evidence: `TASK-029` in this file + `crates/axiomme-core/src/index.rs` + `cargo test -p axiomme-core --lib`
 - Selected For Next: NONE
