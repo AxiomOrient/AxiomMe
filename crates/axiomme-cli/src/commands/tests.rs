@@ -535,7 +535,10 @@ fn ontology_action_validate_and_enqueue_run_with_schema_contract() {
     )
     .expect("action enqueue");
 
-    let outbox = app.state.fetch_outbox(QueueEventStatus::New, 200).expect("fetch outbox");
+    let outbox = app
+        .state
+        .fetch_outbox(QueueEventStatus::New, 200)
+        .expect("fetch outbox");
     let queued = outbox
         .iter()
         .find(|event| {

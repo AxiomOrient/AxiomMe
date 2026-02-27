@@ -4,8 +4,8 @@ use std::path::Path;
 use tempfile::{TempDir, tempdir};
 
 use crate::models::{
-    ContextHit, FindResult, IndexRecord, QueryPlan, QueueEventStatus, RuntimeHint,
-    RuntimeHintKind, SearchBudget, SearchOptions, SearchRequest, classify_hit_buckets,
+    ContextHit, FindResult, IndexRecord, QueryPlan, QueueEventStatus, RuntimeHint, RuntimeHintKind,
+    SearchBudget, SearchOptions, SearchRequest, classify_hit_buckets,
 };
 use crate::om::{OmOriginType, OmRecord, OmScope, build_scope_key};
 

@@ -253,12 +253,7 @@ impl AxiomMe {
         if include_dead_letter && events.len() < limit {
             let remaining = limit - events.len();
             let mut selected_dead =
-                fetch_outbox_om_events(
-                    self,
-                    QueueEventStatus::DeadLetter,
-                    scan_limit,
-                    remaining,
-                )?;
+                fetch_outbox_om_events(self, QueueEventStatus::DeadLetter, scan_limit, remaining)?;
             scanned_count = scanned_count.saturating_add(selected_dead.scanned_count);
             om_candidate_count =
                 om_candidate_count.saturating_add(selected_dead.om_candidate_count);

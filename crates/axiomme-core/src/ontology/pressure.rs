@@ -56,11 +56,9 @@ impl OntologyPressureTrigger {
                 limit: usize::try_from(limit).unwrap_or(usize::MAX),
             };
         }
-        if let Some((current, limit)) = parse_threshold_values(
-            raw,
-            "action_invariant_total",
-            "min_action_invariant_total",
-        ) {
+        if let Some((current, limit)) =
+            parse_threshold_values(raw, "action_invariant_total", "min_action_invariant_total")
+        {
             return Self::ActionInvariantTotal {
                 current: usize::try_from(current).unwrap_or(usize::MAX),
                 limit: usize::try_from(limit).unwrap_or(usize::MAX),
@@ -85,7 +83,10 @@ impl fmt::Display for OntologyPressureTrigger {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ActionTypeCount { current, limit } => {
-                write!(f, "action_type_count({current}) >= min_action_types({limit})")
+                write!(
+                    f,
+                    "action_type_count({current}) >= min_action_types({limit})"
+                )
             }
             Self::InvariantCount { current, limit } => {
                 write!(f, "invariant_count({current}) >= min_invariants({limit})")
@@ -130,7 +131,11 @@ impl<'de> Deserialize<'de> for OntologyPressureTrigger {
     }
 }
 
-fn parse_threshold_values(raw: &str, metric_name: &str, threshold_name: &str) -> Option<(u64, u64)> {
+fn parse_threshold_values(
+    raw: &str,
+    metric_name: &str,
+    threshold_name: &str,
+) -> Option<(u64, u64)> {
     let metric_prefix = format!("{metric_name}(");
     let threshold_prefix = format!("{threshold_name}(");
     let tail = raw.strip_prefix(&metric_prefix)?;
@@ -442,12 +447,10 @@ mod tests {
         let report = evaluate_v2_pressure(&schema, policy);
         assert!(report.v2_candidate);
         assert!(
-            report
-                .trigger_reasons
-                .iter()
-                .any(
-                    |reason| matches!(reason, OntologyPressureTrigger::ActionInvariantTotal { .. })
-                )
+            report.trigger_reasons.iter().any(|reason| matches!(
+                reason,
+                OntologyPressureTrigger::ActionInvariantTotal { .. }
+            ))
         );
     }
 
@@ -588,12 +591,8 @@ mod tests {
             limit: 3,
         };
         let encoded = serde_json::to_string(&trigger).expect("serialize");
-        assert_eq!(
-            encoded,
-            "\"action_type_count(3) >= min_action_types(3)\""
-        );
-        let decoded: OntologyPressureTrigger =
-            serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(encoded, "\"action_type_count(3) >= min_action_types(3)\"");
+        let decoded: OntologyPressureTrigger = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded, trigger);
     }
 

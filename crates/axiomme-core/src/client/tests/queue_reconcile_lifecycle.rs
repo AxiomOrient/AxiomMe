@@ -207,7 +207,10 @@ fn run_scope_om_lifecycle_with_search_hint(
         Some(true)
     );
 
-    let done = app.state.fetch_outbox(QueueEventStatus::Done, 300).expect("done outbox");
+    let done = app
+        .state
+        .fetch_outbox(QueueEventStatus::Done, 300)
+        .expect("done outbox");
     assert!(done.iter().any(|event| event.id == apply_event_id));
     assert!(done.iter().any(|event| event.id == stale_event_id));
 }
@@ -470,7 +473,10 @@ fn ingest_wait_and_replay_paths_are_behaviorally_equivalent() {
     assert!(!sync_find.query_results.is_empty());
     assert!(!async_find.query_results.is_empty());
 
-    let done_events = app.state.fetch_outbox(QueueEventStatus::Done, 300).expect("done outbox");
+    let done_events = app
+        .state
+        .fetch_outbox(QueueEventStatus::Done, 300)
+        .expect("done outbox");
     assert!(done_events.iter().any(|event| {
         event.event_type == "semantic_scan"
             && event.uri == "axiom://resources/ingest-equivalence-sync"
@@ -500,7 +506,10 @@ fn replay_outbox_recovers_after_restart_for_queued_ingest() {
         )
         .expect("add failed");
     assert!(add.queued);
-    let pending = app1.state.fetch_outbox(QueueEventStatus::New, 50).expect("pending events");
+    let pending = app1
+        .state
+        .fetch_outbox(QueueEventStatus::New, 50)
+        .expect("pending events");
     assert!(pending.iter().any(|event| {
         event.event_type == "semantic_scan" && event.uri == "axiom://resources/restart-queued"
     }));
@@ -523,7 +532,10 @@ fn replay_outbox_recovers_after_restart_for_queued_ingest() {
 
     let replay = app2.replay_outbox(100, false).expect("replay failed");
     assert!(replay.processed >= 1);
-    let done = app2.state.fetch_outbox(QueueEventStatus::Done, 200).expect("done outbox");
+    let done = app2
+        .state
+        .fetch_outbox(QueueEventStatus::Done, 200)
+        .expect("done outbox");
     assert!(done.iter().any(|event| {
         event.event_type == "semantic_scan" && event.uri == "axiom://resources/restart-queued"
     }));
@@ -673,7 +685,10 @@ fn tier_generation_is_deterministic_and_sorted() {
     assert_eq!(abstract_first, abstract_second);
     assert_eq!(overview_first, overview_second);
 
-    let done = app.state.fetch_outbox(QueueEventStatus::Done, 400).expect("done outbox");
+    let done = app
+        .state
+        .fetch_outbox(QueueEventStatus::Done, 400)
+        .expect("done outbox");
     assert!(done.iter().any(|event| {
         event.event_type == "upsert"
             && event.uri == target
@@ -713,7 +728,10 @@ fn tier_generation_handles_empty_directory_and_observability() {
     assert!(overview.contains("(empty)"));
     assert!(!overview.lines().any(|line| line.starts_with("- ")));
 
-    let done = app.state.fetch_outbox(QueueEventStatus::Done, 300).expect("done outbox");
+    let done = app
+        .state
+        .fetch_outbox(QueueEventStatus::Done, 300)
+        .expect("done outbox");
     assert!(done.iter().any(|event| {
         event.event_type == "upsert"
             && event.uri == target
@@ -901,7 +919,10 @@ fn replay_requeues_then_dead_letters_after_retry_budget() {
     assert_eq!(first.requeued, 1);
     assert_eq!(first.dead_letter, 0);
 
-    let new_events = app.state.fetch_outbox(QueueEventStatus::New, 10).expect("fetch new");
+    let new_events = app
+        .state
+        .fetch_outbox(QueueEventStatus::New, 10)
+        .expect("fetch new");
     assert!(new_events.is_empty());
     let first_event = app
         .state
@@ -1010,7 +1031,10 @@ fn replay_handles_om_reflection_event_with_cas_and_stale_noop() {
         "reflection must keep observations"
     );
 
-    let done = app.state.fetch_outbox(QueueEventStatus::Done, 10).expect("done events");
+    let done = app
+        .state
+        .fetch_outbox(QueueEventStatus::Done, 10)
+        .expect("done events");
     assert!(done.iter().any(|event| event.id == first_event_id));
     assert!(done.iter().any(|event| event.id == second_event_id));
     let dead = app
@@ -1136,7 +1160,10 @@ fn replay_handles_om_reflection_buffer_then_apply_with_stale_noop() {
     assert!(!final_record.is_reflecting);
     assert!(!final_record.is_buffering_reflection);
 
-    let done = app.state.fetch_outbox(QueueEventStatus::Done, 10).expect("done events");
+    let done = app
+        .state
+        .fetch_outbox(QueueEventStatus::Done, 10)
+        .expect("done events");
     assert!(done.iter().any(|event| event.id == buffer_event_1));
     assert!(done.iter().any(|event| event.id == buffer_event_2));
     assert!(done.iter().any(|event| event.id == apply_event));
@@ -1472,7 +1499,10 @@ fn replay_handles_om_observe_buffer_requested_event() {
         None,
     )
     .expect("scope key");
-    let queued = app.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = app
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observe_event = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")
@@ -1546,7 +1576,10 @@ fn replay_retries_observe_event_after_transient_payload_failure_without_duplicat
         None,
     )
     .expect("scope key");
-    let queued = app.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = app
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observe_event = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")

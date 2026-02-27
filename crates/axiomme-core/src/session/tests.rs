@@ -9,8 +9,7 @@ use crate::fs::LocalContextFs;
 use crate::index::InMemoryIndex;
 use crate::models::{
     CommitMode, MemoryCategory, MemoryPromotionFact, MemoryPromotionRequest, Message,
-    QueueEventStatus,
-    PromotionApplyMode,
+    PromotionApplyMode, QueueEventStatus,
 };
 use crate::om::{OmOriginType, OmRecord, OmScope, build_scope_key};
 use crate::state::{PromotionCheckpointPhase, SqliteStateStore};
@@ -1118,7 +1117,10 @@ fn om_write_path_accepts_explicit_session_scope_binding() {
         .expect("om record");
     assert_eq!(record.scope, OmScope::Session);
 
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observe_event = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")
@@ -1161,7 +1163,10 @@ fn om_write_path_accepts_explicit_thread_scope_binding() {
     assert_eq!(record.thread_id.as_deref(), Some("thread-explicit"));
     assert_eq!(record.resource_id.as_deref(), Some("resource-explicit"));
 
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observe_event = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")
@@ -1204,7 +1209,10 @@ fn om_write_path_accepts_explicit_resource_scope_binding() {
     assert_eq!(record.thread_id, None);
     assert_eq!(record.resource_id.as_deref(), Some("resource-explicit"));
 
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     assert!(
         !queued
             .iter()
@@ -1517,7 +1525,10 @@ fn observer_buffers_before_threshold_when_interval_crossed() {
         .state
         .list_om_observation_chunks(&record.id)
         .expect("list chunks");
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observer_event = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")
@@ -1574,7 +1585,10 @@ fn observer_activates_buffered_chunks_before_second_observer_call() {
         .expect("append first");
     let scope_key =
         build_scope_key(OmScope::Session, Some("s-om-step0"), None, None).expect("scope key");
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observer_event = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")
@@ -1657,7 +1671,10 @@ fn observer_avoids_reprocessing_already_activated_messages() {
         .expect("append first");
     let scope_key =
         build_scope_key(OmScope::Session, Some("s-om-dedupe"), None, None).expect("scope key");
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observe_event_first = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")
@@ -1674,7 +1691,10 @@ fn observer_avoids_reprocessing_already_activated_messages() {
     let second = session
         .add_message("user", format!("beta-marker {}", "b".repeat(130_000)))
         .expect("append second");
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observe_event_second = queued
         .iter()
         .rfind(|event| event.event_type == "om_observe_buffer_requested")
@@ -1730,7 +1750,10 @@ fn observer_async_replay_same_event_id_is_idempotent() {
         None,
     )
     .expect("scope key");
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observe_event = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")
@@ -1817,7 +1840,10 @@ fn observer_enqueues_om_reflect_buffer_requested_at_activation_threshold() {
         .add_message("user", format!("trigger {}", "x".repeat(26_000)))
         .expect("append");
 
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let om_event = queued
         .iter()
         .find(|event| event.event_type == "om_reflect_buffer_requested")
@@ -1916,7 +1942,10 @@ fn observer_enqueues_om_reflect_requested_when_reflector_block_after_is_met() {
         .add_message("user", format!("trigger {}", "x".repeat(130_000)))
         .expect("append");
 
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let om_event = queued
         .iter()
         .find(|event| event.event_type == "om_reflect_requested")
@@ -2013,7 +2042,10 @@ fn om_write_path_still_checks_reflection_when_observer_threshold_not_reached() {
 
     session.add_message("user", "small ping").expect("append");
 
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let om_event = queued
         .iter()
         .find(|event| event.event_type == "om_reflect_requested")
@@ -2168,7 +2200,10 @@ fn om_write_path_skips_async_observer_when_new_tokens_are_below_min_gate() {
         .expect("om record");
     assert_eq!(updated.observer_trigger_count_total, 0);
 
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     assert!(
         !queued
             .iter()
@@ -2193,7 +2228,10 @@ fn observer_async_noops_when_candidates_are_cursor_covered() {
 
     let scope_key =
         build_scope_key(OmScope::Session, Some("s-om-cursor-covered"), None, None).expect("key");
-    let queued = session.state.fetch_outbox(QueueEventStatus::New, 20).expect("fetch outbox");
+    let queued = session
+        .state
+        .fetch_outbox(QueueEventStatus::New, 20)
+        .expect("fetch outbox");
     let observer_event = queued
         .iter()
         .find(|event| event.event_type == "om_observe_buffer_requested")
