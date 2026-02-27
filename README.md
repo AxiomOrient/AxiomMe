@@ -144,6 +144,20 @@ Release gate pack:
 cargo run -p axiomme-cli -- release pack --workspace-dir .
 ```
 
+Final release signoff:
+
+```bash
+# record final decision (GO or NO-GO)
+scripts/record_release_signoff.sh --decision GO --name <release-owner>
+
+# regenerate deterministic readiness snapshot
+scripts/release_signoff_status.sh --report-path docs/RELEASE_SIGNOFF_STATUS_$(date -u +%F).md
+```
+
+Release publish precondition:
+- `docs/RELEASE_SIGNOFF_STATUS_YYYY-MM-DD.md` shows `Overall: READY`
+- `Final Release Decision` starts with `DONE`
+
 ## Companion Projects
 
 Recommended split under `/Users/axient/repository`:
