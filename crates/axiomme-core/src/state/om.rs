@@ -135,6 +135,106 @@ impl SqliteStateStore {
         })
     }
 
+    pub fn list_om_records(&self) -> Result<Vec<OmRecord>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r"
+                SELECT
+                    id, scope, scope_key, session_id, thread_id, resource_id,
+                    generation_count, last_applied_outbox_event_id, origin_type,
+                    active_observations, observation_token_count, pending_message_tokens,
+                    last_observed_at, current_task, suggested_response, last_activated_message_ids_json,
+                    observer_trigger_count_total, reflector_trigger_count_total,
+                    is_observing, is_reflecting,
+                    is_buffering_observation, is_buffering_reflection,
+                    last_buffered_at_tokens, last_buffered_at_time,
+                    buffered_reflection, buffered_reflection_tokens,
+                    buffered_reflection_input_tokens, reflected_observation_line_count,
+                    created_at, updated_at
+                FROM om_records
+                ",
+            )?;
+
+            let rows = stmt.query_map([], |row| {
+                let scope_raw = row.get::<_, String>(1)?;
+                let scope = OmScope::parse(&scope_raw).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("invalid om scope: {scope_raw}"),
+                        )),
+                    )
+                })?;
+                let origin_raw = row.get::<_, String>(8)?;
+                let origin_type = OmOriginType::parse(&origin_raw).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        8,
+                        Type::Text,
+                        Box::new(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("invalid om origin_type: {origin_raw}"),
+                        )),
+                    )
+                })?;
+
+                let last_observed_raw = row.get::<_, Option<String>>(12)?;
+                let last_activated_message_ids_raw = row.get::<_, String>(15)?;
+                let last_buffered_raw = row.get::<_, Option<String>>(23)?;
+                let last_activated_message_ids =
+                    parse_string_vec_json(15, &last_activated_message_ids_raw)?;
+                let created_at_raw = row.get::<_, String>(28)?;
+                let updated_at_raw = row.get::<_, String>(29)?;
+
+                Ok(OmRecord {
+                    id: row.get(0)?,
+                    scope,
+                    scope_key: row.get(2)?,
+                    session_id: row.get(3)?,
+                    thread_id: row.get(4)?,
+                    resource_id: row.get(5)?,
+                    generation_count: i64_to_u32_saturating(row.get::<_, i64>(6)?),
+                    last_applied_outbox_event_id: row.get(7)?,
+                    origin_type,
+                    active_observations: row.get(9)?,
+                    observation_token_count: i64_to_u32_saturating(row.get::<_, i64>(10)?),
+                    pending_message_tokens: i64_to_u32_saturating(row.get::<_, i64>(11)?),
+                    last_observed_at: parse_optional_rfc3339(12, last_observed_raw.as_deref())?,
+                    current_task: row.get(13)?,
+                    suggested_response: row.get(14)?,
+                    last_activated_message_ids,
+                    observer_trigger_count_total: i64_to_u32_saturating(row.get::<_, i64>(16)?),
+                    reflector_trigger_count_total: i64_to_u32_saturating(row.get::<_, i64>(17)?),
+                    is_observing: row.get::<_, i64>(18)? != 0,
+                    is_reflecting: row.get::<_, i64>(19)? != 0,
+                    is_buffering_observation: row.get::<_, i64>(20)? != 0,
+                    is_buffering_reflection: row.get::<_, i64>(21)? != 0,
+                    last_buffered_at_tokens: i64_to_u32_saturating(row.get::<_, i64>(22)?),
+                    last_buffered_at_time: parse_optional_rfc3339(23, last_buffered_raw.as_deref())?,
+                    buffered_reflection: row.get(24)?,
+                    buffered_reflection_tokens: row
+                        .get::<_, Option<i64>>(25)?
+                        .map(i64_to_u32_saturating),
+                    buffered_reflection_input_tokens: row
+                        .get::<_, Option<i64>>(26)?
+                        .map(i64_to_u32_saturating),
+                    reflected_observation_line_count: row
+                        .get::<_, Option<i64>>(27)?
+                        .map(i64_to_u32_saturating),
+                    created_at: parse_required_rfc3339(28, &created_at_raw)?,
+                    updated_at: parse_required_rfc3339(29, &updated_at_raw)?,
+                })
+            })?;
+
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     pub fn get_om_record_by_scope_key(&self, scope_key: &str) -> Result<Option<OmRecord>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(

@@ -32,6 +32,7 @@ mod apply_flow;
 mod apply_modes;
 mod dedup;
 mod fallbacks;
+pub(crate) mod helpers;
 mod promotion;
 mod read_path;
 mod resolve_path;

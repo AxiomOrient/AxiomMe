@@ -12,7 +12,6 @@ mod commit;
 mod context;
 mod indexing;
 mod lifecycle;
-mod memory;
 mod memory_extractor;
 mod meta;
 mod om;

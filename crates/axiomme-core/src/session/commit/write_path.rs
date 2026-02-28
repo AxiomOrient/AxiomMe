@@ -10,11 +10,23 @@ use crate::models::{IndexRecord, MemoryCandidate};
 use crate::uri::AxiomUri;
 
 use super::super::indexing::ensure_directory_record;
-use super::super::memory::{MemorySource, merge_memory_markdown};
 use super::Session;
+use super::helpers::normalize_memory_text;
 use super::promotion::memory_uri_for_category_key;
 use super::resolve_path::dedup_source_ids;
 use super::types::ResolvedMemoryCandidate;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MemorySource {
+    pub session_id: String,
+    pub message_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct MemoryEntry {
+    pub text: String,
+    pub sources: Vec<MemorySource>,
+}
 
 pub(super) fn persist_promotion_candidate(
     session: &Session,
@@ -96,6 +108,107 @@ fn write_memory_core(
 
     fs::write(path, merged)?;
     Ok(())
+}
+
+pub(super) fn merge_memory_markdown(
+    existing: &str,
+    candidate: &MemoryCandidate,
+    source: &MemorySource,
+) -> String {
+    let mut entries = parse_memory_entries(existing);
+    if let Some(entry) = entries
+        .iter_mut()
+        .find(|entry| entry.text == candidate.text)
+    {
+        if !entry.sources.iter().any(|item| item == source) {
+            entry.sources.push(source.clone());
+        }
+    } else {
+        entries.push(MemoryEntry {
+            text: candidate.text.clone(),
+            sources: vec![source.clone()],
+        });
+    }
+
+    normalize_memory_entries(&mut entries);
+    render_memory_entries(&entries)
+}
+
+pub(super) fn parse_memory_entries(content: &str) -> Vec<MemoryEntry> {
+    let mut entries = Vec::new();
+    let mut current: Option<MemoryEntry> = None;
+
+    for line in content.lines() {
+        if let Some(text) = line.strip_prefix("- ") {
+            if let Some(entry) = current.take() {
+                entries.push(entry);
+            }
+            current = Some(MemoryEntry {
+                text: normalize_memory_text(text),
+                sources: Vec::new(),
+            });
+            continue;
+        }
+
+        if let Some(source_line) = line.strip_prefix("  - source: session ")
+            && let Some((session_id, message_id)) = source_line.split_once(" message ")
+            && let Some(entry) = current.as_mut()
+        {
+            entry.sources.push(MemorySource {
+                session_id: session_id.trim().to_string(),
+                message_id: message_id.trim().to_string(),
+            });
+        }
+    }
+
+    if let Some(entry) = current {
+        entries.push(entry);
+    }
+
+    entries
+}
+
+fn normalize_memory_entries(entries: &mut Vec<MemoryEntry>) {
+    let mut normalized = Vec::<MemoryEntry>::new();
+    for entry in entries.drain(..) {
+        if let Some(existing) = normalized.iter_mut().find(|item| item.text == entry.text) {
+            for source in entry.sources {
+                if !existing.sources.iter().any(|item| item == &source) {
+                    existing.sources.push(source);
+                }
+            }
+        } else {
+            normalized.push(entry);
+        }
+    }
+
+    for entry in &mut normalized {
+        entry.sources.sort_by(|a, b| {
+            a.session_id
+                .cmp(&b.session_id)
+                .then_with(|| a.message_id.cmp(&b.message_id))
+        });
+        entry.sources.dedup();
+    }
+
+    *entries = normalized;
+}
+
+fn render_memory_entries(entries: &[MemoryEntry]) -> String {
+    let mut out = String::new();
+    for entry in entries {
+        out.push_str("- ");
+        out.push_str(&normalize_memory_text(&entry.text));
+        out.push('\n');
+        for source in &entry.sources {
+            out.push_str("  - source: session ");
+            out.push_str(source.session_id.trim());
+            out.push_str(" message ");
+            out.push_str(source.message_id.trim());
+            out.push('\n');
+        }
+    }
+    out
 }
 
 pub(super) fn reindex_memory_uris(session: &Session, uris: &[AxiomUri]) -> Result<()> {

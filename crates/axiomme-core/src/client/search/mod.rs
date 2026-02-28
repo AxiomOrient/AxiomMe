@@ -458,9 +458,26 @@ impl AxiomMe {
         if !om_enabled {
             return Ok(None);
         }
-        let Some(record) = self.state.get_om_record_by_scope_key(scope_key)? else {
-            return Ok(None);
+
+        // Prioritize in-memory index
+        let record = {
+            let index = self
+                .index
+                .read()
+                .map_err(|_| AxiomError::lock_poisoned("index"))?;
+            index.get_om_record(scope_key).cloned()
         };
+
+        let record = if let Some(record) = record {
+            record
+        } else {
+            // Fallback to state store if not in index (should not happen if synchronized)
+            let Some(record) = self.state.get_om_record_by_scope_key(scope_key)? else {
+                return Ok(None);
+            };
+            record
+        };
+
         Ok(Some(self.build_om_hint_state_from_record(
             &record,
             preferred_thread_id,

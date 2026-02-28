@@ -1,10 +1,16 @@
 [package]
 name = "axiomme-mobile-ffi"
 version = "0.1.1"
-edition = "2024"
+authors = { workspace = true }
+edition = { workspace = true }
 description = "Mobile FFI boundary for AxiomMe core runtime."
-license = "Apache-2.0"
+license = { workspace = true }
 readme = "README.md"
+exclude = [
+    "examples/swift/*",
+    "../../logs/*",
+    "../../target/*",
+]
 
 [lib]
 name = "axiomme_mobile_ffi"

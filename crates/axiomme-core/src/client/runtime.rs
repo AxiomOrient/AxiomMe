@@ -211,6 +211,17 @@ impl AxiomMe {
             index.clear();
         }
         self.reindex_scopes(&default_scope_set())?;
+
+        // Restore OM records into the memory index after clearing everything
+        let om_records = self.state.list_om_records()?;
+        let mut index = self
+            .index
+            .write()
+            .map_err(|_| AxiomError::lock_poisoned("index"))?;
+        for om in om_records {
+            index.upsert_om_record(om);
+        }
+
         self.state
             .set_system_value(INDEX_PROFILE_STAMP_KEY, &self.current_index_profile_stamp())?;
         Ok(())
@@ -230,8 +241,10 @@ impl AxiomMe {
             return Ok(());
         }
 
-        let restored = self.restore_index_from_state()?;
-        if restored == 0 {
+        let restored_search_documents = self.restore_index_from_state()?;
+        // OM rows are supplemental runtime hints; startup success gating is based on
+        // searchable document restoration only.
+        if restored_search_documents == 0 {
             self.reindex_all()?;
         }
         Ok(())
@@ -239,7 +252,8 @@ impl AxiomMe {
 
     fn restore_index_from_state(&self) -> Result<usize> {
         let records = self.state.list_search_documents()?;
-        let mut restored = 0usize;
+        let om_records = self.state.list_om_records()?;
+        let mut restored_search_documents = 0usize;
         let mut index = self
             .index
             .write()
@@ -253,10 +267,13 @@ impl AxiomMe {
                 continue;
             }
             index.upsert(record);
-            restored = restored.saturating_add(1);
+            restored_search_documents = restored_search_documents.saturating_add(1);
+        }
+        for om in om_records {
+            index.upsert_om_record(om);
         }
         drop(index);
-        Ok(restored)
+        Ok(restored_search_documents)
     }
 
     fn current_index_profile_stamp(&self) -> String {

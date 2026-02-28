@@ -1,10 +1,15 @@
 [package]
 name = "axiomme-cli"
 version = "0.1.1"
-edition = "2024"
+authors = { workspace = true }
+edition = { workspace = true }
 description = "Command-line interface for AxiomMe data runtime."
-license = "Apache-2.0"
+license = { workspace = true }
 readme = "README.md"
+exclude = [
+    "../../logs/*",
+    "../../target/*",
+]
 
 [dependencies]
 anyhow = { workspace = true }
