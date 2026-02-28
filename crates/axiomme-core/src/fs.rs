@@ -6,7 +6,7 @@ use globset::{Glob, GlobSetBuilder};
 use walkdir::WalkDir;
 
 use crate::error::{AxiomError, Result};
-use crate::models::{Entry, RelationLink, TreeNode, TreeResult};
+use crate::models::{Entry, TreeNode, TreeResult};
 use crate::uri::{AxiomUri, Scope};
 
 #[derive(Debug, Clone)]
@@ -195,91 +195,6 @@ impl LocalContextFs {
         }
         self.ensure_path_within_root(&path)?;
         Ok(fs::read(path)?)
-    }
-
-    #[must_use]
-    pub fn abstract_path(&self, uri: &AxiomUri) -> PathBuf {
-        self.resolve_uri(uri).join(".abstract.md")
-    }
-
-    #[must_use]
-    pub fn overview_path(&self, uri: &AxiomUri) -> PathBuf {
-        self.resolve_uri(uri).join(".overview.md")
-    }
-
-    pub fn read_abstract(&self, uri: &AxiomUri) -> Result<String> {
-        let path = self.abstract_path(uri);
-        self.ensure_path_within_root(&path)?;
-        if !path.exists() {
-            return Err(AxiomError::NotFound(format!("missing abstract for {uri}")));
-        }
-        if path.is_dir() {
-            return Err(AxiomError::Validation(format!(
-                "abstract path is a directory: {uri}"
-            )));
-        }
-        Ok(fs::read_to_string(path)?)
-    }
-
-    pub fn read_overview(&self, uri: &AxiomUri) -> Result<String> {
-        let path = self.overview_path(uri);
-        self.ensure_path_within_root(&path)?;
-        if !path.exists() {
-            return Err(AxiomError::NotFound(format!("missing overview for {uri}")));
-        }
-        if path.is_dir() {
-            return Err(AxiomError::Validation(format!(
-                "overview path is a directory: {uri}"
-            )));
-        }
-        Ok(fs::read_to_string(path)?)
-    }
-
-    pub fn write_tiers(&self, uri: &AxiomUri, abstract_md: &str, overview_md: &str) -> Result<()> {
-        let base = self.resolve_uri(uri);
-        self.ensure_path_within_root(&base)?;
-        fs::create_dir_all(&base)?;
-        let abstract_path = base.join(".abstract.md");
-        let overview_path = base.join(".overview.md");
-        self.ensure_path_within_root(&abstract_path)?;
-        self.ensure_path_within_root(&overview_path)?;
-        fs::write(abstract_path, abstract_md)?;
-        fs::write(overview_path, overview_md)?;
-        Ok(())
-    }
-
-    pub fn read_relations(&self, uri: &AxiomUri) -> Result<Vec<RelationLink>> {
-        let relation_path = self.relations_path(uri)?;
-        if !relation_path.exists() {
-            return Ok(Vec::new());
-        }
-        self.ensure_path_within_root(&relation_path)?;
-        let raw = fs::read_to_string(&relation_path)?;
-        let relations = serde_json::from_str::<Vec<RelationLink>>(&raw)
-            .map_err(|err| AxiomError::Validation(format!("invalid relations schema: {err}")))?;
-        validate_relations(&relations)?;
-        Ok(relations)
-    }
-
-    pub fn write_relations(
-        &self,
-        uri: &AxiomUri,
-        relations: &[RelationLink],
-        system: bool,
-    ) -> Result<()> {
-        Self::ensure_writable(uri, system)?;
-        let relation_path = self.relations_path(uri)?;
-        if let Some(parent) = relation_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        validate_relations(relations)?;
-
-        let mut canonical = relations.to_vec();
-        canonical.sort_by(|a, b| a.id.cmp(&b.id));
-        let payload = serde_json::to_string_pretty(&canonical)
-            .map_err(|err| AxiomError::Validation(format!("invalid relations payload: {err}")))?;
-        fs::write(relation_path, payload)?;
-        Ok(())
     }
 
     pub fn list(&self, uri: &AxiomUri, recursive: bool) -> Result<Vec<Entry>> {
@@ -476,59 +391,6 @@ impl LocalContextFs {
         }
         Ok(fs::canonicalize(&self.root)?)
     }
-
-    fn relations_path(&self, uri: &AxiomUri) -> Result<PathBuf> {
-        let base = self.resolve_uri(uri);
-        if base.exists() && !base.is_dir() {
-            return Err(AxiomError::Validation(format!(
-                "relations owner must be directory: {uri}"
-            )));
-        }
-        self.ensure_path_within_root(&base)?;
-        Ok(base.join(".relations.json"))
-    }
-}
-
-fn validate_relations(relations: &[RelationLink]) -> Result<()> {
-    let mut ids = std::collections::HashSet::<String>::new();
-    for relation in relations {
-        let id = relation.id.trim();
-        if id.is_empty() {
-            return Err(AxiomError::Validation(
-                "relation id must not be empty".to_string(),
-            ));
-        }
-        if !ids.insert(id.to_string()) {
-            return Err(AxiomError::Validation(format!(
-                "duplicate relation id: {id}"
-            )));
-        }
-
-        if relation.reason.trim().is_empty() {
-            return Err(AxiomError::Validation(format!(
-                "relation reason must not be empty: {id}"
-            )));
-        }
-
-        if relation.uris.len() < 2 {
-            return Err(AxiomError::Validation(format!(
-                "relation must include at least 2 uris: {id}"
-            )));
-        }
-
-        let mut unique_uris = std::collections::HashSet::<String>::new();
-        for uri in &relation.uris {
-            let parsed = AxiomUri::parse(uri).map_err(|err| {
-                AxiomError::Validation(format!("invalid relation uri in {id}: {err}"))
-            })?;
-            if !unique_uris.insert(parsed.to_string()) {
-                return Err(AxiomError::Validation(format!(
-                    "duplicate uri in relation {id}: {uri}"
-                )));
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -538,6 +400,9 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::models::RelationLink;
+    use crate::relation_documents::{read_relations, write_relations};
+    use crate::tier_documents::{read_abstract, read_overview, write_tiers};
 
     #[cfg(unix)]
     use std::os::unix::fs::symlink;
@@ -628,9 +493,7 @@ mod tests {
         symlink(outside.path(), &link_path).expect("symlink");
 
         let uri = AxiomUri::parse("axiom://resources/escape-tiers").expect("parse uri");
-        let err = fs
-            .write_tiers(&uri, "abstract", "overview")
-            .expect_err("must fail");
+        let err = write_tiers(&fs, &uri, "abstract", "overview", true).expect_err("must fail");
         assert!(matches!(err, AxiomError::SecurityViolation(_)));
     }
 
@@ -649,9 +512,9 @@ mod tests {
         symlink(outside.path(), &link_path).expect("symlink");
         let uri = AxiomUri::parse("axiom://resources/escape-tiers").expect("parse uri");
 
-        let abstract_err = fs.read_abstract(&uri).expect_err("must fail abstract read");
+        let abstract_err = read_abstract(&fs, &uri).expect_err("must fail abstract read");
         assert!(matches!(abstract_err, AxiomError::SecurityViolation(_)));
-        let overview_err = fs.read_overview(&uri).expect_err("must fail overview read");
+        let overview_err = read_overview(&fs, &uri).expect_err("must fail overview read");
         assert!(matches!(overview_err, AxiomError::SecurityViolation(_)));
     }
 
@@ -671,9 +534,8 @@ mod tests {
             reason: "Security dependency".to_string(),
         }];
 
-        fs.write_relations(&owner, &links, true)
-            .expect("write relations");
-        let loaded = fs.read_relations(&owner).expect("read relations");
+        write_relations(&fs, &owner, &links, true).expect("write relations");
+        let loaded = read_relations(&fs, &owner).expect("read relations");
         assert_eq!(loaded, links);
     }
 
@@ -693,9 +555,7 @@ mod tests {
             reason: "Broken relation".to_string(),
         }];
 
-        let err = fs
-            .write_relations(&owner, &links, true)
-            .expect_err("must reject invalid uri");
+        let err = write_relations(&fs, &owner, &links, true).expect_err("must reject invalid uri");
         assert!(matches!(err, AxiomError::Validation(_)));
     }
 
@@ -725,9 +585,7 @@ mod tests {
             },
         ];
 
-        let err = fs
-            .write_relations(&owner, &links, true)
-            .expect_err("must reject duplicate id");
+        let err = write_relations(&fs, &owner, &links, true).expect_err("must reject duplicate id");
         assert!(matches!(err, AxiomError::Validation(_)));
     }
 
@@ -739,7 +597,7 @@ mod tests {
 
         let file_uri = AxiomUri::parse("axiom://resources/docs/readme.md").expect("uri parse");
         fs.write(&file_uri, "hello", true).expect("write file");
-        let err = fs.read_relations(&file_uri).expect_err("must fail");
+        let err = read_relations(&fs, &file_uri).expect_err("must fail");
         assert!(matches!(err, AxiomError::Validation(_)));
     }
 }

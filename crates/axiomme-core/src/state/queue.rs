@@ -1,9 +1,12 @@
 use chrono::{Duration, Utc};
+use rusqlite::types::Type;
 use rusqlite::{OptionalExtension, Row, params};
+use std::str::FromStr;
 
 use crate::error::Result;
 use crate::models::{
-    OutboxEvent, QueueCheckpoint, QueueCounts, QueueDeadLetterRate, QueueLaneStatus, QueueStatus,
+    OutboxEvent, QueueCheckpoint, QueueCounts, QueueDeadLetterRate, QueueEventStatus,
+    QueueLaneStatus, QueueStatus, ReconcileRunStatus,
 };
 
 use super::SqliteStateStore;
@@ -16,7 +19,7 @@ impl SqliteStateStore {
         uri: &str,
         payload_json: impl serde::Serialize,
     ) -> Result<i64> {
-        self.enqueue_with_status(event_type, uri, payload_json, "new", 0)
+        self.enqueue_with_status(event_type, uri, payload_json, QueueEventStatus::New, 0)
     }
 
     pub fn enqueue_dead_letter(
@@ -25,7 +28,13 @@ impl SqliteStateStore {
         uri: &str,
         payload_json: impl serde::Serialize,
     ) -> Result<i64> {
-        self.enqueue_with_status(event_type, uri, payload_json, "dead_letter", 1)
+        self.enqueue_with_status(
+            event_type,
+            uri,
+            payload_json,
+            QueueEventStatus::DeadLetter,
+            1,
+        )
     }
 
     fn enqueue_with_status(
@@ -33,7 +42,7 @@ impl SqliteStateStore {
         event_type: &str,
         uri: &str,
         payload_json: impl serde::Serialize,
-        status: &str,
+        status: QueueEventStatus,
         attempt_count: u32,
     ) -> Result<i64> {
         let now = Utc::now().to_rfc3339();
@@ -51,7 +60,7 @@ impl SqliteStateStore {
                     uri,
                     payload_json,
                     now,
-                    status,
+                    status.as_str(),
                     i64::from(attempt_count),
                     lane
                 ],
@@ -60,11 +69,13 @@ impl SqliteStateStore {
         })
     }
 
-    pub fn fetch_outbox(&self, status: &str, limit: usize) -> Result<Vec<OutboxEvent>> {
+    pub fn fetch_outbox(&self, status: QueueEventStatus, limit: usize) -> Result<Vec<OutboxEvent>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
 
+        let status_raw = status.as_str();
+        let is_new = status == QueueEventStatus::New;
         let now = Utc::now().to_rfc3339();
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
@@ -72,14 +83,14 @@ impl SqliteStateStore {
                 SELECT id, event_type, uri, payload_json, status, attempt_count, next_attempt_at
                 FROM outbox
                 WHERE status = ?1
-                  AND (?1 <> 'new' OR COALESCE(next_attempt_at, created_at) <= ?3)
+                  AND (?4 = 1 OR COALESCE(next_attempt_at, created_at) <= ?3)
                 ORDER BY id ASC
                 LIMIT ?2
                 ",
             )?;
 
             let rows = stmt.query_map(
-                params![status, usize_to_i64_saturating(limit), now],
+                params![status_raw, usize_to_i64_saturating(limit), now, !is_new],
                 outbox_event_from_row,
             )?;
 
@@ -123,30 +134,35 @@ impl SqliteStateStore {
         })
     }
 
-    pub fn mark_outbox_status(&self, id: i64, status: &str, increment_attempt: bool) -> Result<()> {
+    pub fn mark_outbox_status(
+        &self,
+        id: i64,
+        status: QueueEventStatus,
+        increment_attempt: bool,
+    ) -> Result<()> {
         self.with_conn(|conn| {
-            if status == "processing" {
+            if status == QueueEventStatus::Processing {
                 let now = Utc::now().to_rfc3339();
                 if increment_attempt {
                     conn.execute(
                         "UPDATE outbox SET status = ?1, attempt_count = attempt_count + 1, next_attempt_at = ?3 WHERE id = ?2",
-                        params![status, id, now],
+                        params![status.as_str(), id, now],
                     )?;
                 } else {
                     conn.execute(
                         "UPDATE outbox SET status = ?1, next_attempt_at = ?3 WHERE id = ?2",
-                        params![status, id, now],
+                        params![status.as_str(), id, now],
                     )?;
                 }
             } else if increment_attempt {
                 conn.execute(
                     "UPDATE outbox SET status = ?1, attempt_count = attempt_count + 1 WHERE id = ?2",
-                    params![status, id],
+                    params![status.as_str(), id],
                 )?;
             } else {
                 conn.execute(
                     "UPDATE outbox SET status = ?1 WHERE id = ?2",
-                    params![status, id],
+                    params![status.as_str(), id],
                 )?;
             }
             Ok(())
@@ -159,11 +175,15 @@ impl SqliteStateStore {
             let affected = conn.execute(
                 r"
                 UPDATE outbox
-                SET status = 'new'
-                WHERE status = 'processing'
+                SET status = ?2
+                WHERE status = ?3
                   AND COALESCE(next_attempt_at, created_at) <= ?1
                 ",
-                params![stale_before],
+                params![
+                    stale_before,
+                    QueueEventStatus::New.as_str(),
+                    QueueEventStatus::Processing.as_str()
+                ],
             )?;
             Ok(i64_to_u64_saturating(
                 i64::try_from(affected).unwrap_or(i64::MAX),
@@ -175,8 +195,8 @@ impl SqliteStateStore {
         let next_attempt = (Utc::now() + Duration::seconds(delay_seconds.max(0))).to_rfc3339();
         self.with_conn(|conn| {
             conn.execute(
-                "UPDATE outbox SET status = 'new', next_attempt_at = ?1 WHERE id = ?2",
-                params![next_attempt, id],
+                "UPDATE outbox SET status = ?1, next_attempt_at = ?2 WHERE id = ?3",
+                params![QueueEventStatus::New.as_str(), next_attempt, id],
             )?;
             Ok(())
         })
@@ -242,9 +262,13 @@ impl SqliteStateStore {
             conn.execute(
                 r"
                 INSERT OR REPLACE INTO reconcile_runs(run_id, started_at, drift_count, status)
-                VALUES (?1, ?2, 0, 'running')
+                VALUES (?1, ?2, 0, ?3)
                 ",
-                params![run_id, Utc::now().to_rfc3339()],
+                params![
+                    run_id,
+                    Utc::now().to_rfc3339(),
+                    ReconcileRunStatus::Running.as_str()
+                ],
             )?;
             Ok(())
         })
@@ -254,7 +278,7 @@ impl SqliteStateStore {
         &self,
         run_id: &str,
         drift_count: usize,
-        status: &str,
+        status: ReconcileRunStatus,
     ) -> Result<()> {
         self.with_conn(|conn| {
             conn.execute(
@@ -267,7 +291,7 @@ impl SqliteStateStore {
                     run_id,
                     Utc::now().to_rfc3339(),
                     usize_to_i64_saturating(drift_count),
-                    status
+                    status.as_str()
                 ],
             )?;
             Ok(())
@@ -276,6 +300,10 @@ impl SqliteStateStore {
 
     pub fn queue_snapshot(&self) -> Result<(QueueCounts, QueueStatus)> {
         let now = Utc::now().to_rfc3339();
+        let status_new = QueueEventStatus::New.as_str();
+        let status_processing = QueueEventStatus::Processing.as_str();
+        let status_done = QueueEventStatus::Done.as_str();
+        let status_dead_letter = QueueEventStatus::DeadLetter.as_str();
         self.with_conn(|conn| {
             let mut counts = QueueCounts::default();
             let mut semantic = QueueLaneStatus::default();
@@ -296,18 +324,27 @@ impl SqliteStateStore {
                 )
                 SELECT
                     lane_norm,
-                    SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new_total,
-                    SUM(CASE WHEN status = 'new' AND due_at <= ?4 THEN 1 ELSE 0 END) AS new_due,
-                    SUM(CASE WHEN status = 'processing' THEN 1 ELSE 0 END) AS processing,
-                    SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
-                    SUM(CASE WHEN status = 'dead_letter' THEN 1 ELSE 0 END) AS dead_letter,
-                    MIN(CASE WHEN status = 'new' THEN due_at ELSE NULL END) AS earliest_new_due_at
+                    SUM(CASE WHEN status = ?4 THEN 1 ELSE 0 END) AS new_total,
+                    SUM(CASE WHEN status = ?4 AND due_at <= ?5 THEN 1 ELSE 0 END) AS new_due,
+                    SUM(CASE WHEN status = ?6 THEN 1 ELSE 0 END) AS processing,
+                    SUM(CASE WHEN status = ?7 THEN 1 ELSE 0 END) AS done,
+                    SUM(CASE WHEN status = ?8 THEN 1 ELSE 0 END) AS dead_letter,
+                    MIN(CASE WHEN status = ?4 THEN due_at ELSE NULL END) AS earliest_new_due_at
                 FROM normalized
                 GROUP BY lane_norm
                 ",
             )?;
             let rows = stmt.query_map(
-                params![LANE_SEMANTIC, LANE_EMBEDDING, LANE_SEMANTIC, now],
+                params![
+                    LANE_SEMANTIC,
+                    LANE_EMBEDDING,
+                    LANE_SEMANTIC,
+                    status_new,
+                    now,
+                    status_processing,
+                    status_done,
+                    status_dead_letter
+                ],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -361,19 +398,20 @@ impl SqliteStateStore {
     }
 
     pub fn queue_dead_letter_rates_by_event_type(&self) -> Result<Vec<QueueDeadLetterRate>> {
+        let status_dead_letter = QueueEventStatus::DeadLetter.as_str();
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 r"
                 SELECT
                     event_type,
                     COUNT(*) AS total,
-                    SUM(CASE WHEN status = 'dead_letter' THEN 1 ELSE 0 END) AS dead_letter
+                    SUM(CASE WHEN status = ?1 THEN 1 ELSE 0 END) AS dead_letter
                 FROM outbox
                 GROUP BY event_type
                 ORDER BY event_type ASC
                 ",
             )?;
-            let rows = stmt.query_map([], |row| {
+            let rows = stmt.query_map(params![status_dead_letter], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
@@ -480,12 +518,20 @@ fn outbox_event_from_row(row: &Row<'_>) -> rusqlite::Result<OutboxEvent> {
     let payload = row.get::<_, String>(3)?;
     let payload_json =
         serde_json::from_str::<serde_json::Value>(&payload).unwrap_or(serde_json::Value::Null);
+    let status_raw = row.get::<_, String>(4)?;
+    let status = QueueEventStatus::from_str(status_raw.as_str()).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, err)),
+        )
+    })?;
     Ok(OutboxEvent {
         id: row.get(0)?,
         event_type: row.get(1)?,
         uri: row.get(2)?,
         payload_json,
-        status: row.get(4)?,
+        status,
         attempt_count: i64_to_u32_saturating(row.get::<_, i64>(5)?),
         next_attempt_at: row.get(6)?,
     })

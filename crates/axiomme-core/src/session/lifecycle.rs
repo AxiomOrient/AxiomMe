@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::error::Result;
 use crate::models::{ContextUsage, Message, SessionMeta};
 use crate::om::plan_process_output_result;
+use crate::tier_documents::{abstract_path, overview_path, write_tiers};
 
 use super::Session;
 
@@ -37,13 +38,15 @@ impl Session {
             fs::write(rel_path, "[]")?;
         }
 
-        let abstract_path = self.fs.abstract_path(&uri);
-        let overview_path = self.fs.overview_path(&uri);
+        let abstract_path = abstract_path(&self.fs, &uri);
+        let overview_path = overview_path(&self.fs, &uri);
         if !abstract_path.exists() || !overview_path.exists() {
-            self.fs.write_tiers(
+            write_tiers(
+                &self.fs,
                 &uri,
                 &format!("Session {}", self.session_id),
                 "# Session Overview\n\nNo messages yet.",
+                true,
             )?;
         }
 

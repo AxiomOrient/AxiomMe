@@ -29,15 +29,15 @@ pub use eval::{
     EvalRunOptions, EvalRunSelection,
 };
 pub use filesystem::{
-    AddResourceIngestOptions, AddResourceRequest, AddResourceResult, Entry, GlobResult,
-    MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
+    AddResourceIngestOptions, AddResourceRequest, AddResourceResult, AddResourceWaitMode, Entry,
+    GlobResult, MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
 };
 pub use queue::{
     OmQueueStatus, OmReflectionApplyMetrics, OutboxEvent, QueueCheckpoint, QueueCounts,
-    QueueDeadLetterRate, QueueDiagnostics, QueueLaneStatus, QueueOverview, QueueStatus,
-    ReplayReport,
+    QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus, QueueOverview,
+    QueueStatus, ReplayReport,
 };
-pub use reconcile::{ReconcileOptions, ReconcileReport};
+pub use reconcile::{ReconcileOptions, ReconcileReport, ReconcileRunStatus};
 pub use release::{
     BenchmarkGateDetails, BlockerRollupGateDetails, BuildQualityGateDetails, CommandProbeResult,
     ContractIntegrityGateDetails, DependencyAuditStatus, DependencyAuditSummary,

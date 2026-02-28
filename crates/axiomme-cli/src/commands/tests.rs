@@ -3,16 +3,18 @@ use std::path::Path;
 
 use tempfile::tempdir;
 
-use super::command_needs_runtime;
+use super::validation::command_needs_runtime;
 use crate::cli::{
-    AddArgs, BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs, DocumentCommand,
-    DocumentMode, EvalArgs, EvalCommand, FindArgs, OntologyArgs, OntologyCommand, QueueArgs,
-    QueueCommand, ReconcileArgs, RelationArgs, RelationCommand, TraceArgs, TraceCommand, WebArgs,
+    AddArgs, AddWaitModeArg, BenchmarkArgs, BenchmarkCommand, Commands, DocumentArgs,
+    DocumentCommand, DocumentMode, EvalArgs, EvalCommand, FindArgs, OntologyArgs, OntologyCommand,
+    QueueArgs, QueueCommand, ReconcileArgs, RelationArgs, RelationCommand, TraceArgs, TraceCommand,
+    WebArgs,
 };
 use axiomme_core::AxiomMe;
+use axiomme_core::models::QueueEventStatus;
 
 fn run(app: &AxiomMe, root: &Path, command: Commands) -> anyhow::Result<()> {
-    super::validate_command_preflight(&command)?;
+    super::validation::validate_command_preflight(&command)?;
     super::run_validated(app, root, command)
 }
 
@@ -64,6 +66,35 @@ fn write_schema_with_action_and_invariants(root: &Path) {
         }"#,
     )
     .expect("write schema");
+}
+
+fn write_ontology_pressure_snapshot(path: &Path, generated_at_utc: &str, trigger_reason: &str) {
+    let content = format!(
+        r#"{{
+          "generated_at_utc": "{generated_at_utc}",
+          "label": "nightly",
+          "pressure": {{
+            "report": {{
+              "schema_version": 1,
+              "object_type_count": 1,
+              "link_type_count": 1,
+              "action_type_count": 1,
+              "invariant_count": 1,
+              "action_invariant_total": 2,
+              "link_types_per_object_basis_points": 10000,
+              "v2_candidate": true,
+              "trigger_reasons": ["{trigger_reason}"],
+              "policy": {{
+                "min_action_types": 1,
+                "min_invariants": 1,
+                "min_action_invariant_total": 1,
+                "min_link_types_per_object_basis_points": 1
+              }}
+            }}
+          }}
+        }}"#
+    );
+    fs::write(path, content).expect("write ontology pressure snapshot");
 }
 
 #[test]
@@ -130,6 +161,7 @@ fn backend_runs_runtime_prepare_and_reflects_local_records() {
             markdown_only: false,
             include_hidden: false,
             exclude: Vec::new(),
+            wait_mode: AddWaitModeArg::Relaxed,
         }),
     )
     .expect("add");
@@ -199,16 +231,19 @@ fn benchmark_gate_does_not_require_runtime_prepare() {
 
 #[test]
 fn add_ingest_options_require_markdown_only_for_exclude() {
-    let err = super::build_add_ingest_options(false, false, &["**/*.json".to_string()])
+    let err = super::support::build_add_ingest_options(false, false, &["**/*.json".to_string()])
         .expect_err("exclude without markdown-only must fail");
     assert!(format!("{err:#}").contains("--exclude requires --markdown-only"));
 }
 
 #[test]
 fn add_ingest_options_markdown_only_defaults_are_applied() {
-    let options =
-        super::build_add_ingest_options(true, false, &["*.bak".to_string(), "  ".to_string()])
-            .expect("options");
+    let options = super::support::build_add_ingest_options(
+        true,
+        false,
+        &["*.bak".to_string(), "  ".to_string()],
+    )
+    .expect("options");
     assert!(options.markdown_only);
     assert!(!options.include_hidden);
     assert!(options.exclude_globs.iter().any(|x| x == "**/*.json"));
@@ -402,87 +437,9 @@ fn ontology_trend_reads_snapshot_history_and_runs() {
 
     let history_dir = temp.path().join("pressure-history");
     fs::create_dir_all(&history_dir).expect("history dir");
-    fs::write(
-        history_dir.join("s1.json"),
-        r#"{
-          "generated_at_utc": "2026-02-21T00:00:00Z",
-          "label": "nightly",
-          "pressure": {
-            "report": {
-              "schema_version": 1,
-              "object_type_count": 1,
-              "link_type_count": 1,
-              "action_type_count": 1,
-              "invariant_count": 1,
-              "action_invariant_total": 2,
-              "link_types_per_object_basis_points": 10000,
-              "v2_candidate": true,
-              "trigger_reasons": ["a"],
-              "policy": {
-                "min_action_types": 1,
-                "min_invariants": 1,
-                "min_action_invariant_total": 1,
-                "min_link_types_per_object_basis_points": 1
-              }
-            }
-          }
-        }"#,
-    )
-    .expect("write snapshot 1");
-    fs::write(
-        history_dir.join("s2.json"),
-        r#"{
-          "generated_at_utc": "2026-02-22T00:00:00Z",
-          "label": "nightly",
-          "pressure": {
-            "report": {
-              "schema_version": 1,
-              "object_type_count": 1,
-              "link_type_count": 1,
-              "action_type_count": 1,
-              "invariant_count": 1,
-              "action_invariant_total": 2,
-              "link_types_per_object_basis_points": 10000,
-              "v2_candidate": true,
-              "trigger_reasons": ["b"],
-              "policy": {
-                "min_action_types": 1,
-                "min_invariants": 1,
-                "min_action_invariant_total": 1,
-                "min_link_types_per_object_basis_points": 1
-              }
-            }
-          }
-        }"#,
-    )
-    .expect("write snapshot 2");
-    fs::write(
-        history_dir.join("s3.json"),
-        r#"{
-          "generated_at_utc": "2026-02-23T00:00:00Z",
-          "label": "nightly",
-          "pressure": {
-            "report": {
-              "schema_version": 1,
-              "object_type_count": 1,
-              "link_type_count": 1,
-              "action_type_count": 1,
-              "invariant_count": 1,
-              "action_invariant_total": 2,
-              "link_types_per_object_basis_points": 10000,
-              "v2_candidate": true,
-              "trigger_reasons": ["c"],
-              "policy": {
-                "min_action_types": 1,
-                "min_invariants": 1,
-                "min_action_invariant_total": 1,
-                "min_link_types_per_object_basis_points": 1
-              }
-            }
-          }
-        }"#,
-    )
-    .expect("write snapshot 3");
+    write_ontology_pressure_snapshot(&history_dir.join("s1.json"), "2026-02-21T00:00:00Z", "a");
+    write_ontology_pressure_snapshot(&history_dir.join("s2.json"), "2026-02-22T00:00:00Z", "b");
+    write_ontology_pressure_snapshot(&history_dir.join("s3.json"), "2026-02-23T00:00:00Z", "c");
 
     let command = Commands::Ontology(OntologyArgs {
         command: OntologyCommand::Trend {
@@ -492,6 +449,46 @@ fn ontology_trend_reads_snapshot_history_and_runs() {
         },
     });
     run(&app, temp.path(), command).expect("ontology trend");
+}
+
+#[test]
+fn ontology_trend_samples_are_sorted_by_generated_at_utc_not_filename() {
+    let temp = tempdir().expect("tempdir");
+    let history_dir = temp.path().join("pressure-history");
+    fs::create_dir_all(&history_dir).expect("history dir");
+
+    // Filename order and timestamp order are intentionally different.
+    write_ontology_pressure_snapshot(
+        &history_dir.join("a-newest.json"),
+        "2026-02-23T00:00:00Z",
+        "newest",
+    );
+    write_ontology_pressure_snapshot(
+        &history_dir.join("m-middle.json"),
+        "2026-02-22T00:00:00Z",
+        "middle",
+    );
+    write_ontology_pressure_snapshot(
+        &history_dir.join("z-oldest.json"),
+        "2026-02-21T00:00:00Z",
+        "oldest",
+    );
+
+    let samples =
+        super::ontology::load_ontology_pressure_samples(&history_dir).expect("load samples");
+    let ordered_ids = samples
+        .iter()
+        .map(|sample| sample.sample_id.clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        ordered_ids,
+        vec![
+            "nightly:z-oldest.json".to_string(),
+            "nightly:m-middle.json".to_string(),
+            "nightly:a-newest.json".to_string(),
+        ]
+    );
 }
 
 #[test]
@@ -534,7 +531,10 @@ fn ontology_action_validate_and_enqueue_run_with_schema_contract() {
     )
     .expect("action enqueue");
 
-    let outbox = app.state.fetch_outbox("new", 200).expect("fetch outbox");
+    let outbox = app
+        .state
+        .fetch_outbox(QueueEventStatus::New, 200)
+        .expect("fetch outbox");
     let queued = outbox
         .iter()
         .find(|event| {
@@ -766,6 +766,7 @@ fn add_markdown_flag_validation_runs_before_bootstrap_side_effects() {
             markdown_only: false,
             include_hidden: false,
             exclude: vec!["**/*.json".to_string()],
+            wait_mode: AddWaitModeArg::Relaxed,
         }),
     )
     .expect_err("must fail");

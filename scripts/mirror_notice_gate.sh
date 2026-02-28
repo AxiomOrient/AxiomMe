@@ -101,7 +101,7 @@ if [[ -n "${POST_NOTICE_TAG}" ]]; then
     strict_executed=true
     strict_reason="executed"
     if [[ -z "${STRICT_GATE_OUTPUT}" ]]; then
-      strict_report_path="${REPO_ROOT}/docs/RELEASE_PACK_STRICT_NOTICE_${POST_NOTICE_TAG_DATE}.json"
+      strict_report_path="${REPO_ROOT}/logs/quality/release_pack_strict_notice.json"
     else
       strict_report_path="${STRICT_GATE_OUTPUT}"
     fi

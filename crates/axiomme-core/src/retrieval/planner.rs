@@ -218,10 +218,18 @@ pub(super) fn uri_in_scopes(uri: &str, scopes: &[Scope]) -> bool {
     if scopes.is_empty() {
         return true;
     }
-    let Ok(parsed) = AxiomUri::parse(uri) else {
+    let Some(scope_str) = get_scope_str_from_uri(uri) else {
         return false;
     };
-    scopes.iter().any(|scope| parsed.scope() == *scope)
+    scopes.iter().any(|scope| scope.as_str() == scope_str)
+}
+
+fn get_scope_str_from_uri(uri: &str) -> Option<&str> {
+    if !uri.starts_with("axiom://") {
+        return None;
+    }
+    let tail = &uri[8..];
+    tail.split('/').next()
 }
 
 #[cfg(test)]

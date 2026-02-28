@@ -22,7 +22,7 @@
 ### Resource and Filesystem
 
 - `initialize() -> Result<()>`
-- `add_resource(path_or_url, target?, reason?, instruction?, wait, timeout?) -> AddResourceResult`
+- `add_resource(path_or_url, target?, reason?, instruction?, wait, wait_mode?, timeout?) -> AddResourceResult`
 - `wait_processed(timeout?) -> QueueStatus`
 - `ls(uri, recursive, simple) -> List<Entry>`
 - `glob(pattern, uri?) -> GlobResult`
@@ -48,6 +48,10 @@ Restriction:
   - repeatedly replays due queue events;
   - returns when queue work is drained (`new_total == 0 && processing == 0`);
   - returns `CONFLICT` on timeout with queue counts in message.
+- `add_resource(..., wait=true)` wait contract:
+  - `wait_mode=relaxed` (default): one bounded replay cycle and return.
+  - `wait_mode=strict`: wait until the queued event reaches terminal `done`; return `CONFLICT` on timeout or `dead_letter`.
+  - `AddResourceResult` includes `wait_mode` and `wait_contract` for explicit caller-side interpretation.
 
 Markdown web editor (`extension`):
 
@@ -234,7 +238,8 @@ Session handle:
 
 Checkpoint promotion contract (`extension`):
 
-- `commit_with_mode(archive_only)` archives active messages and skips auto memory extraction.
+- `commit_with_mode(ArchiveOnly)` archives active messages and skips auto memory extraction.
+- `commit_with_mode(ArchiveAndExtract)` (default) archives and performs automated memory extraction.
 - `promote_session_memories` accepts explicit `MemoryPromotionRequest` facts only.
 - Promotion idempotency key is `(session_id, checkpoint_id)` with deterministic `request_hash`.
 - Same key + same hash returns cached result; same key + different hash returns validation conflict.
@@ -314,9 +319,9 @@ Release gate policy (`collect_release_gate_pack`) is evaluated as `G0..G8`:
 
 Compatibility/deprecation plan (`memories/resources/skills`):
 
-- 2026-02-24 (current): compatibility mirrors are still emitted by default.
-- Transition window: consumers should migrate to `query_results` + `hit_buckets` during 2026-Q2.
-- Removal gate: mirror-field removal requires an explicit release note and one-cycle advance notice before enforcement (see `docs/RELEASE_NOTES_2026-02-24.md`).
+- Current: compatibility mirrors are still emitted by default.
+- Transition: consumers should migrate to `query_results` + `hit_buckets`.
+- Removal gate: mirror-field removal requires an explicit update to this API contract and advance notice before enforcement.
 - Contract rule: when mirrors exist, they must be generated from `query_results`/`hit_buckets` only (no independent ranking path).
 
 Relation fields:

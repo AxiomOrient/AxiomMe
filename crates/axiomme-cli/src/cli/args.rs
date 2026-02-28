@@ -1,4 +1,11 @@
-use clap::Args;
+use clap::{Args, ValueEnum};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+#[value(rename_all = "snake_case")]
+pub enum AddWaitModeArg {
+    Relaxed,
+    Strict,
+}
 
 #[derive(Debug, Args)]
 pub struct AddArgs {
@@ -21,6 +28,9 @@ pub struct AddArgs {
     /// Include hidden files/directories when `--markdown-only` is enabled.
     #[arg(long, default_value_t = false)]
     pub include_hidden: bool,
+    /// Wait contract when `--wait=true` (`relaxed`: one replay pass, `strict`: terminal done only).
+    #[arg(long, value_enum, default_value_t = AddWaitModeArg::Relaxed)]
+    pub wait_mode: AddWaitModeArg,
 }
 
 #[derive(Debug, Args)]

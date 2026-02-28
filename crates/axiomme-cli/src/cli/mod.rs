@@ -19,8 +19,8 @@ mod trace;
 mod tests;
 
 pub use args::{
-    AddArgs, ExportArgs, FindArgs, GlobArgs, ImportArgs, ListArgs, MoveArgs, ReconcileArgs,
-    RemoveArgs, SearchArgs, UriArg, WebArgs,
+    AddArgs, AddWaitModeArg, ExportArgs, FindArgs, GlobArgs, ImportArgs, ListArgs, MoveArgs,
+    ReconcileArgs, RemoveArgs, SearchArgs, UriArg, WebArgs,
 };
 pub use benchmark::{BenchmarkArgs, BenchmarkCommand, BenchmarkFixtureCommand};
 pub use document::{DocumentArgs, DocumentCommand, DocumentMode};

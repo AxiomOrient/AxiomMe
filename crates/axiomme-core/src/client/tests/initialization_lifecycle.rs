@@ -1,4 +1,5 @@
 use super::*;
+use crate::tier_documents::abstract_path;
 
 #[test]
 fn bootstrap_initializes_filesystem_without_runtime_index() {
@@ -20,13 +21,13 @@ fn bootstrap_initializes_filesystem_without_runtime_index() {
         .create_dir_all(&docs_uri, true)
         .expect("create docs directory");
     assert!(
-        !app.fs.abstract_path(&docs_uri).exists(),
+        !abstract_path(&app.fs, &docs_uri).exists(),
         "runtime tier files should not be synthesized during bootstrap"
     );
 
     app.prepare_runtime().expect("prepare runtime");
     assert!(
-        app.fs.abstract_path(&docs_uri).exists(),
+        abstract_path(&app.fs, &docs_uri).exists(),
         "runtime prepare should synthesize tier files"
     );
 }

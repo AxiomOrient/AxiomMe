@@ -1,175 +1,32 @@
 # AxiomMe
 
-AxiomMe is a local-first context runtime for deterministic agent workflows.
+**Production-grade Context Management System for Agentic Runtimes**
 
-This repository is intentionally focused on three boundaries only:
-- `axiomme-core`: data model + runtime engine
-- `axiomme-cli`: explicit process/automation interface
-- `axiomme-mobile-ffi`: native FFI boundary on top of core
+AxiomMe는 에이전트 환경을 위한 Rust 기반의 로컬 컨텍스트 관리 시스템입니다. `axiom://` 가상 파일 시스템을 통해 데이터의 일관성을 보장하며, 고성능 검색 엔진과 정밀한 세션 메모리 관리 기능을 제공합니다.
 
-Web UI delivery is intentionally externalized (see "Companion Projects").
+## Key Features
+- **Local-first Architecture**: 모든 데이터는 로컬 디스크(`fs`), SQLite(`state`), 그리고 인메모리 인덱스(`index`)에서 관리됩니다.
+- **High Performance Retrieval**: John Carmack의 성능 철학을 반영한 최적화된 DRR(Document Retrieval and Ranking) 엔진을 탑재하여 수만 개의 문서에서도 밀리초 단위의 검색을 보장합니다.
+- **Atomic Memory Promotion**: 세션의 대화 내용을 분석하여 유의미한 기억으로 승격시키는 과정을 체크포인트 기반의 원자적 작업으로 수행합니다.
+- **Rigorous Quality Gates**: 600개 이상의 테스트와 다층 품질 게이트를 통해 상용 수준의 안정성을 유지합니다.
 
-## Repository Scope
-
-Included in this repository:
-- `crates/axiomme-core`
-- `crates/axiomme-cli`
-- `crates/axiomme-mobile-ffi`
-
-Not included in this repository:
-- Web viewer/server runtime (separate project)
-- iOS/Android application projects (separate project)
-
-This keeps runtime correctness and packaging boundaries explicit.
-
-## Data Model (Primary)
-
-All content is addressed by canonical URI:
-
-`axiom://{scope}/{path}`
-
-Scopes:
-- external: `resources`, `user`, `agent`, `session`
-- internal: `temp`, `queue`
-
-Everything else derives from this model:
-- filesystem placement
-- indexing/retrieval keys
-- queue payload routing
-- session/memory references
-
-## Runtime Boundaries
-
-`axiomme-core`:
-- URI model, fs safety, queue/state, retrieval, session memory, release evidence.
-- OM model/transform engine is provided by `episodic` and integrated via `axiomme-core::om`.
-- Pure transformations are preferred; side effects are isolated in explicit modules.
-
-`axiomme-cli`:
-- deterministic command surface for operators/CI.
-- explicit external handoff for viewer command (`axiomme web`).
-
-`axiomme-mobile-ffi`:
-- `staticlib`/`cdylib` exports for native mobile integration.
-- JSON C-ABI contracts and explicit runtime handle ownership.
-
-## Side Effects (Explicit)
-
-Main side-effect boundaries in core:
-- filesystem read/write
-- sqlite persistence
-- queue replay and reconciliation
-- network calls (embedding, remote resources)
-- optional host tool execution (policy-gated)
-
-Host command policy:
-- `AXIOMME_HOST_TOOLS=on|off`
-- default is target-driven (`on` for non-iOS targets, `off` for iOS targets)
-- compile-time boundary: `axiomme-core` `host-tools` feature (enabled for CLI, disabled in mobile FFI crate)
-
-## What You Can Build
-
-- deterministic local ingestion + retrieval pipelines
-- searchable context corpora with traceable query plans
-- session memory extraction/promotion workflows
-- reliability/operability/security evidence pipelines
-- release gate automation (`G0..G8`)
-  - `G0` enforces `episodic` API probe + semver/registry contract in addition to core contract probe
-- native mobile clients via FFI boundary crate
-
-## Quickstart
-
+## Quick Start
 ```bash
-# inspect CLI surface
-cargo run -p axiomme-cli -- --help
+# 초기화
+axiomme init
 
-# initialize runtime in current workspace
-cargo run -p axiomme-cli -- init
+# 리소스 추가
+axiomme add ./docs --target axiom://resources/docs
 
-# ingest content
-cargo run -p axiomme-cli -- add ./README.md --target axiom://resources/repo --wait true
+# 검색
+axiomme search "oauth flow"
 
-# retrieval
-cargo run -p axiomme-cli -- find "context runtime"
+# 세션 커밋 및 기억 승격
+axiomme session commit
 ```
-
-Web viewer handoff:
-
-```bash
-cargo run -p axiomme-cli -- web --host 127.0.0.1 --port 8787
-```
-
-Viewer binary resolution order:
-- `AXIOMME_WEB_VIEWER_BIN`
-- `axiomme-webd`
-
-## Development and Verification
-
-```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-```
-
-Convenience script:
-
-```bash
-bash scripts/quality_gates.sh
-```
-
-Real-use random benchmark (contextSet):
-
-```bash
-bash scripts/contextset_random_benchmark.sh \
-  --dataset /Users/axient/Documents/contextSet \
-  --sample-size 24 \
-  --seed 4242 \
-  --report-path docs/REAL_CONTEXTSET_VALIDATION_$(date +%F)-random.md
-
-# Multi-seed matrix benchmark (recommended gate)
-bash scripts/contextset_random_benchmark_matrix.sh \
-  --dataset /Users/axient/Documents/contextSet \
-  --sample-size 24 \
-  --seeds 4242,777,9001 \
-  --report-path docs/REAL_CONTEXTSET_VALIDATION_MATRIX_$(date +%F).md
-
-# Default gate includes:
-# find/search non-empty, find/search top1 (>=65), find/search top5, p95 latency reporting.
-# Heading candidates exclude YAML front matter and fenced code blocks.
-```
-
-Release gate pack:
-
-```bash
-cargo run -p axiomme-cli -- release pack --workspace-dir .
-```
-
-## Companion Projects
-
-Recommended split under `/Users/axient/repository`:
-- `/Users/axient/repository/AxiomMe-web`
-  - viewer/server delivery only
-  - depends on stable runtime/API contracts
-- `/Users/axient/repository/AxiomMe-mobile`
-  - iOS/Android app projects
-  - consumes `axiomme-mobile-ffi`
-
-This repository stays runtime-focused so release risk and performance behavior stay easy to reason about.
 
 ## Documentation
-
-Canonical contracts/specs:
-- `docs/README.md`
-- `docs/FEATURE_SPEC.md`
-- `docs/API_CONTRACT.md`
-
-Web split decision and migration notes:
-- `docs/WEB_SPLIT_REVIEW_2026-02-21.md`
-
-## Principles
-
-- data model first
-- pure transforms where possible
-- explicit side effects
-- concrete structures over clever hierarchies
-- predictable performance and ownership boundaries
+- [Architecture](./docs/ARCHITECTURE.md): 시스템 설계 및 데이터 흐름 명세
+- [API Contract](./docs/API_CONTRACT.md): 인터페이스 규약 및 데이터 모델
+- [Feature Spec](./docs/FEATURE_SPEC.md): 기능적 인바리언트 보장 항목
+- [Ontology Policy](./docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md): 데이터 스키마 진화 정책

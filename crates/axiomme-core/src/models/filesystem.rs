@@ -13,11 +13,33 @@ pub struct GlobResult {
     pub matches: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AddResourceWaitMode {
+    #[default]
+    Relaxed,
+    Strict,
+}
+
+impl AddResourceWaitMode {
+    #[must_use]
+    pub const fn contract_label(self) -> &'static str {
+        match self {
+            Self::Relaxed => "relaxed_single_replay",
+            Self::Strict => "strict_terminal_done",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddResourceResult {
     pub root_uri: String,
     pub queued: bool,
     pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_mode: Option<AddResourceWaitMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_contract: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +50,8 @@ pub struct AddResourceRequest {
     pub wait: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub wait_mode: AddResourceWaitMode,
     #[serde(default)]
     pub ingest_options: AddResourceIngestOptions,
 }
@@ -40,6 +64,7 @@ impl AddResourceRequest {
             target: None,
             wait: false,
             timeout_secs: None,
+            wait_mode: AddResourceWaitMode::default(),
             ingest_options: AddResourceIngestOptions::default(),
         }
     }

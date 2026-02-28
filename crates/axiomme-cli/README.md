@@ -23,7 +23,7 @@ Command-line interface crate.
 
 Web viewer command:
 - `axiomme web --host ... --port ...` launches an external viewer binary.
-- Viewer/server implementation is expected in a separate project (e.g. `/Users/axient/repository/AxiomMe-web`).
+- Viewer/server implementation is expected in a separate project (external companion web project).
 - Resolution order:
   - `AXIOMME_WEB_VIEWER_BIN` (if set)
   - `axiomme-webd`

@@ -7,7 +7,7 @@ Minimal mobile FFI boundary for `axiomme-core`.
 - Export a stable C ABI for iOS/Swift integration.
 - Keep data contracts explicit (`code + owned bytes payload`).
 - Keep side effects isolated behind runtime handle methods.
-- Be consumed by external mobile app projects (for example `/Users/axient/repository/AxiomMe-mobile`).
+- Be consumed by external mobile app projects (for example, a companion mobile app repository).
 
 ## Exported Surface
 

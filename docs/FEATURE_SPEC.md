@@ -43,6 +43,9 @@ The runtime is standalone at execution boundary, and OM is integrated with `epis
 - Support local files/directories and URL inputs.
 - Ingest uses temp staging and finalize move.
 - Indexing/semantic updates are replay-safe and asynchronous.
+- `add_resource(wait=true)` must expose explicit wait contract mode:
+  - `relaxed` (default): bounded replay and return.
+  - `strict`: terminal `done` 보장, timeout/dead-letter는 conflict로 반환.
 - Markdown editor save path uses full-document replace with etag conflict guard and synchronous reindex.
 
 ### FR-004 Retrieval
@@ -210,6 +213,14 @@ Expected: memory files are categorized and immediately retrievable.
 3. Retrieve imported content.
 
 Expected: structure preserved, unsafe entries rejected.
+
+### Scenario D: Memory Promotion Integrity
+
+1. Trigger `promote_session_memories` with unique `checkpoint_id`.
+2. Interrupt process during I/O.
+3. Retry with same `checkpoint_id` and same request hash.
+
+Expected: 시스템은 체크포인트를 통해 중복 실행을 방지하거나, 이전 실패 지점부터 원자적으로 재개하여 데이터 무결성을 보장함.
 
 ### Scenario E: Internal Scope Governance
 

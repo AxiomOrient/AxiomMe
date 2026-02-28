@@ -1,7 +1,7 @@
 use chrono::{Duration, Utc};
 use tempfile::tempdir;
 
-use crate::models::{IndexRecord, OmReflectionApplyMetrics};
+use crate::models::{IndexRecord, OmReflectionApplyMetrics, QueueEventStatus, ReconcileRunStatus};
 use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope};
 
 use super::*;
@@ -21,7 +21,9 @@ fn migrate_and_enqueue() {
         .expect("enqueue failed");
     assert!(id > 0);
 
-    let events = store.fetch_outbox("new", 10).expect("fetch failed");
+    let events = store
+        .fetch_outbox(QueueEventStatus::New, 10)
+        .expect("fetch failed");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].uri, "axiom://resources/demo");
 }
@@ -966,15 +968,19 @@ fn requeue_with_delay_hides_event_until_due() {
         )
         .expect("enqueue");
     store
-        .mark_outbox_status(id, "processing", true)
+        .mark_outbox_status(id, QueueEventStatus::Processing, true)
         .expect("mark processing");
     store.requeue_outbox_with_delay(id, 60).expect("requeue");
 
-    let visible = store.fetch_outbox("new", 10).expect("fetch");
+    let visible = store
+        .fetch_outbox(QueueEventStatus::New, 10)
+        .expect("fetch");
     assert!(visible.is_empty());
 
     store.force_outbox_due_now(id).expect("force due");
-    let visible2 = store.fetch_outbox("new", 10).expect("fetch2");
+    let visible2 = store
+        .fetch_outbox(QueueEventStatus::New, 10)
+        .expect("fetch2");
     assert_eq!(visible2.len(), 1);
     assert_eq!(visible2[0].id, id);
 }
@@ -993,7 +999,7 @@ fn recover_timed_out_processing_events_requeues_stale_events() {
         )
         .expect("enqueue");
     store
-        .mark_outbox_status(id, "processing", true)
+        .mark_outbox_status(id, QueueEventStatus::Processing, true)
         .expect("mark processing");
     let stale_at = (Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
     store
@@ -1005,7 +1011,9 @@ fn recover_timed_out_processing_events_requeues_stale_events() {
         .expect("recover stale processing");
     assert_eq!(recovered, 1);
 
-    let visible = store.fetch_outbox("new", 10).expect("fetch new");
+    let visible = store
+        .fetch_outbox(QueueEventStatus::New, 10)
+        .expect("fetch new");
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].id, id);
 }
@@ -1166,6 +1174,191 @@ fn open_accepts_outbox_with_required_lane_column_and_existing_rows() {
 }
 
 #[test]
+fn open_rejects_outbox_with_invalid_status_domain_value() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("outbox-invalid-status.db");
+
+    {
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute_batch(
+            r"
+                CREATE TABLE IF NOT EXISTS outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    uri TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    next_attempt_at TEXT NOT NULL,
+                    lane TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS reconcile_runs (
+                    run_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    drift_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS om_records (
+                    id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL,
+                    scope_key TEXT NOT NULL UNIQUE,
+                    session_id TEXT,
+                    thread_id TEXT,
+                    resource_id TEXT,
+                    generation_count INTEGER NOT NULL DEFAULT 0,
+                    last_applied_outbox_event_id INTEGER,
+                    origin_type TEXT NOT NULL,
+                    active_observations TEXT NOT NULL DEFAULT '',
+                    observation_token_count INTEGER NOT NULL DEFAULT 0,
+                    pending_message_tokens INTEGER NOT NULL DEFAULT 0,
+                    last_observed_at TEXT,
+                    current_task TEXT,
+                    suggested_response TEXT,
+                    last_activated_message_ids_json TEXT NOT NULL DEFAULT '[]',
+                    observer_trigger_count_total INTEGER NOT NULL DEFAULT 0,
+                    reflector_trigger_count_total INTEGER NOT NULL DEFAULT 0,
+                    is_observing INTEGER NOT NULL DEFAULT 0,
+                    is_reflecting INTEGER NOT NULL DEFAULT 0,
+                    is_buffering_observation INTEGER NOT NULL DEFAULT 0,
+                    is_buffering_reflection INTEGER NOT NULL DEFAULT 0,
+                    last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
+                    last_buffered_at_time TEXT,
+                    buffered_reflection TEXT,
+                    buffered_reflection_tokens INTEGER,
+                    buffered_reflection_input_tokens INTEGER,
+                    reflected_observation_line_count INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            ",
+        )
+        .expect("create legacy schema");
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            r"
+                INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at, lane)
+                VALUES (?1, ?2, '{}', ?3, 0, ?4, ?3, ?5)
+            ",
+            params![
+                "semantic_scan",
+                "axiom://resources/a",
+                now,
+                "invalid_status",
+                "semantic"
+            ],
+        )
+        .expect("insert invalid outbox status");
+    }
+
+    let err = SqliteStateStore::open(&db_path).expect_err("must reject invalid outbox status");
+    assert_eq!(err.code(), "VALIDATION_FAILED");
+    assert!(
+        err.to_string()
+            .contains("unsupported outbox schema: invalid status value(s): invalid_status"),
+        "unexpected error message: {err}"
+    );
+}
+
+#[test]
+fn open_normalizes_whitespace_and_case_for_status_columns() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("status-normalize.db");
+
+    {
+        let conn = Connection::open(&db_path).expect("open db");
+        conn.execute_batch(
+            r"
+                CREATE TABLE IF NOT EXISTS outbox (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    uri TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    next_attempt_at TEXT NOT NULL,
+                    lane TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS reconcile_runs (
+                    run_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    ended_at TEXT,
+                    drift_count INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS om_records (
+                    id TEXT PRIMARY KEY,
+                    scope TEXT NOT NULL,
+                    scope_key TEXT NOT NULL UNIQUE,
+                    session_id TEXT,
+                    thread_id TEXT,
+                    resource_id TEXT,
+                    generation_count INTEGER NOT NULL DEFAULT 0,
+                    last_applied_outbox_event_id INTEGER,
+                    origin_type TEXT NOT NULL,
+                    active_observations TEXT NOT NULL DEFAULT '',
+                    observation_token_count INTEGER NOT NULL DEFAULT 0,
+                    pending_message_tokens INTEGER NOT NULL DEFAULT 0,
+                    last_observed_at TEXT,
+                    current_task TEXT,
+                    suggested_response TEXT,
+                    last_activated_message_ids_json TEXT NOT NULL DEFAULT '[]',
+                    observer_trigger_count_total INTEGER NOT NULL DEFAULT 0,
+                    reflector_trigger_count_total INTEGER NOT NULL DEFAULT 0,
+                    is_observing INTEGER NOT NULL DEFAULT 0,
+                    is_reflecting INTEGER NOT NULL DEFAULT 0,
+                    is_buffering_observation INTEGER NOT NULL DEFAULT 0,
+                    is_buffering_reflection INTEGER NOT NULL DEFAULT 0,
+                    last_buffered_at_tokens INTEGER NOT NULL DEFAULT 0,
+                    last_buffered_at_time TEXT,
+                    buffered_reflection TEXT,
+                    buffered_reflection_tokens INTEGER,
+                    buffered_reflection_input_tokens INTEGER,
+                    reflected_observation_line_count INTEGER,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+            ",
+        )
+        .expect("create legacy schema");
+        let now = Utc::now().to_rfc3339();
+        conn.execute(
+            r"
+                INSERT INTO outbox(event_type, uri, payload_json, created_at, attempt_count, status, next_attempt_at, lane)
+                VALUES (?1, ?2, '{}', ?3, 0, ?4, ?3, ?5)
+            ",
+            params!["semantic_scan", "axiom://resources/a", now, " DONE ", "semantic"],
+        )
+        .expect("insert outbox status");
+        conn.execute(
+            r"
+                INSERT INTO reconcile_runs(run_id, started_at, ended_at, drift_count, status)
+                VALUES (?1, ?2, NULL, 0, ?3)
+            ",
+            params!["run-1", now, " FAILED "],
+        )
+        .expect("insert reconcile status");
+    }
+
+    let store = SqliteStateStore::open(&db_path).expect("open normalized store");
+    let counts = store.queue_counts().expect("queue counts");
+    assert_eq!(counts.done, 1);
+
+    let status_raw = {
+        let conn = store.conn.lock().expect("lock");
+        conn.query_row(
+            "SELECT status FROM reconcile_runs WHERE run_id = ?1",
+            params!["run-1"],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("read normalized reconcile status")
+    };
+    assert_eq!(status_raw, ReconcileRunStatus::Failed.as_str());
+}
+
+#[test]
 fn queue_counts_and_checkpoints_report_expected_values() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("state.db");
@@ -1179,9 +1372,11 @@ fn queue_counts_and_checkpoints_report_expected_values() {
         )
         .expect("enqueue");
     store
-        .mark_outbox_status(id, "processing", true)
+        .mark_outbox_status(id, QueueEventStatus::Processing, true)
         .expect("processing");
-    store.mark_outbox_status(id, "done", false).expect("done");
+    store
+        .mark_outbox_status(id, QueueEventStatus::Done, false)
+        .expect("done");
 
     let dead_id = store
         .enqueue(
@@ -1191,7 +1386,7 @@ fn queue_counts_and_checkpoints_report_expected_values() {
         )
         .expect("enqueue dead");
     store
-        .mark_outbox_status(dead_id, "dead_letter", true)
+        .mark_outbox_status(dead_id, QueueEventStatus::DeadLetter, true)
         .expect("dead");
 
     store.set_checkpoint("replay", id).expect("set checkpoint");
@@ -1221,14 +1416,14 @@ fn queue_status_splits_semantic_and_embedding_lanes() {
         )
         .expect("enqueue semantic");
     store
-        .mark_outbox_status(semantic_done, "done", false)
+        .mark_outbox_status(semantic_done, QueueEventStatus::Done, false)
         .expect("mark semantic done");
 
     let embedding_done = store
         .enqueue("upsert", "axiom://resources/a.md", serde_json::json!({}))
         .expect("enqueue upsert");
     store
-        .mark_outbox_status(embedding_done, "done", false)
+        .mark_outbox_status(embedding_done, QueueEventStatus::Done, false)
         .expect("mark embedding done");
 
     let embedding_dead = store
@@ -1239,7 +1434,7 @@ fn queue_status_splits_semantic_and_embedding_lanes() {
         )
         .expect("enqueue embedding failure");
     store
-        .mark_outbox_status(embedding_dead, "dead_letter", false)
+        .mark_outbox_status(embedding_dead, QueueEventStatus::DeadLetter, false)
         .expect("mark embedding dead");
 
     let status = store.queue_status().expect("queue status");
@@ -1288,7 +1483,7 @@ fn queue_status_reports_lane_pending_and_processing_counts() {
         )
         .expect("enqueue embedding processing");
     store
-        .mark_outbox_status(embedding_processing, "processing", true)
+        .mark_outbox_status(embedding_processing, QueueEventStatus::Processing, true)
         .expect("mark processing");
 
     let status = store.queue_status().expect("queue status");
@@ -1302,7 +1497,7 @@ fn queue_status_reports_lane_pending_and_processing_counts() {
     assert_eq!(status.embedding.processed, 0);
 
     store
-        .mark_outbox_status(semantic_new, "done", false)
+        .mark_outbox_status(semantic_new, QueueEventStatus::Done, false)
         .expect("mark semantic done");
 }
 
@@ -1316,7 +1511,7 @@ fn queue_status_treats_unknown_lane_rows_as_semantic() {
         .enqueue("upsert", "axiom://resources/a.md", serde_json::json!({}))
         .expect("enqueue embedding event");
     store
-        .mark_outbox_status(id, "done", false)
+        .mark_outbox_status(id, QueueEventStatus::Done, false)
         .expect("mark done");
 
     {
@@ -1365,7 +1560,7 @@ fn queue_counts_match_lane_totals() {
         )
         .expect("enqueue semantic done");
     store
-        .mark_outbox_status(semantic_done, "done", false)
+        .mark_outbox_status(semantic_done, QueueEventStatus::Done, false)
         .expect("mark semantic done");
 
     let embedding_processing = store
@@ -1376,7 +1571,7 @@ fn queue_counts_match_lane_totals() {
         )
         .expect("enqueue embedding processing");
     store
-        .mark_outbox_status(embedding_processing, "processing", true)
+        .mark_outbox_status(embedding_processing, QueueEventStatus::Processing, true)
         .expect("mark embedding processing");
 
     let embedding_dead = store
@@ -1387,7 +1582,7 @@ fn queue_counts_match_lane_totals() {
         )
         .expect("enqueue embedding dead");
     store
-        .mark_outbox_status(embedding_dead, "dead_letter", false)
+        .mark_outbox_status(embedding_dead, QueueEventStatus::DeadLetter, false)
         .expect("mark embedding dead");
 
     let counts = store.queue_counts().expect("queue counts");
@@ -1430,7 +1625,7 @@ fn queue_dead_letter_rates_by_event_type_reports_om_event_ratios() {
         )
         .expect("enqueue om done");
     store
-        .mark_outbox_status(om_done, "done", false)
+        .mark_outbox_status(om_done, QueueEventStatus::Done, false)
         .expect("mark om done");
 
     let om_dead = store
@@ -1441,7 +1636,7 @@ fn queue_dead_letter_rates_by_event_type_reports_om_event_ratios() {
         )
         .expect("enqueue om dead");
     store
-        .mark_outbox_status(om_dead, "dead_letter", false)
+        .mark_outbox_status(om_dead, QueueEventStatus::DeadLetter, false)
         .expect("mark om dead");
 
     let other_dead = store
@@ -1452,7 +1647,7 @@ fn queue_dead_letter_rates_by_event_type_reports_om_event_ratios() {
         )
         .expect("enqueue semantic dead");
     store
-        .mark_outbox_status(other_dead, "dead_letter", false)
+        .mark_outbox_status(other_dead, QueueEventStatus::DeadLetter, false)
         .expect("mark semantic dead");
 
     let rates = store

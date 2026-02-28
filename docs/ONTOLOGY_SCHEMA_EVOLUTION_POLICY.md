@@ -1,6 +1,5 @@
 # Ontology Schema Evolution Policy
 
-Date: 2026-02-23
 Scope: `axiomme-core` ontology contract (`axiom://agent/ontology/schema.v1.json`)
 
 ## 1. Objective

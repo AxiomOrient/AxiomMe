@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::convert::Infallible;
+use std::fmt;
+use std::str::FromStr;
 
 use super::model::OntologySchemaV1;
 use crate::error::{AxiomError, Result};
@@ -22,6 +25,128 @@ impl Default for OntologyV2PressurePolicy {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OntologyPressureTrigger {
+    ActionTypeCount { current: usize, limit: usize },
+    InvariantCount { current: usize, limit: usize },
+    ActionInvariantTotal { current: usize, limit: usize },
+    LinkTypesPerObjectBasisPoints { current: u32, limit: u32 },
+    Unknown(String),
+}
+
+impl OntologyPressureTrigger {
+    pub fn to_reason_string(&self) -> String {
+        self.to_string()
+    }
+
+    fn parse(raw: &str) -> Self {
+        if let Some((current, limit)) =
+            parse_threshold_values(raw, "action_type_count", "min_action_types")
+        {
+            return Self::ActionTypeCount {
+                current: usize::try_from(current).unwrap_or(usize::MAX),
+                limit: usize::try_from(limit).unwrap_or(usize::MAX),
+            };
+        }
+        if let Some((current, limit)) =
+            parse_threshold_values(raw, "invariant_count", "min_invariants")
+        {
+            return Self::InvariantCount {
+                current: usize::try_from(current).unwrap_or(usize::MAX),
+                limit: usize::try_from(limit).unwrap_or(usize::MAX),
+            };
+        }
+        if let Some((current, limit)) =
+            parse_threshold_values(raw, "action_invariant_total", "min_action_invariant_total")
+        {
+            return Self::ActionInvariantTotal {
+                current: usize::try_from(current).unwrap_or(usize::MAX),
+                limit: usize::try_from(limit).unwrap_or(usize::MAX),
+            };
+        }
+        if let Some((current, limit)) = parse_threshold_values(
+            raw,
+            "link_types_per_object_basis_points",
+            "min_link_types_per_object_basis_points",
+        ) {
+            return Self::LinkTypesPerObjectBasisPoints {
+                current: u32::try_from(current).unwrap_or(u32::MAX),
+                limit: u32::try_from(limit).unwrap_or(u32::MAX),
+            };
+        }
+
+        Self::Unknown(raw.to_string())
+    }
+}
+
+impl fmt::Display for OntologyPressureTrigger {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ActionTypeCount { current, limit } => {
+                write!(
+                    f,
+                    "action_type_count({current}) >= min_action_types({limit})"
+                )
+            }
+            Self::InvariantCount { current, limit } => {
+                write!(f, "invariant_count({current}) >= min_invariants({limit})")
+            }
+            Self::ActionInvariantTotal { current, limit } => write!(
+                f,
+                "action_invariant_total({current}) >= min_action_invariant_total({limit})"
+            ),
+            Self::LinkTypesPerObjectBasisPoints { current, limit } => write!(
+                f,
+                "link_types_per_object_basis_points({current}) >= min_link_types_per_object_basis_points({limit})"
+            ),
+            Self::Unknown(raw) => f.write_str(raw),
+        }
+    }
+}
+
+impl FromStr for OntologyPressureTrigger {
+    type Err = Infallible;
+
+    fn from_str(raw: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self::parse(raw))
+    }
+}
+
+impl Serialize for OntologyPressureTrigger {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_reason_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for OntologyPressureTrigger {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::parse(&raw))
+    }
+}
+
+fn parse_threshold_values(
+    raw: &str,
+    metric_name: &str,
+    threshold_name: &str,
+) -> Option<(u64, u64)> {
+    let metric_prefix = format!("{metric_name}(");
+    let threshold_prefix = format!("{threshold_name}(");
+    let tail = raw.strip_prefix(&metric_prefix)?;
+    let (current_raw, tail) = tail.split_once(") >= ")?;
+    let tail = tail.strip_prefix(&threshold_prefix)?;
+    let limit_raw = tail.strip_suffix(')')?;
+    let current = current_raw.parse::<u64>().ok()?;
+    let limit = limit_raw.parse::<u64>().ok()?;
+    Some((current, limit))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OntologyV2PressureReport {
     pub schema_version: u32,
@@ -32,8 +157,19 @@ pub struct OntologyV2PressureReport {
     pub action_invariant_total: usize,
     pub link_types_per_object_basis_points: u32,
     pub v2_candidate: bool,
-    pub trigger_reasons: Vec<String>,
+    #[serde(default)]
+    pub trigger_reasons: Vec<OntologyPressureTrigger>,
     pub policy: OntologyV2PressurePolicy,
+}
+
+impl OntologyV2PressureReport {
+    #[must_use]
+    pub fn trigger_reason_strings(&self) -> Vec<String> {
+        self.trigger_reasons
+            .iter()
+            .map(OntologyPressureTrigger::to_reason_string)
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,7 +201,7 @@ pub struct OntologyV2PressureSample {
     pub generated_at_utc: String,
     pub v2_candidate: bool,
     #[serde(default)]
-    pub trigger_reasons: Vec<String>,
+    pub trigger_reasons: Vec<OntologyPressureTrigger>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,30 +249,30 @@ pub fn evaluate_v2_pressure(
         ((link_type_count as u128 * 10_000_u128) / object_type_count as u128) as u32
     };
 
-    let mut trigger_reasons = Vec::<String>::new();
+    let mut trigger_reasons = Vec::<OntologyPressureTrigger>::new();
     if action_type_count >= policy.min_action_types {
-        trigger_reasons.push(format!(
-            "action_type_count({action_type_count}) >= min_action_types({})",
-            policy.min_action_types
-        ));
+        trigger_reasons.push(OntologyPressureTrigger::ActionTypeCount {
+            current: action_type_count,
+            limit: policy.min_action_types,
+        });
     }
     if invariant_count >= policy.min_invariants {
-        trigger_reasons.push(format!(
-            "invariant_count({invariant_count}) >= min_invariants({})",
-            policy.min_invariants
-        ));
+        trigger_reasons.push(OntologyPressureTrigger::InvariantCount {
+            current: invariant_count,
+            limit: policy.min_invariants,
+        });
     }
     if action_invariant_total >= policy.min_action_invariant_total {
-        trigger_reasons.push(format!(
-            "action_invariant_total({action_invariant_total}) >= min_action_invariant_total({})",
-            policy.min_action_invariant_total
-        ));
+        trigger_reasons.push(OntologyPressureTrigger::ActionInvariantTotal {
+            current: action_invariant_total,
+            limit: policy.min_action_invariant_total,
+        });
     }
     if link_types_per_object_basis_points >= policy.min_link_types_per_object_basis_points {
-        trigger_reasons.push(format!(
-            "link_types_per_object_basis_points({link_types_per_object_basis_points}) >= min_link_types_per_object_basis_points({})",
-            policy.min_link_types_per_object_basis_points
-        ));
+        trigger_reasons.push(OntologyPressureTrigger::LinkTypesPerObjectBasisPoints {
+            current: link_types_per_object_basis_points,
+            limit: policy.min_link_types_per_object_basis_points,
+        });
     }
 
     OntologyV2PressureReport {
@@ -295,7 +431,7 @@ mod tests {
             report
                 .trigger_reasons
                 .iter()
-                .any(|reason| reason.contains("action_type_count"))
+                .any(|reason| matches!(reason, OntologyPressureTrigger::ActionTypeCount { .. }))
         );
     }
 
@@ -311,10 +447,10 @@ mod tests {
         let report = evaluate_v2_pressure(&schema, policy);
         assert!(report.v2_candidate);
         assert!(
-            report
-                .trigger_reasons
-                .iter()
-                .any(|reason| reason.contains("action_invariant_total"))
+            report.trigger_reasons.iter().any(|reason| matches!(
+                reason,
+                OntologyPressureTrigger::ActionInvariantTotal { .. }
+            ))
         );
     }
 
@@ -339,7 +475,7 @@ mod tests {
                 sample_id: "s1".to_string(),
                 generated_at_utc: "2026-02-23T00:00:00Z".to_string(),
                 v2_candidate: true,
-                trigger_reasons: vec!["action".to_string()],
+                trigger_reasons: vec![OntologyPressureTrigger::Unknown("action".to_string())],
             }],
             OntologyV2PressureTrendPolicy {
                 min_samples: 2,
@@ -367,19 +503,19 @@ mod tests {
                     sample_id: "s2".to_string(),
                     generated_at_utc: "2026-02-22T00:00:00Z".to_string(),
                     v2_candidate: true,
-                    trigger_reasons: vec!["a".to_string()],
+                    trigger_reasons: vec![OntologyPressureTrigger::Unknown("a".to_string())],
                 },
                 OntologyV2PressureSample {
                     sample_id: "s3".to_string(),
                     generated_at_utc: "2026-02-23T00:00:00Z".to_string(),
                     v2_candidate: true,
-                    trigger_reasons: vec!["b".to_string()],
+                    trigger_reasons: vec![OntologyPressureTrigger::Unknown("b".to_string())],
                 },
                 OntologyV2PressureSample {
                     sample_id: "s4".to_string(),
                     generated_at_utc: "2026-02-24T00:00:00Z".to_string(),
                     v2_candidate: true,
-                    trigger_reasons: vec!["c".to_string()],
+                    trigger_reasons: vec![OntologyPressureTrigger::Unknown("c".to_string())],
                 },
             ],
             OntologyV2PressureTrendPolicy {
@@ -403,13 +539,13 @@ mod tests {
                     sample_id: "s1".to_string(),
                     generated_at_utc: "2026-02-21T00:00:00Z".to_string(),
                     v2_candidate: true,
-                    trigger_reasons: vec!["a".to_string()],
+                    trigger_reasons: vec![OntologyPressureTrigger::Unknown("a".to_string())],
                 },
                 OntologyV2PressureSample {
                     sample_id: "s2".to_string(),
                     generated_at_utc: "2026-02-22T00:00:00Z".to_string(),
                     v2_candidate: true,
-                    trigger_reasons: vec!["b".to_string()],
+                    trigger_reasons: vec![OntologyPressureTrigger::Unknown("b".to_string())],
                 },
                 OntologyV2PressureSample {
                     sample_id: "s3".to_string(),
@@ -446,5 +582,27 @@ mod tests {
         };
         let error = validate_v2_pressure_trend_policy(policy).expect_err("must fail");
         assert_eq!(error.code(), "ONTOLOGY_VIOLATION");
+    }
+
+    #[test]
+    fn ontology_pressure_trigger_serialization_keeps_string_contract_shape() {
+        let trigger = OntologyPressureTrigger::ActionTypeCount {
+            current: 3,
+            limit: 3,
+        };
+        let encoded = serde_json::to_string(&trigger).expect("serialize");
+        assert_eq!(encoded, "\"action_type_count(3) >= min_action_types(3)\"");
+        let decoded: OntologyPressureTrigger = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded, trigger);
+    }
+
+    #[test]
+    fn ontology_pressure_trigger_deserialization_accepts_unknown_strings() {
+        let decoded: OntologyPressureTrigger =
+            serde_json::from_str("\"custom_reason\"").expect("deserialize unknown");
+        assert_eq!(
+            decoded,
+            OntologyPressureTrigger::Unknown("custom_reason".to_string())
+        );
     }
 }

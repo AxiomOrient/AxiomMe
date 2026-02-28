@@ -24,6 +24,7 @@ mod core_editor_retrieval;
 mod eval_suite_tests;
 mod initialization_lifecycle;
 mod om_bridge_contract;
+mod ontology_enqueue;
 mod queue_reconcile_lifecycle;
 mod relation_trace_logs;
 mod release_contract_pack_tracemetrics;

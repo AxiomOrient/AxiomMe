@@ -6,6 +6,9 @@ use uuid::Uuid;
 use crate::error::Result;
 use crate::fs::LocalContextFs;
 use crate::index::InMemoryIndex;
+use crate::tier_documents::{
+    abstract_path, overview_path, read_abstract, read_overview, write_tiers,
+};
 use crate::uri::{AxiomUri, Scope};
 
 pub(super) fn ensure_directory_record(
@@ -22,19 +25,21 @@ pub(super) fn ensure_directory_record(
         fs.create_dir_all(uri, true)?;
     }
 
-    if !fs.abstract_path(uri).exists() || !fs.overview_path(uri).exists() {
-        fs.write_tiers(
+    if !abstract_path(fs, uri).exists() || !overview_path(fs, uri).exists() {
+        write_tiers(
+            fs,
             uri,
             &format!(
                 "Directory {}",
                 uri.last_segment().unwrap_or_else(|| uri.scope().as_str())
             ),
             &format!("# Overview\n\nURI: {uri}"),
+            true,
         )?;
     }
 
-    let abstract_text = fs.read_abstract(uri)?;
-    let overview_text = fs.read_overview(uri)?;
+    let abstract_text = read_abstract(fs, uri)?;
+    let overview_text = read_overview(fs, uri)?;
 
     index.upsert(crate::models::IndexRecord {
         id: Uuid::new_v4().to_string(),

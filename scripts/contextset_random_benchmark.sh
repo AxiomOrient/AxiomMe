@@ -10,7 +10,7 @@ Usage:
   scripts/contextset_random_benchmark.sh [options]
 
 Options:
-  --dataset <path>                  Dataset root (default: /Users/axient/Documents/contextSet)
+  --dataset <path>                  Dataset root (default: \$AXIOMME_DATASET_DIR)
   --target-uri <axiom-uri>          Ingest target URI (default: axiom://resources/contextSet)
   --sample-size <n>                 Random heading sample size (default: 24)
   --seed <int>                      RNG seed for reproducible sampling (default: unix epoch seconds)
@@ -99,7 +99,7 @@ calc_mean() {
 }
 
 REPORT_DATE="$(date +%F)"
-DATASET_DIR="/Users/axient/Documents/contextSet"
+DATASET_DIR="${AXIOMME_DATASET_DIR:-}"
 TARGET_URI="axiom://resources/contextSet"
 SAMPLE_SIZE=24
 SEED="$(date +%s)"
@@ -215,6 +215,10 @@ require_cmd sort
 require_cmd sed
 
 if [[ ! -d "${DATASET_DIR}" ]]; then
+  if [[ -z "${DATASET_DIR}" ]]; then
+    echo "dataset is required (--dataset <path> or AXIOMME_DATASET_DIR)" >&2
+    exit 1
+  fi
   echo "dataset not found: ${DATASET_DIR}" >&2
   exit 1
 fi
@@ -233,7 +237,7 @@ validate_percent_threshold "min-find-top5-rate" "${MIN_FIND_TOP5_RATE}"
 validate_percent_threshold "min-search-top5-rate" "${MIN_SEARCH_TOP5_RATE}"
 
 if [[ "${REPORT_PATH}" == "" ]]; then
-  REPORT_PATH="${REPO_ROOT}/docs/REAL_CONTEXTSET_VALIDATION_${REPORT_DATE}.md"
+  REPORT_PATH="${REPO_ROOT}/logs/benchmarks/contextset_random.md"
 fi
 mkdir -p "$(dirname "${REPORT_PATH}")"
 

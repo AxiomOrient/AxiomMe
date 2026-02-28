@@ -10,7 +10,7 @@ Usage:
   scripts/contextset_random_benchmark_matrix.sh [options]
 
 Options:
-  --dataset <path>           Dataset root (default: /Users/axient/Documents/contextSet)
+  --dataset <path>           Dataset root (default: \$AXIOMME_DATASET_DIR)
   --target-uri <axiom-uri>   Ingest target URI (default: axiom://resources/contextSet)
   --sample-size <n>          Random heading sample size per seed (default: 24)
   --seeds <csv>              Seed list (default: 4242,777,9001)
@@ -75,7 +75,7 @@ percentile_from_column() {
 }
 
 REPORT_DATE="$(date +%F)"
-DATASET_DIR="/Users/axient/Documents/contextSet"
+DATASET_DIR="${AXIOMME_DATASET_DIR:-}"
 TARGET_URI="axiom://resources/contextSet"
 SAMPLE_SIZE=24
 SEEDS_CSV="4242,777,9001"
@@ -180,6 +180,10 @@ if [[ ! -x "${BENCH_SCRIPT}" ]]; then
   exit 1
 fi
 if [[ ! -d "${DATASET_DIR}" ]]; then
+  if [[ -z "${DATASET_DIR}" ]]; then
+    echo "dataset is required (--dataset <path> or AXIOMME_DATASET_DIR)" >&2
+    exit 1
+  fi
   echo "dataset not found: ${DATASET_DIR}" >&2
   exit 1
 fi
@@ -196,7 +200,7 @@ validate_percent_threshold "min-find-top5-rate" "${MIN_FIND_TOP5_RATE}"
 validate_percent_threshold "min-search-top5-rate" "${MIN_SEARCH_TOP5_RATE}"
 
 if [[ -z "${REPORT_PATH}" ]]; then
-  REPORT_PATH="${REPO_ROOT}/docs/REAL_CONTEXTSET_VALIDATION_MATRIX_${REPORT_DATE}.md"
+  REPORT_PATH="${REPO_ROOT}/logs/benchmarks/contextset_matrix.md"
 fi
 mkdir -p "$(dirname "${REPORT_PATH}")"
 REPORT_DIR="$(cd "$(dirname "${REPORT_PATH}")" && pwd)"
@@ -231,7 +235,7 @@ for seed in "${SEEDS[@]}"; do
   fi
   validate_integer_ge "seed" "${seed}" 0
   TOTAL_COUNT=$((TOTAL_COUNT + 1))
-  seed_report_path="${REPORT_DIR}/REAL_CONTEXTSET_VALIDATION_${REPORT_DATE}-random-seed${seed}.md"
+  seed_report_path="${REPORT_DIR}/contextset_seed_${seed}.md"
   seed_tsv_path="${seed_report_path%.md}.tsv"
   seed_start_epoch="$(date +%s)"
   echo "running seed ${seed} ..." >&2

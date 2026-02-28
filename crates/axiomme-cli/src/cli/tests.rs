@@ -596,6 +596,27 @@ fn add_parses_markdown_only_filter_flags() {
 }
 
 #[test]
+fn add_parses_wait_mode_strict() {
+    let cli = Cli::try_parse_from([
+        "axiomme",
+        "add",
+        "/tmp/vault",
+        "--wait",
+        "true",
+        "--wait-mode",
+        "strict",
+    ])
+    .expect("parse");
+
+    match cli.command {
+        Commands::Add(AddArgs { wait_mode, .. }) => {
+            assert!(matches!(wait_mode, AddWaitModeArg::Strict));
+        }
+        _ => panic!("expected add command"),
+    }
+}
+
+#[test]
 fn search_parses_score_and_min_match_options() {
     let cli = Cli::try_parse_from([
         "axiomme",

@@ -1,37 +1,28 @@
 # Documentation Index
 
-Canonical documentation is intentionally minimal and conflict-free.
+이 저장소의 문서는 canonical 문서와 archive 문서를 분리해 관리합니다.
 
-## Canonical Files
+## Canonical
+- [README.md](../README.md)
+- [docs/ARCHITECTURE.md](ARCHITECTURE.md)
+- [docs/FEATURE_SPEC.md](FEATURE_SPEC.md)
+- [docs/API_CONTRACT.md](API_CONTRACT.md)
+- [docs/RELEASE_NOTES.md](RELEASE_NOTES.md)
+- [docs/FEATURE_COMPLETENESS_UAT_GATE.md](FEATURE_COMPLETENESS_UAT_GATE.md)
+- [docs/RELEASE_SIGNOFF_REQUEST.md](RELEASE_SIGNOFF_REQUEST.md)
+- [docs/RELEASE_SIGNOFF_STATUS.md](RELEASE_SIGNOFF_STATUS.md)
+- [docs/IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)
+- [docs/TASKS.md](TASKS.md)
 
-- `README.md`
-- `FEATURE_SPEC.md`
-- `API_CONTRACT.md`
+## Supplemental
+- [docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md](ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md)
 
-## Supplemental Guides
+## Archive
+- 과거 날짜/버전 기반 산출물은 [docs/archive](archive) 하위에 보관합니다.
+- CI/운영에서 재생성되는 리포트는 가능한 `logs/` 경로를 우선 사용합니다.
+- 저장소 내에서 더 이상 참조되지 않는 archive 문서는 주기적으로 제거합니다.
 
-- `ENGINEERING_PLAYBOOK_2026-02-23.md`
-- `ONTOLOGY_LAYER_IMPLEMENTATION_PLAN_2026-02-23.md`
-- `ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md`
-- `RELEASE_NOTES_2026-02-24.md`
-- `MIRROR_MIGRATION_OPERATIONS_REPORT_2026-Q2.md`
-
-## Rule
-
-- The canonical URI scheme is `axiom://`.
-- Naming, protocol, examples, and acceptance text must follow the same source of truth.
-- AxiomMe runtime remains standalone at process level, and OM logic is integrated through `axiomme-core::om` with `episodic` as the default pure OM engine dependency.
-- Web viewer delivery is externalized; this repository owns core/CLI/FFI contracts only.
-- Local/CI quality verification entrypoint is `bash scripts/quality_gates.sh`.
-  - mirror one-cycle notice gate is executed inside quality gates and writes `docs/MIRROR_NOTICE_GATE_2026-02-24.json`.
-  - mirror notice router is executed inside quality gates and writes `docs/MIRROR_NOTICE_ROUTER_2026-02-24.json`.
-  - optional strict mode: `AXIOMME_QUALITY_ENFORCE_MIRROR_NOTICE=on` fails quality gates until notice gate status becomes `ready`.
-  - `.github/workflows/quality-gates.yml` enables strict mode automatically on tag pushes.
-- Strict release-gate CI probe entrypoint is `bash scripts/release_pack_strict_gate.sh`.
-- Mirror one-cycle notice gate entrypoint is `bash scripts/mirror_notice_gate.sh`.
-- Mirror notice router entrypoint is `bash scripts/mirror_notice_router.sh`.
-- Mirror notice router smoke entrypoint is `bash scripts/mirror_notice_router_smoke.sh`.
-- Typed-edge enrichment latency delta probe entrypoint is `bash scripts/typed_edge_enrichment_probe.sh`.
-- Ontology pressure snapshot probe entrypoint is `bash scripts/ontology_pressure_snapshot.sh`.
-- Ontology pressure trend gate probe entrypoint is `bash scripts/ontology_pressure_trend_gate.sh`.
-- Retrieval backend is memory-only; `AXIOMME_RETRIEVAL_BACKEND` accepts `memory` only.
+## Rules
+- 문서 내 절대 사용자 경로(`/Users/<name>/...`)는 canonical 문서에서 사용하지 않습니다.
+- 날짜/버전 식별자는 릴리즈 계약에 필요한 경우에만 유지합니다.
+- API/동작 정의의 단일 진실 공급원은 `FEATURE_SPEC.md`와 `API_CONTRACT.md`입니다.
