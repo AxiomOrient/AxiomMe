@@ -32,8 +32,8 @@ jobs:
           name: mirror-notice-gate
           if-no-files-found: warn
           path: |
-            docs/MIRROR_NOTICE_GATE_2026-02-24.json
-            docs/MIRROR_NOTICE_ROUTER_2026-02-24.json
+            logs/quality/mirror_notice_gate.json
+            logs/quality/mirror_notice_router.json
 
   release-pack-strict:
     needs: gates

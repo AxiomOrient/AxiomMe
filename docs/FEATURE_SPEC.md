@@ -43,6 +43,9 @@ The runtime is standalone at execution boundary, and OM is integrated with `epis
 - Support local files/directories and URL inputs.
 - Ingest uses temp staging and finalize move.
 - Indexing/semantic updates are replay-safe and asynchronous.
+- `add_resource(wait=true)` must expose explicit wait contract mode:
+  - `relaxed` (default): bounded replay and return.
+  - `strict`: terminal `done` 보장, timeout/dead-letter는 conflict로 반환.
 - Markdown editor save path uses full-document replace with etag conflict guard and synchronous reindex.
 
 ### FR-004 Retrieval

@@ -10,8 +10,8 @@ use crate::context_ops::default_resource_target;
 use crate::error::{AxiomError, Result};
 use crate::ingest::{IngestFinalizeMode, IngestManager, IngestSession};
 use crate::models::{
-    AddResourceIngestOptions, AddResourceRequest, AddResourceResult, GlobResult, QueueCounts,
-    QueueStatus,
+    AddResourceIngestOptions, AddResourceRequest, AddResourceResult, AddResourceWaitMode,
+    GlobResult, QueueCounts, QueueEventStatus, QueueStatus,
 };
 use crate::pack;
 use crate::tier_documents::{read_abstract, read_overview};
@@ -30,6 +30,7 @@ impl AxiomMe {
         target: Option<&str>,
         wait: bool,
         timeout_secs: Option<u64>,
+        wait_mode: AddResourceWaitMode,
         ingest_options: &AddResourceIngestOptions,
     ) -> Result<AddResourceResult> {
         let target_uri = target
@@ -55,13 +56,20 @@ impl AxiomMe {
             ingest.abort();
             return Err(err);
         }
-        self.state.enqueue(
+        let outbox_event_id = self.state.enqueue(
             "semantic_scan",
             &target_uri.to_string(),
             serde_json::json!({"op": "add_resource"}),
         )?;
         if wait {
-            let _ = self.replay_outbox(256, false)?;
+            match wait_mode {
+                AddResourceWaitMode::Relaxed => {
+                    let _ = self.replay_outbox(256, false)?;
+                }
+                AddResourceWaitMode::Strict => {
+                    self.wait_for_outbox_event_done_strict(outbox_event_id, timeout_secs)?;
+                }
+            }
         }
 
         Ok(AddResourceResult {
@@ -72,6 +80,8 @@ impl AxiomMe {
             } else {
                 "resource staged and queued for semantic processing".to_string()
             },
+            wait_mode: wait.then_some(wait_mode),
+            wait_contract: wait.then_some(wait_mode.contract_label().to_string()),
         })
     }
 
@@ -101,6 +111,7 @@ impl AxiomMe {
             target,
             wait,
             timeout_secs,
+            wait_mode,
             ingest_options,
         } = request;
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -112,6 +123,7 @@ impl AxiomMe {
             target_ref,
             wait,
             timeout_secs,
+            wait_mode,
             &ingest_options,
         );
         let ingest_options_json = serde_json::to_value(&ingest_options).unwrap_or_else(|_| {
@@ -133,7 +145,9 @@ impl AxiomMe {
                     Some(serde_json::json!({
                         "source": source,
                         "wait": wait,
+                        "wait_mode": wait_mode,
                         "queued": result.queued,
+                        "wait_contract": result.wait_contract,
                         "ingest_options": ingest_options_json,
                     })),
                 );
@@ -149,6 +163,7 @@ impl AxiomMe {
                     Some(serde_json::json!({
                         "source": source,
                         "wait": wait,
+                        "wait_mode": wait_mode,
                         "ingest_options": ingest_options_json,
                     })),
                 );
@@ -189,6 +204,59 @@ impl AxiomMe {
 
             let timeout_remaining = timeout.saturating_sub(started.elapsed());
             let sleep_for = wait_processed_sleep_duration(&after, timeout_remaining);
+            if !sleep_for.is_zero() {
+                thread::sleep(sleep_for);
+            }
+        }
+    }
+
+    fn wait_for_outbox_event_done_strict(
+        &self,
+        outbox_event_id: i64,
+        timeout_secs: Option<u64>,
+    ) -> Result<()> {
+        let timeout = Duration::from_secs(timeout_secs.unwrap_or(30).max(1));
+        let started = Instant::now();
+
+        loop {
+            let event = self
+                .state
+                .get_outbox_event(outbox_event_id)?
+                .ok_or_else(|| {
+                    AxiomError::Conflict(format!(
+                        "strict wait failed: outbox event {outbox_event_id} not found"
+                    ))
+                })?;
+
+            match event.status {
+                QueueEventStatus::Done => return Ok(()),
+                QueueEventStatus::DeadLetter => {
+                    return Err(AxiomError::Conflict(format!(
+                        "strict wait failed: outbox event {outbox_event_id} dead-lettered (attempt_count={})",
+                        event.attempt_count
+                    )));
+                }
+                QueueEventStatus::New | QueueEventStatus::Processing => {}
+            }
+
+            if started.elapsed() >= timeout {
+                let counts = self.state.queue_counts()?;
+                return Err(AxiomError::Conflict(format!(
+                    "strict wait timeout after {}s: outbox event {} status={} pending_new={} processing={} dead_letter={} (pending/requeued/dead-letter remains)",
+                    timeout.as_secs(),
+                    outbox_event_id,
+                    event.status,
+                    counts.new_total,
+                    counts.processing,
+                    counts.dead_letter
+                )));
+            }
+
+            let _ = self.replay_outbox(256, false)?;
+
+            let counts = self.state.queue_counts()?;
+            let timeout_remaining = timeout.saturating_sub(started.elapsed());
+            let sleep_for = wait_processed_sleep_duration(&counts, timeout_remaining);
             if !sleep_for.is_zero() {
                 thread::sleep(sleep_for);
             }
@@ -538,7 +606,7 @@ mod tests {
 
     use super::*;
     use crate::client::AxiomMe;
-    use crate::models::AddResourceIngestOptions;
+    use crate::models::{AddResourceIngestOptions, AddResourceWaitMode};
     use crate::uri::AxiomUri;
 
     #[test]
@@ -693,6 +761,96 @@ mod tests {
                 .iter()
                 .any(|uri| uri == "axiom://resources/filtered/.obsidian/drop.md")
         );
+    }
+
+    #[test]
+    fn add_resource_wait_relaxed_exposes_wait_contract_in_result() {
+        let temp = tempdir().expect("tempdir");
+        let app = AxiomMe::new(temp.path()).expect("app");
+        app.initialize().expect("init");
+
+        let source = temp.path().join("relaxed.txt");
+        fs::write(&source, "OAuth relaxed wait contract").expect("write source");
+
+        let result = app
+            .add_resource(
+                source.to_str().expect("source path"),
+                Some("axiom://resources/wait-relaxed"),
+                None,
+                None,
+                true,
+                None,
+            )
+            .expect("add relaxed");
+
+        assert_eq!(result.wait_mode, Some(AddResourceWaitMode::Relaxed));
+        assert_eq!(
+            result.wait_contract.as_deref(),
+            Some(AddResourceWaitMode::Relaxed.contract_label())
+        );
+    }
+
+    #[test]
+    fn add_resource_wait_strict_exposes_wait_contract_and_search_visibility() {
+        let temp = tempdir().expect("tempdir");
+        let app = AxiomMe::new(temp.path()).expect("app");
+        app.initialize().expect("init");
+
+        let source = temp.path().join("strict.txt");
+        fs::write(&source, "OAuth strict wait contract").expect("write source");
+
+        let mut request = AddResourceRequest::new(source.to_str().expect("source path"));
+        request.target = Some("axiom://resources/wait-strict".to_string());
+        request.wait = true;
+        request.wait_mode = AddResourceWaitMode::Strict;
+        let result = app
+            .add_resource_with_ingest_options(request)
+            .expect("add strict");
+
+        assert_eq!(result.wait_mode, Some(AddResourceWaitMode::Strict));
+        assert_eq!(
+            result.wait_contract.as_deref(),
+            Some(AddResourceWaitMode::Strict.contract_label())
+        );
+
+        let hits = app
+            .find(
+                "oauth",
+                Some("axiom://resources/wait-strict"),
+                Some(5),
+                None,
+                None,
+            )
+            .expect("find strict");
+        assert!(!hits.query_results.is_empty());
+    }
+
+    #[test]
+    fn wait_for_outbox_event_done_strict_rejects_dead_letter_terminal_state() {
+        let temp = tempdir().expect("tempdir");
+        let app = AxiomMe::new(temp.path()).expect("app");
+        app.initialize().expect("init");
+
+        let event_id = app
+            .state
+            .enqueue(
+                "unknown_event_type",
+                "axiom://resources/wait-strict-dead-letter",
+                serde_json::json!({}),
+            )
+            .expect("enqueue");
+        let err = app
+            .wait_for_outbox_event_done_strict(event_id, Some(2))
+            .expect_err("strict wait must fail");
+        let message = format!("{err}");
+        assert!(message.contains("dead-lettered"));
+
+        let event = app
+            .state
+            .get_outbox_event(event_id)
+            .expect("event lookup")
+            .expect("event must exist");
+        assert_eq!(event.status, QueueEventStatus::DeadLetter);
     }
 
     #[test]

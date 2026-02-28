@@ -2,9 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GATE_DOC="${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md"
-REQUEST_DOC="${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md"
-STATUS_DOC="${ROOT_DIR}/docs/RELEASE_SIGNOFF_STATUS_$(date -u +%F).md"
+GATE_DOC=""
+REQUEST_DOC=""
+STATUS_DIR="${ROOT_DIR}/logs/release"
+STATUS_DOC=""
 
 decision=""
 name=""
@@ -15,14 +16,32 @@ usage() {
   cat <<'EOF'
 Usage:
   scripts/record_release_signoff.sh \
-    --decision <GO|NO-GO> --name <name> [--date YYYY-MM-DD] [--notes text]
+    --decision <GO|NO-GO> --name <name> [--date YYYY-MM-DD] [--notes text] [--gate-doc <path>] [--request-doc <path>] [--status-doc <path>] [--status-dir <path>]
 
-Applies release decision to:
-  - docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md
-  - docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md
-Then refreshes:
-  - docs/RELEASE_SIGNOFF_STATUS_<today>.md
+Defaults:
+  - gate doc: latest docs/FEATURE_COMPLETENESS_UAT_GATE_*.md
+  - request doc: latest docs/RELEASE_SIGNOFF_REQUEST_*.md
+  - status doc: <status-dir>/RELEASE_SIGNOFF_STATUS_<today>.md
+  - status-dir: logs/release
+
+Applies release decision to selected gate/request docs and refreshes status report.
 EOF
+}
+
+resolve_latest_doc() {
+  local pattern="$1"
+  local label="$2"
+  local matches=()
+  local latest=""
+  shopt -s nullglob
+  matches=(${pattern})
+  shopt -u nullglob
+  if [[ "${#matches[@]}" -eq 0 ]]; then
+    echo "${label} document not found for pattern: ${pattern}" >&2
+    exit 1
+  fi
+  latest="$(printf '%s\n' "${matches[@]}" | LC_ALL=C sort | tail -n 1)"
+  printf '%s' "${latest}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -31,6 +50,10 @@ while [[ $# -gt 0 ]]; do
     --name) name="${2:-}"; shift 2 ;;
     --date) decision_date="${2:-}"; shift 2 ;;
     --notes) notes="${2:-}"; shift 2 ;;
+    --gate-doc) GATE_DOC="${2:-}"; shift 2 ;;
+    --request-doc) REQUEST_DOC="${2:-}"; shift 2 ;;
+    --status-doc) STATUS_DOC="${2:-}"; shift 2 ;;
+    --status-dir) STATUS_DIR="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
       echo "unknown argument: $1" >&2
@@ -39,6 +62,16 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "${GATE_DOC}" ]]; then
+  GATE_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE_*.md" "gate")"
+fi
+if [[ -z "${REQUEST_DOC}" ]]; then
+  REQUEST_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST_*.md" "request")"
+fi
+if [[ -z "${STATUS_DOC}" ]]; then
+  STATUS_DOC="${STATUS_DIR}/RELEASE_SIGNOFF_STATUS_$(date -u +%F).md"
+fi
 
 require_non_empty() {
   local value="$1"
@@ -94,7 +127,10 @@ awk \
   ' "${REQUEST_DOC}" > "${tmp_request}"
 mv "${tmp_request}" "${REQUEST_DOC}"
 
-"${ROOT_DIR}/scripts/release_signoff_status.sh" --report-path "${STATUS_DOC}" >/dev/null || true
+"${ROOT_DIR}/scripts/release_signoff_status.sh" \
+  --gate-doc "${GATE_DOC}" \
+  --request-doc "${REQUEST_DOC}" \
+  --report-path "${STATUS_DOC}" >/dev/null || true
 echo "updated signoff docs:"
 echo "- ${GATE_DOC}"
 echo "- ${REQUEST_DOC}"

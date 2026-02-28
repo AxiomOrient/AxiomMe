@@ -9,6 +9,7 @@ readme = "README.md"
 [dependencies]
 anyhow = { workspace = true }
 clap = { workspace = true }
+chrono = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 axiomme-core = { version = "0.1.1", path = "../axiomme-core", default-features = false, features = ["host-tools", "markdown-preview"] }

@@ -4,9 +4,12 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-notice_gate_json="docs/MIRROR_NOTICE_GATE_2026-02-24.json"
-notice_router_json="docs/MIRROR_NOTICE_ROUTER_2026-02-24.json"
+quality_report_dir="${AXIOMME_QUALITY_REPORT_DIR:-logs/quality}"
+notice_gate_json="${AXIOMME_QUALITY_NOTICE_GATE_JSON:-${quality_report_dir}/mirror_notice_gate.json}"
+notice_router_json="${AXIOMME_QUALITY_NOTICE_ROUTER_JSON:-${quality_report_dir}/mirror_notice_router.json}"
 enforce_notice_gate="${AXIOMME_QUALITY_ENFORCE_MIRROR_NOTICE:-off}"
+
+mkdir -p "$(dirname "$notice_gate_json")" "$(dirname "$notice_router_json")"
 
 echo "[quality] prohibited tokens"
 bash scripts/check_prohibited_tokens.sh

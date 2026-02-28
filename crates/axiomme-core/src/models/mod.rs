@@ -29,8 +29,8 @@ pub use eval::{
     EvalRunOptions, EvalRunSelection,
 };
 pub use filesystem::{
-    AddResourceIngestOptions, AddResourceRequest, AddResourceResult, Entry, GlobResult,
-    MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
+    AddResourceIngestOptions, AddResourceRequest, AddResourceResult, AddResourceWaitMode, Entry,
+    GlobResult, MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
 };
 pub use queue::{
     OmQueueStatus, OmReflectionApplyMetrics, OutboxEvent, QueueCheckpoint, QueueCounts,

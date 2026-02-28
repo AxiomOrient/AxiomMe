@@ -4,19 +4,42 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TODAY="$(date -u +%F)"
 
-GATE_DOC="${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE_2026-02-26.md"
-REQUEST_DOC="${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST_2026-02-27.md"
-REPORT_PATH="${ROOT_DIR}/docs/RELEASE_SIGNOFF_STATUS_${TODAY}.md"
+GATE_DOC=""
+REQUEST_DOC=""
+REPORT_DIR="${ROOT_DIR}/logs/release"
+REPORT_PATH=""
 
 usage() {
   cat <<'EOF'
 Usage:
-  scripts/release_signoff_status.sh [--gate-doc <path>] [--request-doc <path>] [--report-path <path>]
+  scripts/release_signoff_status.sh [--gate-doc <path>] [--request-doc <path>] [--report-path <path>] [--report-dir <path>]
+
+Defaults:
+  - gate doc: latest docs/FEATURE_COMPLETENESS_UAT_GATE_*.md
+  - request doc: latest docs/RELEASE_SIGNOFF_REQUEST_*.md
+  - report path: <report-dir>/RELEASE_SIGNOFF_STATUS_<today>.md
+  - report-dir: logs/release
 
 Exit codes:
   0 -> READY (final release decision is DONE)
   2 -> BLOCKED (final release decision is still pending)
 EOF
+}
+
+resolve_latest_doc() {
+  local pattern="$1"
+  local label="$2"
+  local matches=()
+  local latest=""
+  shopt -s nullglob
+  matches=(${pattern})
+  shopt -u nullglob
+  if [[ "${#matches[@]}" -eq 0 ]]; then
+    echo "${label} document not found for pattern: ${pattern}" >&2
+    exit 1
+  fi
+  latest="$(printf '%s\n' "${matches[@]}" | LC_ALL=C sort | tail -n 1)"
+  printf '%s' "${latest}"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -33,6 +56,10 @@ while [[ $# -gt 0 ]]; do
       REPORT_PATH="${2:-}"
       shift 2
       ;;
+    --report-dir)
+      REPORT_DIR="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -44,6 +71,16 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -z "${GATE_DOC}" ]]; then
+  GATE_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/FEATURE_COMPLETENESS_UAT_GATE_*.md" "gate")"
+fi
+if [[ -z "${REQUEST_DOC}" ]]; then
+  REQUEST_DOC="$(resolve_latest_doc "${ROOT_DIR}/docs/RELEASE_SIGNOFF_REQUEST_*.md" "request")"
+fi
+if [[ -z "${REPORT_PATH}" ]]; then
+  REPORT_PATH="${REPORT_DIR}/RELEASE_SIGNOFF_STATUS_${TODAY}.md"
+fi
 
 if [[ ! -f "${GATE_DOC}" ]]; then
   echo "gate document not found: ${GATE_DOC}" >&2
@@ -109,7 +146,7 @@ mkdir -p "$(dirname "${REPORT_PATH}")"
   echo
   echo "## Deterministic Re-check"
   echo
-  echo "- Command: \`scripts/release_signoff_status.sh --report-path ${REPORT_PATH}\`"
+  echo "- Command: \`scripts/release_signoff_status.sh --gate-doc ${GATE_DOC} --request-doc ${REQUEST_DOC} --report-path ${REPORT_PATH}\`"
   echo "- READY condition: \`Final Release Decision\` starts with \`DONE\` in the gate document signoff section."
 } >"${REPORT_PATH}"
 

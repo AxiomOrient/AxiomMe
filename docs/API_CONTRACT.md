@@ -22,7 +22,7 @@
 ### Resource and Filesystem
 
 - `initialize() -> Result<()>`
-- `add_resource(path_or_url, target?, reason?, instruction?, wait, timeout?) -> AddResourceResult`
+- `add_resource(path_or_url, target?, reason?, instruction?, wait, wait_mode?, timeout?) -> AddResourceResult`
 - `wait_processed(timeout?) -> QueueStatus`
 - `ls(uri, recursive, simple) -> List<Entry>`
 - `glob(pattern, uri?) -> GlobResult`
@@ -48,6 +48,10 @@ Restriction:
   - repeatedly replays due queue events;
   - returns when queue work is drained (`new_total == 0 && processing == 0`);
   - returns `CONFLICT` on timeout with queue counts in message.
+- `add_resource(..., wait=true)` wait contract:
+  - `wait_mode=relaxed` (default): one bounded replay cycle and return.
+  - `wait_mode=strict`: wait until the queued event reaches terminal `done`; return `CONFLICT` on timeout or `dead_letter`.
+  - `AddResourceResult` includes `wait_mode` and `wait_contract` for explicit caller-side interpretation.
 
 Markdown web editor (`extension`):
 
