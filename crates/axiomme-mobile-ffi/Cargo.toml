@@ -5,6 +5,8 @@ authors = { workspace = true }
 edition = { workspace = true }
 description = "Mobile FFI boundary for AxiomMe core runtime."
 license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
 readme = "README.md"
 exclude = [
     "examples/swift/*",
