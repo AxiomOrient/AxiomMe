@@ -63,6 +63,7 @@ pub(super) struct ChildIndexEntry {
 #[derive(Debug, Default, Clone)]
 pub struct InMemoryIndex {
     records: HashMap<Arc<str>, IndexRecord>,
+    om_records: HashMap<String, crate::om::OmRecord>,
     vectors: HashMap<Arc<str>, Vec<f32>>,
     token_sets: HashMap<Arc<str>, HashSet<String>>,
     term_freqs: HashMap<Arc<str>, HashMap<String, u32>>,
@@ -78,6 +79,34 @@ impl InMemoryIndex {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn upsert_om_record(&mut self, om: crate::om::OmRecord) {
+        let uri = format!("axiom://agent/om/{}", om.scope_key);
+        let record = IndexRecord {
+            id: om.id.clone(),
+            uri: uri.clone(),
+            parent_uri: Some("axiom://agent/om".to_string()),
+            is_leaf: true,
+            context_type: "om_record".to_string(),
+            name: format!("OM: {}", om.scope_key),
+            abstract_text: om
+                .active_observations
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_string(),
+            content: om.active_observations.clone(),
+            tags: vec!["om".to_string(), om.scope.as_str().to_string()],
+            updated_at: om.updated_at,
+            depth: 3,
+        };
+        self.om_records.insert(om.scope_key.clone(), om);
+        self.upsert(record);
+    }
+
+    pub fn get_om_record(&self, scope_key: &str) -> Option<&crate::om::OmRecord> {
+        self.om_records.get(scope_key)
     }
 
     pub fn upsert(&mut self, record: IndexRecord) {
@@ -124,6 +153,9 @@ impl InMemoryIndex {
     }
 
     pub fn remove(&mut self, uri: &str) {
+        if let Some(scope_key) = uri.strip_prefix("axiom://agent/om/") {
+            self.om_records.remove(scope_key);
+        }
         if let Some(existing) = self.records.remove(uri) {
             self.remove_child_index_entry(existing.parent_uri.as_deref(), uri);
         }
@@ -134,6 +166,7 @@ impl InMemoryIndex {
 
     pub fn clear(&mut self) {
         self.records.clear();
+        self.om_records.clear();
         self.vectors.clear();
         self.token_sets.clear();
         self.term_freqs.clear();
@@ -1363,5 +1396,95 @@ mod tests {
                 .iter()
                 .any(|hit| hit.uri == "axiom://resources/docs/authz.md".into())
         );
+    }
+
+    #[test]
+    fn clear_removes_om_record_cache() {
+        let mut index = InMemoryIndex::new();
+        let now = Utc::now();
+        let scope_key = "session:s-om-clear";
+        index.upsert_om_record(crate::om::OmRecord {
+            id: "om-clear".to_string(),
+            scope: crate::om::OmScope::Session,
+            scope_key: scope_key.to_string(),
+            session_id: Some("s-om-clear".to_string()),
+            thread_id: None,
+            resource_id: None,
+            generation_count: 0,
+            last_applied_outbox_event_id: None,
+            origin_type: crate::om::OmOriginType::Initial,
+            active_observations: "observation".to_string(),
+            observation_token_count: 10,
+            pending_message_tokens: 0,
+            last_observed_at: Some(now),
+            current_task: None,
+            suggested_response: None,
+            last_activated_message_ids: Vec::new(),
+            observer_trigger_count_total: 0,
+            reflector_trigger_count_total: 0,
+            is_observing: false,
+            is_reflecting: false,
+            is_buffering_observation: false,
+            is_buffering_reflection: false,
+            last_buffered_at_tokens: 0,
+            last_buffered_at_time: None,
+            buffered_reflection: None,
+            buffered_reflection_tokens: None,
+            buffered_reflection_input_tokens: None,
+            reflected_observation_line_count: None,
+            created_at: now,
+            updated_at: now,
+        });
+        assert!(index.get_om_record(scope_key).is_some());
+
+        index.clear();
+
+        assert!(index.get_om_record(scope_key).is_none());
+    }
+
+    #[test]
+    fn remove_om_uri_removes_om_record_cache() {
+        let mut index = InMemoryIndex::new();
+        let now = Utc::now();
+        let scope_key = "session:s-om-remove";
+        let om_uri = format!("axiom://agent/om/{scope_key}");
+        index.upsert_om_record(crate::om::OmRecord {
+            id: "om-remove".to_string(),
+            scope: crate::om::OmScope::Session,
+            scope_key: scope_key.to_string(),
+            session_id: Some("s-om-remove".to_string()),
+            thread_id: None,
+            resource_id: None,
+            generation_count: 0,
+            last_applied_outbox_event_id: None,
+            origin_type: crate::om::OmOriginType::Initial,
+            active_observations: "observation".to_string(),
+            observation_token_count: 10,
+            pending_message_tokens: 0,
+            last_observed_at: Some(now),
+            current_task: None,
+            suggested_response: None,
+            last_activated_message_ids: Vec::new(),
+            observer_trigger_count_total: 0,
+            reflector_trigger_count_total: 0,
+            is_observing: false,
+            is_reflecting: false,
+            is_buffering_observation: false,
+            is_buffering_reflection: false,
+            last_buffered_at_tokens: 0,
+            last_buffered_at_time: None,
+            buffered_reflection: None,
+            buffered_reflection_tokens: None,
+            buffered_reflection_input_tokens: None,
+            reflected_observation_line_count: None,
+            created_at: now,
+            updated_at: now,
+        });
+        assert!(index.get_om_record(scope_key).is_some());
+
+        index.remove(&om_uri);
+
+        assert!(index.get_om_record(scope_key).is_none());
+        assert!(index.get(&om_uri).is_none());
     }
 }

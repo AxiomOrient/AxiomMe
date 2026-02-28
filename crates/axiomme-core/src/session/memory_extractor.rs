@@ -8,7 +8,9 @@ use crate::error::{AxiomError, Result};
 use crate::llm_io::{extract_json_fragment, extract_llm_content, parse_local_loopback_endpoint};
 use crate::models::Message;
 
-use super::memory::{build_memory_key, extract_memories, normalize_memory_text};
+use super::commit::helpers::{
+    build_memory_key, extract_memories_heuristically, normalize_memory_text,
+};
 
 const DEFAULT_MEMORY_EXTRACTOR_MODE: &str = "auto";
 const DEFAULT_MEMORY_LLM_ENDPOINT: &str = "http://127.0.0.1:11434/api/chat";
@@ -157,8 +159,8 @@ pub(super) fn extract_memories_for_commit(
     }
 }
 
-fn heuristic_memories(messages: &[Message]) -> Vec<ExtractedMemory> {
-    let base = extract_memories(messages)
+pub(crate) fn heuristic_memories(messages: &[Message]) -> Vec<ExtractedMemory> {
+    let base = extract_memories_heuristically(messages)
         .into_iter()
         .map(|candidate| ExtractedMemory {
             category: candidate.category,
@@ -299,7 +301,7 @@ fn parse_memories_value(
         let Some(category) = object
             .get("category")
             .and_then(|value| value.as_str())
-            .and_then(normalize_or_default_category)
+            .map(normalize_or_default_category)
         else {
             continue;
         };
@@ -452,8 +454,8 @@ fn normalize_category(raw: &str) -> Option<&'static str> {
     }
 }
 
-fn normalize_or_default_category(raw: &str) -> Option<&'static str> {
-    normalize_category(raw).or(Some("patterns"))
+fn normalize_or_default_category(raw: &str) -> &'static str {
+    normalize_category(raw).unwrap_or("patterns")
 }
 
 fn select_messages_for_llm(

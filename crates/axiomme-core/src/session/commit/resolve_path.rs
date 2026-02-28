@@ -3,11 +3,11 @@ use std::collections::HashMap;
 use crate::embedding::embed_text;
 use crate::error::{AxiomError, Result};
 
-use super::super::memory::{build_memory_key, normalize_memory_text};
 use super::super::memory_extractor::ExtractedMemory;
 use super::Session;
 use super::dedup::{prefilter_existing_memory_matches, resolve_dedup_selection};
 use super::fallbacks::record_memory_dedup_fallback as record_memory_dedup_fallback_event;
+use super::helpers::{build_memory_key, normalize_memory_text};
 use super::promotion::memory_uri_for_category_key;
 use super::read_path::list_existing_memory_facts;
 use super::types::{

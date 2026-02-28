@@ -885,6 +885,94 @@ fn initialize_reindexes_when_filesystem_drift_detected() {
 }
 
 #[test]
+fn initialize_reindexes_when_search_docs_missing_even_with_om_records() {
+    let temp = tempdir().expect("tempdir");
+    let src = temp.path().join("gate_policy.txt");
+    fs::write(&src, "OAuth startup gate recovery").expect("write source");
+
+    let app1 = AxiomMe::new(temp.path()).expect("app1 new");
+    app1.initialize().expect("app1 init failed");
+    app1.add_resource(
+        src.to_str().expect("src str"),
+        Some("axiom://resources/startup-gate-policy"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add failed");
+
+    let before = app1
+        .find(
+            "startup gate",
+            Some("axiom://resources/startup-gate-policy"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find before");
+    assert!(!before.query_results.is_empty());
+
+    app1.state
+        .clear_search_index()
+        .expect("clear search documents");
+    app1.state.clear_index_state().expect("clear index state");
+    let now = Utc::now();
+    app1.state
+        .upsert_om_record(&crate::om::OmRecord {
+            id: "om-startup-gate".to_string(),
+            scope: crate::om::OmScope::Session,
+            scope_key: "session:s-startup-gate".to_string(),
+            session_id: Some("s-startup-gate".to_string()),
+            thread_id: None,
+            resource_id: None,
+            generation_count: 0,
+            last_applied_outbox_event_id: None,
+            origin_type: crate::om::OmOriginType::Initial,
+            active_observations: "om-only record".to_string(),
+            observation_token_count: 10,
+            pending_message_tokens: 0,
+            last_observed_at: Some(now),
+            current_task: None,
+            suggested_response: None,
+            last_activated_message_ids: Vec::new(),
+            observer_trigger_count_total: 0,
+            reflector_trigger_count_total: 0,
+            is_observing: false,
+            is_reflecting: false,
+            is_buffering_observation: false,
+            is_buffering_reflection: false,
+            last_buffered_at_tokens: 0,
+            last_buffered_at_time: None,
+            buffered_reflection: None,
+            buffered_reflection_tokens: None,
+            buffered_reflection_input_tokens: None,
+            reflected_observation_line_count: None,
+            created_at: now,
+            updated_at: now,
+        })
+        .expect("upsert om");
+    drop(app1);
+
+    let app2 = AxiomMe::new(temp.path()).expect("app2 new");
+    app2.initialize().expect("app2 init failed");
+
+    let after = app2
+        .find(
+            "startup gate",
+            Some("axiom://resources/startup-gate-policy"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find after");
+    assert!(
+        !after.query_results.is_empty(),
+        "runtime init must reindex searchable docs when restored search docs are empty"
+    );
+}
+
+#[test]
 fn reconcile_prunes_missing_index_state() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomMe::new(temp.path()).expect("app new");

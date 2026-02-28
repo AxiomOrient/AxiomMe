@@ -2,10 +2,12 @@ use crate::embedding::embed_text;
 use crate::error::Result;
 use crate::uri::AxiomUri;
 
-use super::super::memory::{normalize_memory_text, parse_memory_entries};
 use super::Session;
+use super::helpers::normalize_memory_text;
 use super::promotion::memory_category_path;
 use super::types::{ExistingMemoryFact, ExistingPromotionFact};
+use super::write_path::parse_memory_entries;
+
 use super::write_path::has_markdown_extension;
 
 pub(super) fn list_existing_promotion_facts(

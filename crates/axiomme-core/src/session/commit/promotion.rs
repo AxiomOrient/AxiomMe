@@ -5,8 +5,8 @@ use crate::error::{AxiomError, Result};
 use crate::models::{MemoryPromotionFact, MemoryPromotionRequest, PromotionApplyMode};
 use crate::uri::{AxiomUri, Scope};
 
-use super::super::memory::{build_memory_key, normalize_memory_text, slugify};
 use super::Session;
+use super::helpers::{build_memory_key, normalize_memory_text, slugify};
 use super::resolve_path::dedup_source_ids;
 use super::types::{
     ExistingPromotionFact, PROMOTION_MAX_CONFIDENCE_MILLI, PROMOTION_MAX_FACTS,

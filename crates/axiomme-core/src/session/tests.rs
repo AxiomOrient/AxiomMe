@@ -20,10 +20,11 @@ use crate::{
 };
 
 use super::Session;
-use super::memory::{extract_memories, stable_text_key};
+use super::commit::helpers::stable_text_key;
+use super::memory_extractor::heuristic_memories;
 
 fn fixture_categories(role: &str, text: &str) -> HashSet<String> {
-    extract_memories(&[Message {
+    heuristic_memories(&[Message {
         id: "fixture-msg-001".to_string(),
         role: role.to_string(),
         text: text.to_string(),
@@ -1453,7 +1454,7 @@ fn extract_memories_uses_stable_key_for_same_text() {
         },
     ];
 
-    let keys = extract_memories(&messages)
+    let keys = heuristic_memories(&messages)
         .into_iter()
         .filter(|candidate| candidate.category == "preferences")
         .map(|candidate| candidate.key)

@@ -5,8 +5,8 @@ use crate::embedding::embed_text;
 use crate::error::{AxiomError, Result};
 use crate::llm_io::{extract_json_fragment, extract_llm_content, parse_local_loopback_endpoint};
 
-use super::super::memory::normalize_memory_text;
 use super::super::memory_extractor::ExtractedMemory;
+use super::helpers::normalize_memory_text;
 use super::types::{
     DedupSelection, ExistingMemoryFact, MemoryDedupConfig, MemoryDedupDecision, MemoryDedupMode,
     ParsedLlmDedupDecision, PrefilteredMemoryMatch,

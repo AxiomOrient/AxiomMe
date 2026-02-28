@@ -1,12 +1,12 @@
 use crate::embedding::embed_text;
 use crate::uri::AxiomUri;
 
-use super::super::memory::build_memory_key;
 use super::super::memory_extractor::ExtractedMemory;
 use super::dedup::{
     cosine_similarity, parse_llm_dedup_decision, prefilter_existing_memory_matches,
     resolve_dedup_selection, resolve_merge_target_index,
 };
+use super::helpers::build_memory_key;
 use super::resolve_path::merge_resolved_candidate;
 use super::types::{
     DEFAULT_MEMORY_DEDUP_LLM_MAX_MATCHES, DEFAULT_MEMORY_DEDUP_LLM_MAX_OUTPUT_TOKENS,
