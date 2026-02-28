@@ -11,6 +11,8 @@ edition = "2024"
 version = "0.1.6"
 license = "Apache-2.0"
 authors = ["axient"]
+repository = "https://github.com/AxiomOrient/AxiomMe"
+homepage = "https://github.com/AxiomOrient/AxiomMe"
 
 [workspace.dependencies]
 anyhow = "1.0.98"
