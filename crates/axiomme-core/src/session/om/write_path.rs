@@ -13,7 +13,7 @@ use super::{
     DEFAULT_OM_ACTIVATION_RATIO, MessageWriteContext, ObserverRunContext, ObserverRunOptions,
     Session,
 };
-use crate::error::Result;
+use crate::error::{AxiomError, Result};
 
 impl Session {
     pub(in super::super) fn update_observational_memory_on_message_write(
@@ -114,6 +114,14 @@ impl Session {
             self.apply_reflection_decision(reflection_decision, context.session_uri, record)?;
         }
         self.state.upsert_om_record(record)?;
+
+        // Sync with in-memory index
+        let mut index = self
+            .index
+            .write()
+            .map_err(|_| AxiomError::lock_poisoned("index"))?;
+        index.upsert_om_record(record.clone());
+
         Ok(true)
     }
 
@@ -259,6 +267,14 @@ impl Session {
         }
         record.updated_at = context.now;
         self.state.upsert_om_record(record)?;
+
+        // Sync with in-memory index
+        let mut index = self
+            .index
+            .write()
+            .map_err(|_| AxiomError::lock_poisoned("index"))?;
+        index.upsert_om_record(record.clone());
+
         Ok(())
     }
 }
