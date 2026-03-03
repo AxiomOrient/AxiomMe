@@ -6,7 +6,7 @@
 | OMV2-002 | P0 | DONE | Prompt Contract v2 스키마(observer/reflector) 정의 | request/response schema + snapshot fixture 통과 | 완료: `/Users/axient/repository/episodic@86b831e42186b8df663327ba6852c23a548685d1` (`src/prompt/contract.rs`), `crates/axiomme-core/src/om/mod.rs` re-export 반영 |
 | OMV2-003 | P0 | DONE | observer/reflector `request_json` 강제 주입 | 누락 경로 0건 | 완료: `crates/axiomme-core/src/session/om/observer/llm.rs`, `crates/axiomme-core/src/client/mirror_outbox/reflector.rs`, `cargo test -p axiomme-core session::om::observer::llm::tests::observer_prompt_contract_json_contains_v2_contract_fields -- --exact`, `cargo test -p axiomme-core client::mirror_outbox::reflector::tests::reflector_prompt_contract_json_contains_v2_contract_fields -- --exact`, `cargo test -p axiomme-core` |
 | OMV2-004 | P0 | TODO | canonical thread identity 리뉴얼 | grouping/selection/persistence 동일 canonical id 사용 | threading/search 회귀 테스트 |
-| OMV2-005 | P0 | DOING | one-shot migration 설계/구현(v1->v2) | dry-run/실전 전환 성공, 무결성 검증 통과 | 진행중: v2 전용 migration 함수 및 dry-run 검증 경로 구현 |
+| OMV2-005 | P0 | DONE | one-shot migration 설계/구현(v1->v2) | dry-run/실전 전환 성공, 무결성 검증 통과 | 완료: `state/migration.rs`(om_entries/om_continuation_state/om_protocol_meta + dry-run/apply API), `client/runtime.rs` API 노출, `state/tests.rs` 신규 2건(`om_v2_migration_dry_run_reports_plan_without_writes`, `om_v2_migration_apply_is_idempotent`), `cargo test -p axiomme-core` 통과 |
 | OMV2-006 | P1 | TODO | entry 기반 observation/reflection 모델 도입 | line-count merge 제거, covers_entry_ids 기반 apply | state/reflection 테스트 |
 | OMV2-007 | P1 | TODO | continuation state v2 분리 | current_task/suggested_response lifecycle 분리 동작 | continuation 테스트 |
 | OMV2-008 | P1 | TODO | snapshot 기반 search hint v2 도입 | hint 생성 경로가 snapshot 단일 경로로 전환 | search 테스트/plan note |
@@ -42,12 +42,12 @@
 - 전체 테스트 pass
 
 ## Next Actions
-- [NX-001] source:task priority:P0 status:todo action:OMV2-005 one-shot migration(v1->v2) 구현 및 dry-run/apply 검증 evidence:docs/IMPLEMENTATION-PLAN.md
-- [NX-002] source:task priority:P0 status:todo action:OMV2-004 canonical thread identity를 observer/search/state 전 경로에 단일화 evidence:docs/IMPLEMENTATION-PLAN.md
-- [NX-003] source:task priority:P0 status:todo action:OMV2-011 v1 코드/스키마/테스트 제거 전수 정리 evidence:docs/IMPLEMENTATION-PLAN.md
+- [NX-001] source:task priority:P0 status:todo action:OMV2-004 canonical thread identity를 observer/search/state 전 경로에 단일화 evidence:docs/IMPLEMENTATION-PLAN.md
+- [NX-002] source:task priority:P0 status:todo action:OMV2-011 v1 코드/스키마/테스트 제거 전수 정리 evidence:docs/IMPLEMENTATION-PLAN.md
+- [NX-003] source:task priority:P0 status:todo action:OMV2-012 Gate A 인증(OMV2-001~005 완료 스냅샷 기준) evidence:docs/IMPLEMENTATION-PLAN.md
 - Selected For Next: NX-001, NX-002, NX-003
 
 ## NX -> TASK-ID Mapping
-- NX-001 -> OMV2-005 (DOING)
-- NX-002 -> OMV2-004 (TODO)
-- NX-003 -> OMV2-011 (TODO)
+- NX-001 -> OMV2-004 (TODO)
+- NX-002 -> OMV2-011 (TODO)
+- NX-003 -> OMV2-012 (TODO)

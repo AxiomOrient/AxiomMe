@@ -2,7 +2,7 @@ use chrono::{Duration, Utc};
 use tempfile::tempdir;
 
 use crate::models::{IndexRecord, OmReflectionApplyMetrics, QueueEventStatus, ReconcileRunStatus};
-use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope};
+use crate::om::{OM_PROTOCOL_VERSION, OmObservationChunk, OmOriginType, OmRecord, OmScope};
 
 use super::*;
 
@@ -241,6 +241,171 @@ fn migration_drops_legacy_search_docs_fts_table() {
         !exists_after,
         "legacy search_docs_fts table must be dropped"
     );
+}
+
+#[test]
+fn om_v2_migration_dry_run_reports_plan_without_writes() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let store = SqliteStateStore::open(db_path).expect("open failed");
+    let now = Utc::now();
+    let record = OmRecord {
+        id: "record-migrate-dry".to_string(),
+        scope: OmScope::Session,
+        scope_key: "session:migrate-dry".to_string(),
+        session_id: Some("migrate-dry".to_string()),
+        thread_id: None,
+        resource_id: None,
+        generation_count: 3,
+        last_applied_outbox_event_id: None,
+        origin_type: OmOriginType::Initial,
+        active_observations: "user asked for migration status".to_string(),
+        observation_token_count: 32,
+        pending_message_tokens: 5,
+        last_observed_at: Some(now),
+        current_task: Some("Verify OM migration state".to_string()),
+        suggested_response: Some("Share migration status".to_string()),
+        last_activated_message_ids: vec!["m-dry-1".to_string()],
+        observer_trigger_count_total: 1,
+        reflector_trigger_count_total: 0,
+        is_observing: false,
+        is_reflecting: false,
+        is_buffering_observation: false,
+        is_buffering_reflection: false,
+        last_buffered_at_tokens: 0,
+        last_buffered_at_time: None,
+        buffered_reflection: None,
+        buffered_reflection_tokens: None,
+        buffered_reflection_input_tokens: None,
+        reflected_observation_line_count: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store.upsert_om_record(&record).expect("upsert");
+
+    let report = store.om_v2_migration_dry_run().expect("dry run");
+    assert!(report.dry_run);
+    assert!(!report.already_applied);
+    assert_eq!(report.records_scanned, 1);
+    assert_eq!(report.entries_planned, 1);
+    assert_eq!(report.continuation_planned, 1);
+    assert_eq!(report.entries_upserted, 0);
+    assert_eq!(report.continuation_upserted, 0);
+    assert_eq!(report.protocol_version, OM_PROTOCOL_VERSION);
+    assert!(report.integrity_ok);
+
+    let conn = store.conn.lock().expect("sqlite lock");
+    let entries_count = conn
+        .query_row("SELECT COUNT(*) FROM om_entries", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("count om_entries");
+    let continuation_count = conn
+        .query_row("SELECT COUNT(*) FROM om_continuation_state", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("count om_continuation_state");
+    let protocol_meta_count = conn
+        .query_row("SELECT COUNT(*) FROM om_protocol_meta", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("count om_protocol_meta");
+    assert_eq!(entries_count, 0);
+    assert_eq!(continuation_count, 0);
+    assert_eq!(protocol_meta_count, 0);
+    drop(conn);
+
+    let marker = store
+        .get_system_value("om_v2_one_shot_migration_applied_at")
+        .expect("marker value");
+    assert!(marker.is_none());
+}
+
+#[test]
+fn om_v2_migration_apply_is_idempotent() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let store = SqliteStateStore::open(db_path).expect("open failed");
+    let now = Utc::now();
+    let record = OmRecord {
+        id: "record-migrate-apply".to_string(),
+        scope: OmScope::Thread,
+        scope_key: "thread:t-migrate-apply".to_string(),
+        session_id: Some("s-migrate-apply".to_string()),
+        thread_id: Some("t-migrate-apply".to_string()),
+        resource_id: None,
+        generation_count: 8,
+        last_applied_outbox_event_id: None,
+        origin_type: OmOriginType::Reflection,
+        active_observations: "reflection merged from observer".to_string(),
+        observation_token_count: 48,
+        pending_message_tokens: 7,
+        last_observed_at: Some(now),
+        current_task: Some("Finalize migration verification".to_string()),
+        suggested_response: Some("Report completion state".to_string()),
+        last_activated_message_ids: vec!["m-apply-1".to_string(), "m-apply-2".to_string()],
+        observer_trigger_count_total: 2,
+        reflector_trigger_count_total: 1,
+        is_observing: false,
+        is_reflecting: false,
+        is_buffering_observation: false,
+        is_buffering_reflection: false,
+        last_buffered_at_tokens: 0,
+        last_buffered_at_time: None,
+        buffered_reflection: None,
+        buffered_reflection_tokens: None,
+        buffered_reflection_input_tokens: None,
+        reflected_observation_line_count: None,
+        created_at: now,
+        updated_at: now,
+    };
+    store.upsert_om_record(&record).expect("upsert");
+
+    let first = store
+        .apply_om_v2_one_shot_migration()
+        .expect("first migration apply");
+    assert!(!first.dry_run);
+    assert!(!first.already_applied);
+    assert!(first.integrity_ok);
+    assert_eq!(first.entries_upserted, 1);
+    assert_eq!(first.continuation_upserted, 1);
+    assert_eq!(first.protocol_version, OM_PROTOCOL_VERSION);
+
+    let conn = store.conn.lock().expect("sqlite lock");
+    let entries_count = conn
+        .query_row("SELECT COUNT(*) FROM om_entries", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("count entries");
+    let continuation_count = conn
+        .query_row("SELECT COUNT(*) FROM om_continuation_state", [], |row| {
+            row.get::<_, i64>(0)
+        })
+        .expect("count continuation");
+    let (protocol_version, episodic_rev) = conn
+        .query_row(
+            "SELECT protocol_version, episodic_rev FROM om_protocol_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .expect("read protocol meta");
+    assert_eq!(entries_count, 1);
+    assert_eq!(continuation_count, 1);
+    assert_eq!(protocol_version, OM_PROTOCOL_VERSION);
+    assert_eq!(episodic_rev, "86b831e42186b8df663327ba6852c23a548685d1");
+    drop(conn);
+
+    let marker = store
+        .get_system_value("om_v2_one_shot_migration_applied_at")
+        .expect("marker");
+    assert!(marker.is_some());
+
+    let second = store
+        .apply_om_v2_one_shot_migration()
+        .expect("second migration apply");
+    assert!(second.already_applied);
+    assert_eq!(second.entries_upserted, 0);
+    assert_eq!(second.continuation_upserted, 0);
 }
 
 #[test]

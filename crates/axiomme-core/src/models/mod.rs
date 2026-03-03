@@ -33,9 +33,9 @@ pub use filesystem::{
     GlobResult, MarkdownDocument, MarkdownSaveResult, TreeNode, TreeResult,
 };
 pub use queue::{
-    OmQueueStatus, OmReflectionApplyMetrics, OutboxEvent, QueueCheckpoint, QueueCounts,
-    QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus, QueueOverview,
-    QueueStatus, ReplayReport,
+    OmQueueStatus, OmReflectionApplyMetrics, OmV2MigrationReport, OutboxEvent, QueueCheckpoint,
+    QueueCounts, QueueDeadLetterRate, QueueDiagnostics, QueueEventStatus, QueueLaneStatus,
+    QueueOverview, QueueStatus, ReplayReport,
 };
 pub use reconcile::{ReconcileOptions, ReconcileReport, ReconcileRunStatus};
 pub use release::{

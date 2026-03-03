@@ -1,9 +1,14 @@
-use rusqlite::Connection;
+use chrono::Utc;
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{AxiomError, Result};
-use crate::models::{QueueEventStatus, ReconcileRunStatus};
+use crate::models::{OmV2MigrationReport, QueueEventStatus, ReconcileRunStatus};
+use crate::om::{OM_PROTOCOL_VERSION, OmOriginType, OmRecord};
 
 use super::SqliteStateStore;
+
+const OM_V2_MIGRATION_APPLIED_AT_KEY: &str = "om_v2_one_shot_migration_applied_at";
+const OM_V2_REQUIRED_EPISODIC_REV: &str = "86b831e42186b8df663327ba6852c23a548685d1";
 
 const MIGRATION_SCHEMA_SQL: &str = r"
     PRAGMA journal_mode = WAL;
@@ -154,6 +159,45 @@ const MIGRATION_SCHEMA_SQL: &str = r"
         PRIMARY KEY(scope_key, thread_id)
     );
 
+    CREATE TABLE IF NOT EXISTS om_entries (
+        entry_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL,
+        canonical_thread_id TEXT NOT NULL,
+        priority TEXT NOT NULL CHECK(priority IN ('high', 'medium', 'low')),
+        text TEXT NOT NULL,
+        source_message_ids_json TEXT NOT NULL,
+        origin_kind TEXT NOT NULL CHECK(origin_kind IN ('observation', 'reflection', 'migration')),
+        created_at TEXT NOT NULL,
+        superseded_by TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS om_reflection_events (
+        event_id TEXT PRIMARY KEY,
+        scope_key TEXT NOT NULL,
+        covers_entry_ids_json TEXT NOT NULL,
+        reflection_entry_id TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS om_continuation_state (
+        scope_key TEXT NOT NULL,
+        canonical_thread_id TEXT NOT NULL,
+        current_task TEXT,
+        suggested_response TEXT,
+        confidence REAL NOT NULL DEFAULT 0.0,
+        source_kind TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(scope_key, canonical_thread_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS om_protocol_meta (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        protocol_version TEXT NOT NULL,
+        episodic_rev TEXT NOT NULL,
+        migrated_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS om_runtime_metrics (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         reflect_apply_attempts_total INTEGER NOT NULL DEFAULT 0,
@@ -191,6 +235,14 @@ const MIGRATION_SCHEMA_SQL: &str = r"
     ON om_scope_sessions(scope_key, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_om_thread_states_scope_updated_at
     ON om_thread_states(scope_key, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_om_entries_scope_created_at
+    ON om_entries(scope_key, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_om_entries_scope_thread
+    ON om_entries(scope_key, canonical_thread_id);
+    CREATE INDEX IF NOT EXISTS idx_om_continuation_scope_updated_at
+    ON om_continuation_state(scope_key, updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_om_reflection_events_scope_created_at
+    ON om_reflection_events(scope_key, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_memory_promotion_checkpoints_session
     ON memory_promotion_checkpoints(session_id, updated_at DESC);
 ";
@@ -269,6 +321,281 @@ impl SqliteStateStore {
         conn.execute("DROP TABLE IF EXISTS search_docs_fts", [])?;
         drop(conn);
         Ok(())
+    }
+
+    pub fn om_v2_migration_dry_run(&self) -> Result<OmV2MigrationReport> {
+        self.run_om_v2_one_shot_migration(true)
+    }
+
+    pub fn apply_om_v2_one_shot_migration(&self) -> Result<OmV2MigrationReport> {
+        self.run_om_v2_one_shot_migration(false)
+    }
+
+    fn run_om_v2_one_shot_migration(&self, dry_run: bool) -> Result<OmV2MigrationReport> {
+        let records = self.list_om_records()?;
+        let mut report = OmV2MigrationReport {
+            dry_run,
+            already_applied: false,
+            records_scanned: records.len(),
+            entries_planned: 0,
+            continuation_planned: 0,
+            entries_upserted: 0,
+            continuation_upserted: 0,
+            protocol_meta_updated: false,
+            integrity_ok: false,
+            protocol_version: OM_PROTOCOL_VERSION.to_string(),
+            episodic_rev: OM_V2_REQUIRED_EPISODIC_REV.to_string(),
+            issues: Vec::new(),
+        };
+
+        for record in &records {
+            if !record.active_observations.trim().is_empty() {
+                report.entries_planned = report.entries_planned.saturating_add(1);
+            }
+            if has_continuation_candidate(record) {
+                report.continuation_planned = report.continuation_planned.saturating_add(1);
+            }
+        }
+
+        let meta_matches = self.with_conn(|conn| {
+            let meta = read_om_protocol_meta(conn)?;
+            Ok(meta.is_some_and(|(protocol_version, episodic_rev)| {
+                protocol_version == OM_PROTOCOL_VERSION
+                    && episodic_rev == OM_V2_REQUIRED_EPISODIC_REV
+            }))
+        })?;
+
+        if dry_run {
+            report.protocol_meta_updated = !meta_matches;
+            report.integrity_ok = true;
+            return Ok(report);
+        }
+
+        if meta_matches
+            && self
+                .get_system_value(OM_V2_MIGRATION_APPLIED_AT_KEY)?
+                .is_some()
+        {
+            report.already_applied = true;
+            report.integrity_ok = true;
+            return Ok(report);
+        }
+
+        self.with_tx(|tx| {
+            for record in &records {
+                if !record.active_observations.trim().is_empty() {
+                    let entry_id = entry_id_for_record(record);
+                    let source_message_ids_json = serde_json::to_string(&record.last_activated_message_ids)?;
+                    tx.execute(
+                        r"
+                        INSERT INTO om_entries(
+                            entry_id, scope_key, canonical_thread_id, priority, text,
+                            source_message_ids_json, origin_kind, created_at, superseded_by
+                        )
+                        VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)
+                        ON CONFLICT(entry_id) DO UPDATE SET
+                            scope_key = excluded.scope_key,
+                            canonical_thread_id = excluded.canonical_thread_id,
+                            priority = excluded.priority,
+                            text = excluded.text,
+                            source_message_ids_json = excluded.source_message_ids_json,
+                            origin_kind = excluded.origin_kind,
+                            created_at = excluded.created_at,
+                            superseded_by = NULL
+                        ",
+                        params![
+                            entry_id,
+                            record.scope_key,
+                            canonical_thread_id_for_record(record),
+                            "medium",
+                            record.active_observations.trim(),
+                            source_message_ids_json,
+                            entry_origin_kind(record.origin_type),
+                            record.created_at.to_rfc3339(),
+                        ],
+                    )?;
+                    report.entries_upserted = report.entries_upserted.saturating_add(1);
+                }
+
+                let current_task = normalize_optional_text(record.current_task.as_deref());
+                let suggested_response =
+                    normalize_optional_text(record.suggested_response.as_deref());
+                if current_task.is_none() && suggested_response.is_none() {
+                    continue;
+                }
+
+                tx.execute(
+                    r"
+                    INSERT INTO om_continuation_state(
+                        scope_key, canonical_thread_id, current_task, suggested_response,
+                        confidence, source_kind, updated_at
+                    )
+                    VALUES(?1, ?2, ?3, ?4, ?5, 'migration', ?6)
+                    ON CONFLICT(scope_key, canonical_thread_id) DO UPDATE SET
+                        current_task = excluded.current_task,
+                        suggested_response = excluded.suggested_response,
+                        confidence = excluded.confidence,
+                        source_kind = excluded.source_kind,
+                        updated_at = excluded.updated_at
+                    ",
+                    params![
+                        record.scope_key,
+                        canonical_thread_id_for_record(record),
+                        current_task,
+                        suggested_response,
+                        continuation_confidence(record.current_task.as_deref(), record.suggested_response.as_deref()),
+                        record.updated_at.to_rfc3339(),
+                    ],
+                )?;
+                report.continuation_upserted = report.continuation_upserted.saturating_add(1);
+            }
+
+            let now = Utc::now().to_rfc3339();
+            tx.execute(
+                r"
+                INSERT INTO om_protocol_meta(id, protocol_version, episodic_rev, migrated_at, updated_at)
+                VALUES(1, ?1, ?2, ?3, ?3)
+                ON CONFLICT(id) DO UPDATE SET
+                    protocol_version = excluded.protocol_version,
+                    episodic_rev = excluded.episodic_rev,
+                    updated_at = excluded.updated_at
+                ",
+                params![OM_PROTOCOL_VERSION, OM_V2_REQUIRED_EPISODIC_REV, now],
+            )?;
+            report.protocol_meta_updated = true;
+            Ok(())
+        })?;
+
+        self.set_system_value(OM_V2_MIGRATION_APPLIED_AT_KEY, &Utc::now().to_rfc3339())?;
+
+        let issues = self.validate_om_v2_migration_integrity(&records)?;
+        report.integrity_ok = issues.is_empty();
+        report.issues = issues;
+        if !report.integrity_ok {
+            return Err(AxiomError::Validation(format!(
+                "om v2 one-shot migration integrity check failed: {}",
+                report.issues.join("; ")
+            )));
+        }
+        Ok(report)
+    }
+
+    fn validate_om_v2_migration_integrity(&self, records: &[OmRecord]) -> Result<Vec<String>> {
+        self.with_conn(|conn| {
+            let mut issues = Vec::<String>::new();
+
+            let meta = read_om_protocol_meta(conn)?;
+            match meta {
+                Some((protocol_version, episodic_rev))
+                    if protocol_version == OM_PROTOCOL_VERSION
+                        && episodic_rev == OM_V2_REQUIRED_EPISODIC_REV => {}
+                Some((protocol_version, episodic_rev)) => {
+                    issues.push(format!(
+                        "om_protocol_meta mismatch: protocol_version={protocol_version}, episodic_rev={episodic_rev}"
+                    ));
+                }
+                None => issues.push("missing om_protocol_meta row".to_string()),
+            }
+
+            for record in records {
+                if !record.active_observations.trim().is_empty() {
+                    let exists = conn
+                        .query_row(
+                            "SELECT 1 FROM om_entries WHERE entry_id = ?1 LIMIT 1",
+                            params![entry_id_for_record(record)],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
+                    if !exists {
+                        issues.push(format!(
+                            "missing om_entries row for scope_key={}",
+                            record.scope_key
+                        ));
+                    }
+                }
+
+                if has_continuation_candidate(record) {
+                    let exists = conn
+                        .query_row(
+                            "SELECT 1 FROM om_continuation_state WHERE scope_key = ?1 AND canonical_thread_id = ?2 LIMIT 1",
+                            params![record.scope_key, canonical_thread_id_for_record(record)],
+                            |_| Ok(()),
+                        )
+                        .optional()?
+                        .is_some();
+                    if !exists {
+                        issues.push(format!(
+                            "missing om_continuation_state row for scope_key={} canonical_thread_id={}",
+                            record.scope_key,
+                            canonical_thread_id_for_record(record)
+                        ));
+                    }
+                }
+            }
+
+            Ok(issues)
+        })
+    }
+}
+
+fn read_om_protocol_meta(conn: &Connection) -> Result<Option<(String, String)>> {
+    let row = conn
+        .query_row(
+            "SELECT protocol_version, episodic_rev FROM om_protocol_meta WHERE id = 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    Ok(row)
+}
+
+fn entry_id_for_record(record: &OmRecord) -> String {
+    format!(
+        "omv2:{}:{}:{}",
+        record.scope_key,
+        record.generation_count,
+        record.created_at.timestamp_micros()
+    )
+}
+
+fn canonical_thread_id_for_record(record: &OmRecord) -> String {
+    if let Some(thread_id) = normalize_optional_text(record.thread_id.as_deref()) {
+        return thread_id;
+    }
+    if let Some(session_id) = normalize_optional_text(record.session_id.as_deref()) {
+        return format!("session:{session_id}");
+    }
+    record.scope_key.clone()
+}
+
+const fn entry_origin_kind(origin: OmOriginType) -> &'static str {
+    match origin {
+        OmOriginType::Initial => "observation",
+        OmOriginType::Reflection => "reflection",
+    }
+}
+
+fn has_continuation_candidate(record: &OmRecord) -> bool {
+    normalize_optional_text(record.current_task.as_deref()).is_some()
+        || normalize_optional_text(record.suggested_response.as_deref()).is_some()
+}
+
+fn normalize_optional_text(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn continuation_confidence(current_task: Option<&str>, suggested_response: Option<&str>) -> f64 {
+    let has_current_task = normalize_optional_text(current_task).is_some();
+    let has_suggested_response = normalize_optional_text(suggested_response).is_some();
+    if has_current_task && has_suggested_response {
+        0.92
+    } else if has_current_task || has_suggested_response {
+        0.82
+    } else {
+        0.0
     }
 }
 

@@ -150,3 +150,20 @@ pub struct ReplayReport {
     pub requeued: usize,
     pub skipped: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct OmV2MigrationReport {
+    pub dry_run: bool,
+    pub already_applied: bool,
+    pub records_scanned: usize,
+    pub entries_planned: usize,
+    pub continuation_planned: usize,
+    pub entries_upserted: usize,
+    pub continuation_upserted: usize,
+    pub protocol_meta_updated: bool,
+    pub integrity_ok: bool,
+    pub protocol_version: String,
+    pub episodic_rev: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<String>,
+}

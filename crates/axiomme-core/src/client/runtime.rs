@@ -10,8 +10,8 @@ use crate::error::{AxiomError, Result};
 use crate::jsonl::{jsonl_all_lines_invalid, parse_jsonl_tolerant};
 use crate::models::{
     BackendStatus, CommitMode, CommitResult, EmbeddingBackendStatus, MemoryPromotionRequest,
-    MemoryPromotionResult, QueueDiagnostics, QueueOverview, RequestLogEntry, SessionInfo,
-    SessionMeta,
+    MemoryPromotionResult, OmV2MigrationReport, QueueDiagnostics, QueueOverview, RequestLogEntry,
+    SessionInfo, SessionMeta,
 };
 use crate::queue_policy::default_scope_set;
 use crate::session::Session;
@@ -85,6 +85,14 @@ impl AxiomMe {
             om_status: self.state.om_status_snapshot()?,
             om_reflection_apply_metrics: self.state.om_reflection_apply_metrics_snapshot()?,
         })
+    }
+
+    pub fn om_v2_migration_dry_run(&self) -> Result<OmV2MigrationReport> {
+        self.state.om_v2_migration_dry_run()
+    }
+
+    pub fn apply_om_v2_one_shot_migration(&self) -> Result<OmV2MigrationReport> {
+        self.state.apply_om_v2_one_shot_migration()
     }
 
     pub fn list_request_logs(&self, limit: usize) -> Result<Vec<RequestLogEntry>> {
