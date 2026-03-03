@@ -440,8 +440,7 @@ dependencies = [
 [[package]]
 name = "episodic"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ebd349fc303c6a64921531f4b1dfa37906e1d7a3415e1aeffa373076151126d9"
+source = "git+file:///Users/axient/repository/episodic?rev=86b831e42186b8df663327ba6852c23a548685d1#86b831e42186b8df663327ba6852c23a548685d1"
 dependencies = [
  "chrono",
  "serde",

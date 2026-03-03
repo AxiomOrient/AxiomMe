@@ -398,9 +398,7 @@ fn should_split_camel_boundary(chars: &[char], idx: usize) -> bool {
         || (idx >= 2
             && prev.is_uppercase()
             && chars[idx - 2].is_uppercase()
-            && chars
-                .get(idx + 1)
-                .is_some_and(|next| next.is_lowercase()))
+            && chars.get(idx + 1).is_some_and(|next| next.is_lowercase()))
 }
 
 fn flush_token(out: &mut Vec<String>, current: &mut String) {

@@ -1,11 +1,12 @@
 use std::fs;
 use std::path::Path;
 
-use semver::{Comparator, Op, Version, VersionReq};
+use semver::Version;
 
 use super::{
-    CRATES_IO_INDEX_SOURCE, EPISODIC_DEPENDENCY_NAME, EPISODIC_REQUIRED_MAJOR,
-    EPISODIC_REQUIRED_MINOR, EpisodicLockDependency, EpisodicManifestDependency,
+    EPISODIC_DEPENDENCY_NAME, EPISODIC_LOCK_SOURCE_PREFIX, EPISODIC_REQUIRED_GIT_REV,
+    EPISODIC_REQUIRED_GIT_URL, EPISODIC_REQUIRED_MAJOR, EPISODIC_REQUIRED_MINOR,
+    EpisodicLockDependency, EpisodicManifestDependency,
 };
 use crate::models::EpisodicSemverProbeResult;
 
@@ -55,20 +56,41 @@ pub(super) fn run_episodic_semver_probe(workspace_dir: &Path) -> EpisodicSemverP
         Err(reason) => return EpisodicSemverProbeResult::from_error(reason),
     };
 
-    let manifest_req_ok = episodic_manifest_req_contract_matches(&manifest_dep.version_req);
-    let manifest_source_ok = !manifest_dep.has_path && !manifest_dep.has_git;
-    let lock_version_ok = episodic_lock_version_contract_matches(&lock_dep.version);
-    let lock_source_ok = lock_dep
-        .source
+    let manifest_git_ok = manifest_dep
+        .git_url
         .as_deref()
-        .is_some_and(|source| source.starts_with(CRATES_IO_INDEX_SOURCE));
+        .is_some_and(|git| git.trim() == EPISODIC_REQUIRED_GIT_URL);
+    let manifest_rev_ok = manifest_dep
+        .rev
+        .as_deref()
+        .is_some_and(episodic_manifest_req_contract_matches);
+    let manifest_req_ok = manifest_rev_ok;
+    let manifest_source_ok = manifest_dep.has_git && !manifest_dep.has_path && manifest_git_ok;
 
-    let passed = manifest_req_ok && manifest_source_ok && lock_version_ok && lock_source_ok;
+    let lock_version_ok = episodic_lock_version_contract_matches(&lock_dep.version);
+    let lock_revision_ok = lock_dep
+        .revision
+        .as_deref()
+        .is_some_and(|revision| revision == EPISODIC_REQUIRED_GIT_REV);
+    let lock_source_ok = lock_dep.source.as_deref().is_some_and(|source| {
+        source.starts_with(EPISODIC_LOCK_SOURCE_PREFIX)
+            && source.contains(&format!("#{EPISODIC_REQUIRED_GIT_REV}"))
+    });
+
+    let passed = manifest_req_ok
+        && manifest_source_ok
+        && lock_version_ok
+        && lock_source_ok
+        && lock_revision_ok;
     EpisodicSemverProbeResult {
         passed,
         error: None,
-        manifest_req: Some(manifest_dep.version_req),
+        manifest_req: manifest_dep.rev.clone(),
         manifest_req_ok: Some(manifest_req_ok),
+        manifest_git: manifest_dep.git_url.clone(),
+        manifest_git_ok: Some(manifest_git_ok),
+        manifest_rev: manifest_dep.rev.clone(),
+        manifest_rev_ok: Some(manifest_rev_ok),
         manifest_uses_path: Some(manifest_dep.has_path),
         manifest_uses_git: Some(manifest_dep.has_git),
         manifest_source_ok: Some(manifest_source_ok),
@@ -76,6 +98,8 @@ pub(super) fn run_episodic_semver_probe(workspace_dir: &Path) -> EpisodicSemverP
         lock_version_ok: Some(lock_version_ok),
         lock_source: lock_dep.source,
         lock_source_ok: Some(lock_source_ok),
+        lock_revision: lock_dep.revision,
+        lock_revision_ok: Some(lock_revision_ok),
     }
 }
 
@@ -94,17 +118,34 @@ pub(super) fn parse_manifest_episodic_dependency(
 
     match episodic {
         toml::Value::String(version_req) => Ok(EpisodicManifestDependency {
-            version_req: version_req.to_string(),
+            version_req: Some(version_req.to_string()),
+            git_url: None,
+            rev: None,
             has_path: false,
             has_git: false,
         }),
         toml::Value::Table(fields) => {
+            let git_url = fields
+                .get("git")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string);
+            let rev = fields
+                .get("rev")
+                .and_then(toml::Value::as_str)
+                .map(str::to_string);
             let version_req = fields
                 .get("version")
                 .and_then(toml::Value::as_str)
-                .ok_or_else(|| "episodic_dependency_missing_version".to_string())?;
+                .map(str::to_string);
+
+            if git_url.is_some() && rev.is_none() {
+                return Err("episodic_dependency_missing_rev".to_string());
+            }
+
             Ok(EpisodicManifestDependency {
-                version_req: version_req.to_string(),
+                version_req,
+                git_url,
+                rev,
                 has_path: fields.contains_key("path"),
                 has_git: fields.contains_key("git"),
             })
@@ -143,28 +184,22 @@ pub(super) fn parse_lockfile_episodic_dependency(
             .get("source")
             .and_then(toml::Value::as_str)
             .map(str::to_string);
-        return Ok(EpisodicLockDependency { version, source });
+        let revision = source
+            .as_deref()
+            .and_then(|value| value.split('#').nth(1))
+            .map(str::to_string);
+        return Ok(EpisodicLockDependency {
+            version,
+            source,
+            revision,
+        });
     }
 
     Err("missing_episodic_lock_entry".to_string())
 }
 
 pub(super) fn episodic_manifest_req_contract_matches(raw: &str) -> bool {
-    let requirement = match VersionReq::parse(raw.trim()) {
-        Ok(value) => value,
-        Err(_) => return false,
-    };
-    if requirement.comparators.len() != 1 {
-        return false;
-    }
-    comparator_matches_episodic_contract(&requirement.comparators[0])
-}
-
-fn comparator_matches_episodic_contract(comparator: &Comparator) -> bool {
-    if !matches!(comparator.op, Op::Exact | Op::Caret | Op::Tilde) {
-        return false;
-    }
-    comparator.major == EPISODIC_REQUIRED_MAJOR && comparator.minor == Some(EPISODIC_REQUIRED_MINOR)
+    raw.trim() == EPISODIC_REQUIRED_GIT_REV
 }
 
 pub(super) fn episodic_lock_version_contract_matches(raw: &str) -> bool {

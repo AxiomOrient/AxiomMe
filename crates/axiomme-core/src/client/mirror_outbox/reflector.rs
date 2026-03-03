@@ -11,10 +11,11 @@ use crate::llm_io::{
 use crate::om::{
     DEFAULT_REFLECTOR_BUFFER_ACTIVATION, DEFAULT_REFLECTOR_OBSERVATION_TOKENS,
     OmInferenceModelConfig, OmInferenceUsage, OmReflectorPromptInput, OmReflectorRequest,
-    OmReflectorResponse, build_reflection_draft, build_reflector_system_prompt,
-    build_reflector_user_prompt, om_observer_error, om_reflector_error, om_status_kind,
-    parse_memory_section_xml_accuracy_first, plan_buffered_reflection_slice,
-    resolve_reflector_model_enabled, validate_reflection_compression,
+    OmReflectorResponse, build_reflection_draft, build_reflector_prompt_contract_v2,
+    build_reflector_system_prompt, build_reflector_user_prompt, om_observer_error,
+    om_reflector_error, om_status_kind, parse_memory_section_xml_accuracy_first,
+    plan_buffered_reflection_slice, resolve_reflector_model_enabled,
+    validate_reflection_compression,
 };
 use crate::om_bridge::{
     OM_OUTBOX_SCHEMA_VERSION_V1, OmObserveBufferRequestedV1, OmReflectBufferRequestedV1,
@@ -324,7 +325,7 @@ fn llm_reflector_response(
         &client,
         &endpoint,
         config,
-        &request.active_observations,
+        &request,
         first_level,
         options.skip_continuation_hints,
     )?;
@@ -338,7 +339,7 @@ fn llm_reflector_response(
             &client,
             &endpoint,
             config,
-            &request.active_observations,
+            &request,
             retry_level,
             options.skip_continuation_hints,
         )?;
@@ -362,14 +363,20 @@ fn request_llm_reflector_attempt(
     client: &Client,
     endpoint: &Url,
     config: &OmReflectorConfig,
-    active_observations: &str,
+    request: &OmReflectorRequest,
     compression_level: u8,
     skip_continuation_hints: bool,
 ) -> Result<OmReflectorResponse> {
     let system_prompt = build_reflector_system_prompt();
+    let request_json = reflector_prompt_contract_json(
+        request,
+        compression_level,
+        skip_continuation_hints,
+        config.max_chars,
+    )?;
     let user_prompt = build_reflector_user_prompt(OmReflectorPromptInput {
-        observations: active_observations,
-        request_json: None,
+        observations: &request.active_observations,
+        request_json: Some(request_json.as_str()),
         manual_prompt: None,
         compression_level,
         skip_continuation_hints,
@@ -411,7 +418,27 @@ fn request_llm_reflector_attempt(
             format!("invalid json response: {err}"),
         )
     })?;
-    parse_llm_reflector_response(&value, active_observations, config.max_chars)
+    parse_llm_reflector_response(&value, &request.active_observations, config.max_chars)
+}
+
+fn reflector_prompt_contract_json(
+    request: &OmReflectorRequest,
+    compression_level: u8,
+    skip_continuation_hints: bool,
+    reflection_max_chars: usize,
+) -> Result<String> {
+    let request_contract = build_reflector_prompt_contract_v2(
+        request,
+        compression_level,
+        skip_continuation_hints,
+        reflection_max_chars,
+    );
+    serde_json::to_string_pretty(&request_contract).map_err(|err| {
+        om_reflector_error(
+            OmInferenceFailureKind::Schema,
+            format!("failed to encode reflector prompt contract json: {err}"),
+        )
+    })
 }
 
 const fn accumulate_usage(total: &mut OmInferenceUsage, usage: &OmInferenceUsage) {

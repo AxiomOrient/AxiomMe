@@ -191,6 +191,14 @@ pub struct EpisodicSemverProbeResult {
     pub error: Option<String>,
     pub manifest_req: Option<String>,
     pub manifest_req_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_git: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_git_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_rev: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_rev_ok: Option<bool>,
     pub manifest_uses_path: Option<bool>,
     pub manifest_uses_git: Option<bool>,
     pub manifest_source_ok: Option<bool>,
@@ -198,6 +206,10 @@ pub struct EpisodicSemverProbeResult {
     pub lock_version_ok: Option<bool>,
     pub lock_source: Option<String>,
     pub lock_source_ok: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_revision_ok: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -206,6 +218,10 @@ pub struct EpisodicSemverPolicy {
     pub required_minor: u64,
     pub required_lock_source_prefix: String,
     pub allowed_manifest_operators: Vec<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub required_git_url: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub required_git_rev: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

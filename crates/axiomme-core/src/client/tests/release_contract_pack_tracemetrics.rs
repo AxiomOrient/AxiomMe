@@ -184,12 +184,12 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
             .join("crates")
             .join("axiomme-core")
             .join("Cargo.toml"),
-        "[package]\nname = \"axiomme-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nepisodic = \"0.1.0\"\n",
+        "[package]\nname = \"axiomme-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nepisodic = { version = \"0.1.0\", git = \"file:///Users/axient/repository/episodic\", rev = \"86b831e42186b8df663327ba6852c23a548685d1\" }\n",
     )
     .expect("write core Cargo.toml");
     fs::write(
         workspace.join("Cargo.lock"),
-        "[[package]]\nname = \"episodic\"\nversion = \"0.1.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\n",
+        "[[package]]\nname = \"episodic\"\nversion = \"0.1.0\"\nsource = \"git+file:///Users/axient/repository/episodic#86b831e42186b8df663327ba6852c23a548685d1\"\n",
     )
     .expect("write lockfile");
     let options = crate::models::ReleaseGatePackOptions {

@@ -322,47 +322,43 @@ version = "0.1.0"
 [dependencies.episodic]
 version = "0.1.0"
 git = "https://example.com/episodic.git"
+rev = "deadbeef"
 "#;
     let dependency = parse_manifest_episodic_dependency(manifest).expect("parse manifest");
-    assert_eq!(dependency.version_req, "0.1.0");
+    assert_eq!(dependency.version_req.as_deref(), Some("0.1.0"));
+    assert_eq!(
+        dependency.git_url.as_deref(),
+        Some("https://example.com/episodic.git")
+    );
+    assert_eq!(dependency.rev.as_deref(), Some("deadbeef"));
     assert!(dependency.has_git);
     assert!(!dependency.has_path);
 }
 
 #[test]
-fn parse_manifest_episodic_dependency_requires_version_field() {
+fn parse_manifest_episodic_dependency_requires_rev_when_git_is_present() {
     let manifest = r#"
 [package]
 name = "axiomme-core"
 version = "0.1.0"
 
 [dependencies.episodic]
-path = "../../../episodic"
+git = "https://example.com/episodic.git"
 "#;
-    let error = parse_manifest_episodic_dependency(manifest).expect_err("missing version");
-    assert_eq!(error, "episodic_dependency_missing_version");
+    let error = parse_manifest_episodic_dependency(manifest).expect_err("missing rev");
+    assert_eq!(error, "episodic_dependency_missing_rev");
 }
 
 #[test]
-fn episodic_manifest_req_contract_matches_accepts_supported_forms() {
-    for value in ["0.1.0", "^0.1.4", "~0.1.9", "=0.1.3", "0.1"] {
-        assert!(
-            episodic_manifest_req_contract_matches(value),
-            "expected supported manifest req: {value}"
-        );
-    }
+fn episodic_manifest_req_contract_matches_requires_exact_git_rev() {
+    assert!(episodic_manifest_req_contract_matches(
+        EPISODIC_REQUIRED_GIT_REV
+    ));
 }
 
 #[test]
-fn episodic_manifest_req_contract_matches_rejects_unsupported_ranges() {
-    for value in [
-        ">=0.1.0",
-        ">0.1.0",
-        "0.2.0",
-        "^0.2.0",
-        "0.1.*",
-        ">=0.1.0,<0.2.0",
-    ] {
+fn episodic_manifest_req_contract_matches_rejects_non_matching_values() {
+    for value in ["0.1.0", "deadbeef", "", "  "] {
         assert!(
             !episodic_manifest_req_contract_matches(value),
             "expected unsupported manifest req: {value}"
@@ -398,11 +394,11 @@ fn contract_integrity_gate_fails_when_core_crate_missing() {
 #[test]
 fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
     let temp = tempdir().expect("tempdir");
-    write_contract_gate_workspace_fixture(
-        temp.path(),
-        "episodic = \"0.1.0\"",
-        Some(CRATES_IO_INDEX_SOURCE),
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.1.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
     );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
 
     let output = format!("running 1 test\ntest {CONTRACT_EXECUTION_TEST_NAME} ... ok\n");
     let episodic_output = format!("running 1 test\ntest {EPISODIC_API_PROBE_TEST_NAME} ... ok\n");
@@ -463,6 +459,8 @@ fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
             );
             assert!(value.episodic_semver_probe.passed);
             assert_eq!(value.policy.required_minor, EPISODIC_REQUIRED_MINOR);
+            assert_eq!(value.policy.required_git_url, EPISODIC_REQUIRED_GIT_URL);
+            assert_eq!(value.policy.required_git_rev, EPISODIC_REQUIRED_GIT_REV);
             assert!(
                 value
                     .ontology_policy
@@ -483,11 +481,11 @@ fn contract_integrity_gate_passes_when_contract_probe_succeeds() {
 #[test]
 fn contract_integrity_gate_fails_when_contract_probe_output_does_not_match() {
     let temp = tempdir().expect("tempdir");
-    write_contract_gate_workspace_fixture(
-        temp.path(),
-        "episodic = \"0.1.0\"",
-        Some(CRATES_IO_INDEX_SOURCE),
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.1.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
     );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
 
     let decision = with_workspace_command_mocks(
         &[

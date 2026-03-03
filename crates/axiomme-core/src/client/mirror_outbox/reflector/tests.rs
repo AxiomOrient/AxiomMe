@@ -1,6 +1,6 @@
 use chrono::Utc;
 
-use crate::om::{OmOriginType, OmScope};
+use crate::om::{OmInferenceModelConfig, OmOriginType, OmReflectorRequest, OmScope};
 
 use super::*;
 
@@ -54,6 +54,32 @@ fn om_record(active_observations: &str) -> crate::om::OmRecord {
         created_at: now,
         updated_at: now,
     }
+}
+
+#[test]
+fn reflector_prompt_contract_json_contains_v2_contract_fields() {
+    let request = OmReflectorRequest {
+        scope: OmScope::Session,
+        scope_key: "session:reflector-contract".to_string(),
+        model: OmInferenceModelConfig {
+            provider: "local-http".to_string(),
+            model: "qwen2.5:7b".to_string(),
+            max_output_tokens: 512,
+            temperature_milli: 0,
+        },
+        generation_count: 7,
+        active_observations: "line-a\nline-b".to_string(),
+    };
+    let encoded =
+        reflector_prompt_contract_json(&request, 1, false, DEFAULT_OM_REFLECTOR_MAX_CHARS)
+            .expect("json");
+    let value = serde_json::from_str::<serde_json::Value>(&encoded).expect("parse json");
+    assert_eq!(value["header"]["contract_name"], "axiomme.om.prompt");
+    assert_eq!(value["header"]["contract_version"], "2.0.0");
+    assert_eq!(value["header"]["protocol_version"], "om-v2");
+    assert_eq!(value["header"]["request_kind"], "reflector");
+    assert_eq!(value["generation_count"], 7);
+    assert_eq!(value["compression_level"], 1);
 }
 
 #[test]
