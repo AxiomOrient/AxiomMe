@@ -2,6 +2,7 @@
 // re-export pure types/transforms and keep only AxiomMe-specific rollout/error helpers local.
 mod failure;
 mod rollout;
+mod thread_identity;
 
 pub use episodic::{
     ActivationBoundary, ActivationResult, AsyncObservationIntervalState,
@@ -44,3 +45,4 @@ pub use episodic::{
 };
 pub(crate) use failure::{om_observer_error, om_reflector_error, om_status_kind};
 pub(crate) use rollout::{resolve_observer_model_enabled, resolve_reflector_model_enabled};
+pub use thread_identity::resolve_canonical_thread_id;

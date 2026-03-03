@@ -18,9 +18,10 @@ use crate::om::{
     build_other_conversation_blocks, combine_observations_for_buffering,
     filter_observer_candidates_by_last_observed_at, format_observer_messages_for_prompt,
     om_observer_error, om_status_kind, parse_memory_section_xml_accuracy_first,
-    parse_multi_thread_observer_output_accuracy_first, resolve_observer_model_enabled,
-    select_observed_message_candidates, select_observer_message_candidates,
-    split_pending_and_other_conversation_candidates, synthesize_observer_observations,
+    parse_multi_thread_observer_output_accuracy_first, resolve_canonical_thread_id,
+    resolve_observer_model_enabled, select_observed_message_candidates,
+    select_observer_message_candidates, split_pending_and_other_conversation_candidates,
+    synthesize_observer_observations,
 };
 use crate::om_bridge::{
     OmObserveBufferRequestedV1, OmReflectBufferRequestedV1, OmReflectRequestedV1,
@@ -211,6 +212,7 @@ struct MultiThreadObserverRunContext<'a> {
     scope: OmScope,
     scope_key: &'a str,
     current_session_id: &'a str,
+    preferred_thread_id: &'a str,
     max_tokens_per_batch: u32,
     skip_continuation_hints: bool,
 }
@@ -494,7 +496,7 @@ impl Session {
         let primary_thread_id = resolve_observer_thread_group_id(
             context.scope,
             context.scope_key,
-            Some(&self.session_id),
+            None,
             Some(&self.session_id),
             &self.session_id,
         );
@@ -507,7 +509,18 @@ impl Session {
         let mut thread_state_updates = observer_output
             .thread_states
             .iter()
-            .map(|state| (state.thread_id.clone(), state))
+            .map(|state| {
+                (
+                    resolve_canonical_thread_id(
+                        context.scope,
+                        context.scope_key,
+                        Some(&state.thread_id),
+                        None,
+                        &self.session_id,
+                    ),
+                    state,
+                )
+            })
             .collect::<BTreeMap<_, _>>();
         for (thread_id, last_observed_at) in &last_observed_by_thread {
             let state = thread_state_updates.remove(thread_id);

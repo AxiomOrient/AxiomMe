@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::error::{AxiomError, Result};
 use crate::models::{OmV2MigrationReport, QueueEventStatus, ReconcileRunStatus};
-use crate::om::{OM_PROTOCOL_VERSION, OmOriginType, OmRecord};
+use crate::om::{OM_PROTOCOL_VERSION, OmOriginType, OmRecord, resolve_canonical_thread_id};
 
 use super::SqliteStateStore;
 
@@ -560,13 +560,19 @@ fn entry_id_for_record(record: &OmRecord) -> String {
 }
 
 fn canonical_thread_id_for_record(record: &OmRecord) -> String {
-    if let Some(thread_id) = normalize_optional_text(record.thread_id.as_deref()) {
-        return thread_id;
-    }
-    if let Some(session_id) = normalize_optional_text(record.session_id.as_deref()) {
-        return format!("session:{session_id}");
-    }
-    record.scope_key.clone()
+    let fallback = record
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(record.scope_key.as_str());
+    resolve_canonical_thread_id(
+        record.scope,
+        &record.scope_key,
+        record.thread_id.as_deref(),
+        record.session_id.as_deref(),
+        fallback,
+    )
 }
 
 const fn entry_origin_kind(origin: OmOriginType) -> &'static str {

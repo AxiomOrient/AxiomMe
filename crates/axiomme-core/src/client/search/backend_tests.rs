@@ -618,6 +618,62 @@ fn fetch_session_om_state_falls_back_to_recent_non_session_scope_record() {
 }
 
 #[test]
+fn fetch_session_om_state_thread_scope_uses_scope_canonical_thread_id() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let mut thread_record = base_om_record(
+        "om-canonical-thread-record",
+        OmScope::Thread,
+        "thread:t-canonical",
+        now,
+    );
+    thread_record.thread_id = None;
+    thread_record.active_observations = "canonical thread observation".to_string();
+    thread_record.observation_token_count = 55;
+    app.state
+        .upsert_om_record(&thread_record)
+        .expect("upsert thread record");
+
+    app.state
+        .upsert_om_scope_session("thread:t-canonical", "s-canonical")
+        .expect("map thread scope");
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-canonical",
+            "t-canonical",
+            Some(now),
+            Some("Primary: apply canonical id"),
+            Some("reply from canonical thread"),
+        )
+        .expect("upsert canonical thread state");
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-canonical",
+            "s-canonical",
+            Some(now),
+            Some("Primary: alias thread"),
+            Some("reply from session alias"),
+        )
+        .expect("upsert alias thread state");
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-canonical", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("reply from canonical thread"),
+        "expected canonical thread suggested response in hint: {hint}"
+    );
+    assert!(
+        !hint.contains("reply from session alias"),
+        "must not select session-id alias thread over canonical scope thread: {hint}"
+    );
+}
+
+#[test]
 fn search_filters_activated_message_ids_from_recent_hints_ephemerally() {
     let (_temp, app) = setup_test_app();
     upsert_records(

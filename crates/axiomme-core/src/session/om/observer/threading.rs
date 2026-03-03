@@ -11,6 +11,7 @@ use super::super::{
     aggregate_multi_thread_observer_sections, build_multi_thread_observer_system_prompt,
     build_multi_thread_observer_user_prompt, estimate_text_tokens, extract_llm_content,
     format_observer_messages_for_prompt, parse_multi_thread_observer_output_accuracy_first,
+    resolve_canonical_thread_id,
 };
 use super::llm::send_observer_llm_request;
 use super::parsing::{parse_llm_observer_response, parse_observer_usage_from_value};
@@ -54,14 +55,14 @@ pub(in crate::session::om) fn run_multi_thread_observer_response(
         endpoint,
         config,
         &context.request.active_observations,
-        context.current_session_id,
+        context.preferred_thread_id,
         context.skip_continuation_hints,
         batch_tasks,
     )?;
     Ok(combine_multi_thread_batch_results(
         batch_results,
         context.bounded_selected,
-        context.current_session_id,
+        context.preferred_thread_id,
         config.text_budget.observation_max_chars,
     ))
 }
@@ -69,7 +70,7 @@ pub(in crate::session::om) fn run_multi_thread_observer_response(
 pub(in crate::session::om) fn combine_multi_thread_batch_results(
     batch_results: Vec<ObserverBatchResult>,
     bounded_selected: &[OmObserverMessageCandidate],
-    current_session_id: &str,
+    preferred_thread_id: &str,
     observation_max_chars: usize,
 ) -> Option<(OmObserverResponse, Vec<ObserverThreadStateUpdate>)> {
     let mut combined_observations = Vec::<String>::new();
@@ -109,12 +110,12 @@ pub(in crate::session::om) fn combine_multi_thread_batch_results(
         .collect::<Vec<_>>();
     let current_task = preferred_thread_text(
         &combined_thread_states,
-        current_session_id,
+        preferred_thread_id,
         ObserverThreadField::CurrentTask,
     );
     let suggested_response = preferred_thread_text(
         &combined_thread_states,
-        current_session_id,
+        preferred_thread_id,
         ObserverThreadField::SuggestedResponse,
     );
     Some((
@@ -178,7 +179,7 @@ pub(in crate::session::om) fn execute_observer_batch_task(
     endpoint: &Url,
     config: &OmObserverConfig,
     active_observations: &str,
-    current_session_id: &str,
+    preferred_thread_id: &str,
     skip_continuation_hints: bool,
     task: ObserverBatchTask,
 ) -> Result<ObserverBatchResult> {
@@ -196,7 +197,7 @@ pub(in crate::session::om) fn execute_observer_batch_task(
     let value = send_observer_llm_request(client, endpoint, config, &system_prompt, &user_prompt)?;
     let (response, thread_states) = if let Some(parsed) = parse_llm_multi_thread_observer_response(
         &value,
-        current_session_id,
+        preferred_thread_id,
         &known_ids,
         config.text_budget.observation_max_chars,
     ) {
@@ -223,7 +224,7 @@ pub(in crate::session::om) fn run_observer_batch_tasks(
     endpoint: &Url,
     config: &OmObserverConfig,
     active_observations: &str,
-    current_session_id: &str,
+    preferred_thread_id: &str,
     skip_continuation_hints: bool,
     tasks: Vec<ObserverBatchTask>,
 ) -> Result<Vec<ObserverBatchResult>> {
@@ -236,7 +237,7 @@ pub(in crate::session::om) fn run_observer_batch_tasks(
                 endpoint,
                 config,
                 active_observations,
-                current_session_id,
+                preferred_thread_id,
                 skip_continuation_hints,
                 task,
             )?);
@@ -266,7 +267,7 @@ pub(in crate::session::om) fn run_observer_batch_tasks(
                             &endpoint,
                             &config,
                             active_observations,
-                            current_session_id,
+                            preferred_thread_id,
                             skip_continuation_hints,
                             task,
                         )
@@ -439,21 +440,13 @@ pub(in crate::session::om) fn resolve_observer_thread_group_id(
     source_session_id: Option<&str>,
     fallback_thread_id: &str,
 ) -> String {
-    match scope {
-        OmScope::Thread => scope_key
-            .strip_prefix("thread:")
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(fallback_thread_id)
-            .to_string(),
-        OmScope::Resource => source_thread_id
-            .or(source_session_id)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or(fallback_thread_id)
-            .to_string(),
-        OmScope::Session => fallback_thread_id.to_string(),
-    }
+    resolve_canonical_thread_id(
+        scope,
+        scope_key,
+        source_thread_id,
+        source_session_id,
+        fallback_thread_id,
+    )
 }
 
 #[derive(Debug, Clone)]

@@ -13,7 +13,7 @@ use crate::models::{
     FindResult, Message, MetadataFilter, RequestLogEntry, RuntimeHint, SearchBudget, SearchOptions,
     SearchRequest,
 };
-use crate::om::{OmScope, build_bounded_observation_hint};
+use crate::om::{OmScope, build_bounded_observation_hint, resolve_canonical_thread_id};
 use crate::om_bridge::OmHintReadStateV1;
 use crate::session::resolve_om_scope_binding_for_session_with_config;
 use crate::uri::AxiomUri;
@@ -478,9 +478,18 @@ impl AxiomMe {
             record
         };
 
+        let preferred_thread_id = preferred_thread_id.map(|thread_id| {
+            resolve_canonical_thread_id(
+                record.scope,
+                &record.scope_key,
+                Some(thread_id),
+                record.session_id.as_deref(),
+                thread_id,
+            )
+        });
         Ok(Some(self.build_om_hint_state_from_record(
             &record,
-            preferred_thread_id,
+            preferred_thread_id.as_deref(),
         )?))
     }
 
@@ -526,18 +535,20 @@ impl AxiomMe {
 
         let preferred_thread_id = match record.scope {
             OmScope::Session => None,
-            OmScope::Thread => Some(
+            OmScope::Thread | OmScope::Resource => Some(resolve_canonical_thread_id(
+                record.scope,
+                &record.scope_key,
                 scope_binding
                     .thread_id
                     .as_deref()
-                    .or(record.thread_id.as_deref())
-                    .unwrap_or(session_id),
-            ),
-            OmScope::Resource => Some(scope_binding.thread_id.as_deref().unwrap_or(session_id)),
+                    .or(record.thread_id.as_deref()),
+                Some(session_id),
+                session_id,
+            )),
         };
         Ok(Some(self.build_om_hint_state_from_record(
             &record,
-            preferred_thread_id,
+            preferred_thread_id.as_deref(),
         )?))
     }
 

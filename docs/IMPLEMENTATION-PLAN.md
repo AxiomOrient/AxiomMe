@@ -189,6 +189,7 @@ cargo test
 - OMV2-001: `episodic` 의존을 git rev pin으로 고정하고 release gate 정책/테스트를 git+rev 계약으로 전환했다.
 - OMV2-002: OM prompt contract v2를 `episodic@86b831e42186b8df663327ba6852c23a548685d1` 기준으로 고정하고 AxiomMe OM 경계(`crates/axiomme-core/src/om/mod.rs`)에서 재노출했다.
 - OMV2-003: observer/reflector LLM 요청에 `request_json`(v2 contract) 주입을 강제했다.
+- OMV2-004: canonical thread identity resolver(`resolve_canonical_thread_id`)를 추가하고 observer grouping/selection, search preferred-thread 선택, migration canonicalization 경로를 단일 규칙으로 통합했다.
 - OMV2-005: one-shot migration(dry-run/apply) 경로를 상태 계층에 추가하고 무결성 검증 및 idempotency를 테스트로 고정했다.
 - Verification
 - `cargo fmt --all`
@@ -197,7 +198,9 @@ cargo test
 - `cargo test -p axiomme-core client::mirror_outbox::reflector::tests::reflector_prompt_contract_json_contains_v2_contract_fields -- --exact`
 - `cargo test -p axiomme-core state::tests::om_v2_migration_dry_run_reports_plan_without_writes -- --exact`
 - `cargo test -p axiomme-core state::tests::om_v2_migration_apply_is_idempotent -- --exact`
+- `cargo test -p axiomme-core client::search::backend_tests::fetch_session_om_state_thread_scope_uses_scope_canonical_thread_id -- --exact`
+- `cargo test -p axiomme-core om::thread_identity::tests::thread_scope_prefers_scope_key_thread_id -- --exact`
+- `cargo test -p axiomme-core session::om::tests::parse_llm_multi_thread_observer_response_aggregates_primary_thread_metadata -- --exact`
 - Remaining Critical Path
-- OMV2-004 canonical thread identity 단일화
 - OMV2-011 v1 코드/스키마 제거
 - OMV2-012 Gate A 인증

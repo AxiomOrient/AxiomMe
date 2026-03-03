@@ -5,8 +5,9 @@ use chrono::{DateTime, Utc};
 use super::super::{
     MultiThreadObserverRunContext, OmInferenceUsage, OmObserverConfig, OmObserverMessageCandidate,
     OmObserverMode, OmObserverResponse, OmPendingMessage, OmRecord, OmScope,
-    ResolvedObserverOutput, Result, estimate_text_tokens, select_observed_message_candidates,
-    split_pending_and_other_conversation_candidates, synthesize_observer_observations,
+    ResolvedObserverOutput, Result, estimate_text_tokens, resolve_canonical_thread_id,
+    select_observed_message_candidates, split_pending_and_other_conversation_candidates,
+    synthesize_observer_observations,
 };
 use super::llm::{
     build_observer_client, build_observer_endpoint, build_observer_llm_request,
@@ -206,6 +207,13 @@ pub(in crate::session::om) fn llm_observer_response(
         scope_key,
         current_session_id,
     );
+    let preferred_thread_id = resolve_canonical_thread_id(
+        record.scope,
+        scope_key,
+        record.thread_id.as_deref(),
+        Some(current_session_id),
+        current_session_id,
+    );
     let multi_thread_context = MultiThreadObserverRunContext {
         request: &request,
         bounded_selected: &bounded_selected,
@@ -213,6 +221,7 @@ pub(in crate::session::om) fn llm_observer_response(
         scope: record.scope,
         scope_key,
         current_session_id,
+        preferred_thread_id: &preferred_thread_id,
         max_tokens_per_batch,
         skip_continuation_hints,
     };
