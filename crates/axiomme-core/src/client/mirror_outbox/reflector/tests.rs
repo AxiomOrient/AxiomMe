@@ -1,6 +1,8 @@
 use chrono::Utc;
 
+use crate::config::OmReflectorConfigSnapshot;
 use crate::om::{OmInferenceModelConfig, OmOriginType, OmReflectorRequest, OmScope};
+use crate::state::OmActiveEntry;
 
 use super::*;
 
@@ -56,6 +58,19 @@ fn om_record(active_observations: &str) -> crate::om::OmRecord {
     }
 }
 
+fn active_entry(entry_id: &str, text: &str, created_at_rfc3339: &str) -> OmActiveEntry {
+    OmActiveEntry {
+        entry_id: entry_id.to_string(),
+        canonical_thread_id: "thread:1".to_string(),
+        priority: "medium".to_string(),
+        text: text.to_string(),
+        origin_kind: "observation".to_string(),
+        created_at: chrono::DateTime::parse_from_rfc3339(created_at_rfc3339)
+            .expect("valid timestamp")
+            .with_timezone(&Utc),
+    }
+}
+
 #[test]
 fn reflector_prompt_contract_json_contains_v2_contract_fields() {
     let request = OmReflectorRequest {
@@ -96,7 +111,6 @@ fn parse_reflector_response_value_reads_object_payload() {
         parse_reflector_response_value(&payload, "a\nb\nc", DEFAULT_OM_REFLECTOR_MAX_CHARS)
             .expect("parsed");
     assert_eq!(parsed.reflection, "one two three");
-    assert_eq!(parsed.reflected_observation_line_count, 3);
     assert_eq!(parsed.usage.input_tokens, 11);
     assert_eq!(parsed.usage.output_tokens, 7);
     assert_eq!(parsed.reflection_token_count, 4);
@@ -121,7 +135,6 @@ fn parse_reflector_response_value_accepts_mastra_alias_fields() {
         parse_reflector_response_value(&payload, "a\nb\nc", DEFAULT_OM_REFLECTOR_MAX_CHARS)
             .expect("parsed");
     assert_eq!(parsed.reflection, "compact summary");
-    assert_eq!(parsed.reflected_observation_line_count, 2);
     assert_eq!(parsed.usage.input_tokens, 9);
     assert_eq!(parsed.usage.output_tokens, 4);
     assert_eq!(parsed.reflection_token_count, 3);
@@ -146,7 +159,6 @@ fn parse_llm_reflector_response_accepts_embedded_json_content() {
     )
     .expect("parsed");
     assert_eq!(parsed.reflection, "compact summary");
-    assert_eq!(parsed.reflected_observation_line_count, 2);
 }
 
 #[test]
@@ -164,7 +176,6 @@ fn parse_llm_reflector_response_accepts_xml_observations_content() {
     .expect("parsed");
     assert!(parsed.reflection.contains("user prefers direct answers"));
     assert!(parsed.reflection.contains("agent updated auth flow"));
-    assert_eq!(parsed.reflected_observation_line_count, 3);
     assert!(parsed.reflection_token_count > 0);
     assert_eq!(parsed.current_task, None);
     assert_eq!(
@@ -255,7 +266,6 @@ fn parse_memory_section_xml_ignores_inline_tag_mentions() {
 fn deterministic_reflector_response_handles_empty_input() {
     let parsed = deterministic_reflector_response(" \n \n", DEFAULT_OM_REFLECTOR_MAX_CHARS);
     assert!(parsed.reflection.is_empty());
-    assert_eq!(parsed.reflected_observation_line_count, 0);
     assert_eq!(parsed.reflection_token_count, 0);
 }
 
@@ -278,10 +288,6 @@ fn reflector_model_feature_flag_off_forces_deterministic_output() {
     );
 
     assert_eq!(resolved.reflection, expected.reflection);
-    assert_eq!(
-        resolved.reflected_observation_line_count,
-        expected.reflected_observation_line_count
-    );
     assert_eq!(
         resolved.reflection_token_count,
         expected.reflection_token_count
@@ -312,7 +318,6 @@ fn prepare_reflector_attempt_input_buffered_uses_slice_plan() {
         prepare_reflector_attempt_input(&record, OmReflectorCallOptions::BUFFERED, &config);
     assert_eq!(prepared.active_observations, "l1");
     assert_eq!(prepared.target_threshold_tokens, 13);
-    assert_eq!(prepared.reflected_observation_line_count_override, Some(1));
     assert_eq!(prepared.reflection_input_tokens_override, Some(25));
 }
 
@@ -328,8 +333,49 @@ fn prepare_reflector_attempt_input_default_uses_full_observations() {
         prepared.target_threshold_tokens,
         DEFAULT_REFLECTOR_OBSERVATION_TOKENS
     );
-    assert_eq!(prepared.reflected_observation_line_count_override, None);
     assert_eq!(prepared.reflection_input_tokens_override, None);
+}
+
+#[test]
+fn resolve_reflection_cover_entry_ids_default_uses_all_entries_in_oldest_first_order() {
+    let record = om_record("line-1\nline-2");
+    let entries = vec![
+        active_entry("entry-new", "line-2", "2026-01-01T00:00:02Z"),
+        active_entry("entry-old", "line-1", "2026-01-01T00:00:01Z"),
+    ];
+    let covers = resolve_reflection_cover_entry_ids(
+        &record,
+        OmReflectorCallOptions::DEFAULT,
+        &OmReflectorConfigSnapshot::default(),
+        &entries,
+    );
+    assert_eq!(
+        covers,
+        vec!["entry-old".to_string(), "entry-new".to_string()]
+    );
+}
+
+#[test]
+fn resolve_reflection_cover_entry_ids_buffered_uses_slice_prefix_mapping() {
+    let mut record = om_record("l1\nl2\nl3\nl4");
+    record.observation_token_count = 100;
+    record.buffered_reflection = Some("buffered summary".to_string());
+
+    let mut snapshot = OmReflectorConfigSnapshot::default();
+    snapshot.llm_target_observation_tokens = Some(80);
+    snapshot.llm_buffer_activation = Some(0.5);
+
+    let entries = vec![
+        active_entry("entry-old", "l1\nl2", "2026-01-01T00:00:01Z"),
+        active_entry("entry-new", "l3\nl4", "2026-01-01T00:00:02Z"),
+    ];
+    let covers = resolve_reflection_cover_entry_ids(
+        &record,
+        OmReflectorCallOptions::DEFAULT,
+        &snapshot,
+        &entries,
+    );
+    assert_eq!(covers, vec!["entry-old".to_string()]);
 }
 
 #[test]

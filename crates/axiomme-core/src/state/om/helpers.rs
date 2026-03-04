@@ -79,10 +79,6 @@ pub(super) fn usize_to_i64_saturating(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-pub(super) fn u32_to_usize_saturating(value: u32) -> usize {
-    usize::try_from(value).unwrap_or(usize::MAX)
-}
-
 pub(super) fn bool_to_i64(value: bool) -> i64 {
     i64::from(u8::from(value))
 }

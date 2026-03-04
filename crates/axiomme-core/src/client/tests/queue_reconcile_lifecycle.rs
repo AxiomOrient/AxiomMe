@@ -1111,7 +1111,7 @@ fn replay_handles_om_reflection_event_with_cas_and_stale_noop() {
     assert!(record.buffered_reflection.is_none());
     assert!(record.buffered_reflection_tokens.is_none());
     assert!(record.buffered_reflection_input_tokens.is_none());
-    assert_eq!(record.reflected_observation_line_count, Some(3));
+    assert_eq!(record.reflected_observation_line_count, None);
     assert!(!record.is_reflecting);
     assert!(!record.is_buffering_reflection);
     assert!(

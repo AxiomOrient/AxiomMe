@@ -10,7 +10,8 @@ mod reflector;
 use reflector::{
     OmReflectorCallOptions, buffered_or_resolved_reflector_response, parse_observe_session_id,
     parse_om_observe_buffer_requested_payload, parse_om_reflect_buffer_requested_payload,
-    parse_om_reflect_requested_payload, resolve_reflector_response,
+    parse_om_reflect_requested_payload, resolve_reflection_cover_entry_ids,
+    resolve_reflector_response,
 };
 
 impl AxiomMe {
@@ -83,9 +84,6 @@ impl AxiomMe {
                 reflection: &reflection.reflection,
                 reflection_token_count: reflection.reflection_token_count,
                 reflection_input_tokens: reflection.usage.input_tokens,
-                reflected_observation_line_count: reflection.reflected_observation_line_count,
-                current_task: reflection.current_task.as_deref(),
-                suggested_response: reflection.suggested_response.as_deref(),
             },
         )?;
         Ok(true)
@@ -125,12 +123,19 @@ impl AxiomMe {
             OmReflectorCallOptions::DEFAULT,
             &self.config.om.reflector,
         )?;
+        let active_entries = self.state.list_om_active_entries(scope_key)?;
+        let covers_entry_ids = resolve_reflection_cover_entry_ids(
+            &record,
+            OmReflectorCallOptions::DEFAULT,
+            &self.config.om.reflector,
+            &active_entries,
+        );
         let _applied = self.state.apply_om_reflection_with_cas(
             scope_key,
             expected_generation,
             event.id,
             &reflection.reflection,
-            reflection.reflected_observation_line_count,
+            &covers_entry_ids,
             OmReflectionApplyContext {
                 current_task: reflection.current_task.as_deref(),
                 suggested_response: reflection.suggested_response.as_deref(),

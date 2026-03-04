@@ -16,6 +16,7 @@ mod queue;
 mod queue_lane;
 mod search;
 
+pub(crate) use om::OmActiveEntry;
 pub(crate) use promotion_checkpoint::PromotionCheckpointPhase;
 
 #[derive(Clone)]
@@ -41,9 +42,6 @@ pub struct OmReflectionBufferPayload<'a> {
     pub reflection: &'a str,
     pub reflection_token_count: u32,
     pub reflection_input_tokens: u32,
-    pub reflected_observation_line_count: u32,
-    pub current_task: Option<&'a str>,
-    pub suggested_response: Option<&'a str>,
 }
 
 impl std::fmt::Debug for SqliteStateStore {

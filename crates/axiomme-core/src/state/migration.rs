@@ -8,7 +8,7 @@ use crate::om::{OM_PROTOCOL_VERSION, OmOriginType, OmRecord, resolve_canonical_t
 use super::SqliteStateStore;
 
 const OM_V2_MIGRATION_APPLIED_AT_KEY: &str = "om_v2_one_shot_migration_applied_at";
-const OM_V2_REQUIRED_EPISODIC_REV: &str = "86b831e42186b8df663327ba6852c23a548685d1";
+const OM_V2_REQUIRED_EPISODIC_REV: &str = "9f4c075bf26b81c8a81fbb6539c46ec20ea8a181";
 
 const MIGRATION_SCHEMA_SQL: &str = r"
     PRAGMA journal_mode = WAL;

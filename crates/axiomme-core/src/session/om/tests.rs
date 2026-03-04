@@ -694,6 +694,98 @@ fn deterministic_observer_response_avoids_duplicates_present_in_buffered_context
 }
 
 #[test]
+fn deterministic_fallback_emits_current_task() {
+    let selected = vec![msg(
+        "m1",
+        "user",
+        "Please fix AXIOMME_RERANKER handling in src/client/search/mod.rs and verify tests.",
+    )];
+    let record = new_session_om_record("s-fallback-task", "session:s-fallback-task", Utc::now());
+
+    let response = deterministic_observer_response(
+        &record,
+        &selected,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    );
+
+    assert_eq!(
+        response.current_task.as_deref(),
+        Some(
+            "Primary: Please fix AXIOMME_RERANKER handling in src/client/search/mod.rs and verify tests."
+        )
+    );
+    assert!(
+        response
+            .suggested_response
+            .as_deref()
+            .is_some_and(|value| value.contains("AXIOMME_RERANKER")),
+        "suggested response should preserve identifier context: {:?}",
+        response.suggested_response
+    );
+}
+
+#[test]
+fn deterministic_fallback_preserves_error_context_identifiers() {
+    let selected = vec![
+        msg(
+            "m1",
+            "user",
+            "Investigate the queue replay failure and patch serde_json::from_str path handling.",
+        ),
+        msg(
+            "m2",
+            "tool",
+            "error: serde_json::from_str failed at src/session/om.rs:518 with code E1002",
+        ),
+    ];
+    let record = new_session_om_record(
+        "s-fallback-identifiers",
+        "session:s-fallback-identifiers",
+        Utc::now(),
+    );
+
+    let response = deterministic_observer_response(
+        &record,
+        &selected,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    );
+
+    assert_eq!(
+        response.current_task.as_deref(),
+        Some(
+            "Primary: Investigate the queue replay failure and patch serde_json::from_str path handling."
+        )
+    );
+    assert!(
+        response
+            .suggested_response
+            .as_deref()
+            .is_some_and(|value| value.contains("serde_json::from_str")),
+        "error identifiers should survive deterministic fallback: {:?}",
+        response.suggested_response
+    );
+}
+
+#[test]
+fn deterministic_fallback_suppresses_low_confidence_suggested_response() {
+    let selected = vec![msg("m1", "user", "Thanks!")];
+    let record = new_session_om_record(
+        "s-fallback-low-confidence",
+        "session:s-fallback-low-confidence",
+        Utc::now(),
+    );
+
+    let response = deterministic_observer_response(
+        &record,
+        &selected,
+        crate::config::OmRuntimeLimitsConfig::default().observation_max_chars,
+    );
+
+    assert_eq!(response.current_task, None);
+    assert_eq!(response.suggested_response, None);
+}
+
+#[test]
 fn observer_rollout_profile_overrides_model_enabled_flag() {
     assert!(resolve_observer_model_enabled(false, Some("observer_only")));
     assert!(resolve_observer_model_enabled(false, Some("full_model")));

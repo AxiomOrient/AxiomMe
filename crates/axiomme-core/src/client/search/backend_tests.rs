@@ -7,7 +7,8 @@ use crate::models::{
     ContextHit, FindResult, IndexRecord, QueryPlan, QueueEventStatus, RuntimeHint, RuntimeHintKind,
     SearchBudget, SearchOptions, SearchRequest, classify_hit_buckets,
 };
-use crate::om::{OmOriginType, OmRecord, OmScope, build_scope_key};
+use crate::om::{OmObservationChunk, OmOriginType, OmRecord, OmScope, build_scope_key};
+use crate::state::{OmReflectionApplyContext, OmReflectionApplyOutcome};
 
 use super::reranker::{RerankerMode, resolve_reranker_mode};
 use super::{
@@ -377,6 +378,16 @@ fn search_injects_om_hint_and_records_om_metrics_in_request_log() {
             .iter()
             .any(|value| value.starts_with("om_hint_policy:"))
     );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_reader:snapshot_v2")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_compaction:priority_v2")
+    );
 
     let logs = app
         .list_request_logs_filtered(5, Some("search"), Some("ok"))
@@ -409,6 +420,18 @@ fn search_injects_om_hint_and_records_om_metrics_in_request_log() {
             .get("om_hint_applied")
             .and_then(serde_json::Value::as_bool),
         Some(true)
+    );
+    assert_eq!(
+        details
+            .get("om_hint_reader")
+            .and_then(serde_json::Value::as_str),
+        Some("snapshot_v2")
+    );
+    assert_eq!(
+        details
+            .get("om_hint_compaction")
+            .and_then(serde_json::Value::as_str),
+        Some("priority_v2")
     );
     assert!(details.get("om_hint_policy").is_some());
 }
@@ -670,6 +693,249 @@ fn fetch_session_om_state_thread_scope_uses_scope_canonical_thread_id() {
     assert!(
         !hint.contains("reply from session alias"),
         "must not select session-id alias thread over canonical scope thread: {hint}"
+    );
+}
+
+#[test]
+fn fetch_session_om_state_prefers_continuation_state_suggested_response() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let mut thread_record = base_om_record(
+        "om-continuation-priority-record",
+        OmScope::Thread,
+        "thread:t-continuation",
+        now,
+    );
+    thread_record.thread_id = Some("t-continuation".to_string());
+    thread_record.active_observations = "continuation thread observation".to_string();
+    thread_record.suggested_response = Some("reply from record fallback".to_string());
+    app.state
+        .upsert_om_record(&thread_record)
+        .expect("upsert thread record");
+
+    app.state
+        .upsert_om_scope_session("thread:t-continuation", "s-continuation")
+        .expect("map thread scope");
+    app.state
+        .upsert_om_thread_state(
+            "thread:t-continuation",
+            "t-continuation",
+            Some(now),
+            Some("Primary: thread state"),
+            Some("reply from thread state"),
+        )
+        .expect("upsert thread state");
+    app.state
+        .upsert_om_continuation_state(
+            "thread:t-continuation",
+            "t-continuation",
+            Some("Primary: continuation"),
+            Some("reply from continuation state"),
+            0.92,
+            "observer",
+            Some(now + chrono::Duration::seconds(1)),
+        )
+        .expect("upsert continuation state");
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-continuation", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("reply from continuation state"),
+        "continuation state suggested response must be used: {hint}"
+    );
+    assert!(
+        hint.contains("task: Primary: continuation"),
+        "continuation current_task must be reserved in hint: {hint}"
+    );
+    assert!(
+        !hint.contains("reply from thread state"),
+        "thread state fallback must not override continuation state: {hint}"
+    );
+    assert!(
+        !hint.contains("reply from record fallback"),
+        "record fallback must not override continuation state: {hint}"
+    );
+}
+
+#[test]
+fn fetch_session_om_state_compaction_reserves_high_priority_entry() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let scope_key =
+        build_scope_key(OmScope::Session, Some("s-high-priority"), None, None).expect("scope");
+    let mut record = base_om_record("om-high-priority-record", OmScope::Session, &scope_key, now);
+    record.session_id = Some("s-high-priority".to_string());
+    record.active_observations = "noise one\nnoise two\nnoise three".to_string();
+    app.state
+        .upsert_om_record(&record)
+        .expect("upsert om record");
+
+    let outcome = app
+        .state
+        .apply_om_reflection_with_cas(
+            &scope_key,
+            0,
+            9911,
+            "critical high-priority reflection",
+            &[],
+            OmReflectionApplyContext::default(),
+        )
+        .expect("apply reflection");
+    assert_eq!(outcome, OmReflectionApplyOutcome::Applied);
+
+    let mut refreshed = app
+        .state
+        .get_om_record_by_scope_key(&scope_key)
+        .expect("fetch record")
+        .expect("record missing");
+    refreshed.active_observations =
+        "tail noise alpha\ntail noise beta\ntail noise gamma".to_string();
+    app.state
+        .upsert_om_record(&refreshed)
+        .expect("overwrite active observations");
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-high-priority", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("critical high-priority reflection"),
+        "high priority reflection entry must survive compaction: {hint}"
+    );
+}
+
+#[test]
+fn fetch_session_om_state_snapshot_includes_buffered_observation_tail() {
+    let (_temp, app) = setup_test_app();
+    let now = Utc::now();
+
+    let scope_key =
+        build_scope_key(OmScope::Session, Some("s-buffered-tail"), None, None).expect("scope");
+    let mut record = base_om_record("om-buffered-tail-record", OmScope::Session, &scope_key, now);
+    record.session_id = Some("s-buffered-tail".to_string());
+    record.active_observations = "active observation summary".to_string();
+    app.state
+        .upsert_om_record(&record)
+        .expect("upsert om record");
+
+    for (seq, text) in [
+        (1u32, "buffered-oldest-observation"),
+        (2u32, "buffered-middle-observation"),
+        (3u32, "buffered-latest-observation"),
+    ] {
+        let chunk = OmObservationChunk {
+            id: format!("obs-chunk-{seq}"),
+            record_id: record.id.clone(),
+            seq,
+            cycle_id: "cycle-buffered".to_string(),
+            observations: text.to_string(),
+            token_count: 8,
+            message_tokens: 8,
+            message_ids: vec![format!("m-{seq}")],
+            last_observed_at: now + chrono::Duration::seconds(i64::from(seq)),
+            created_at: now + chrono::Duration::seconds(i64::from(seq)),
+        };
+        app.state
+            .append_om_observation_chunk(&chunk)
+            .expect("append chunk");
+    }
+
+    let state = app
+        .fetch_session_om_state_with_enabled("s-buffered-tail", true)
+        .expect("state")
+        .expect("state missing");
+    let hint = state.hint.expect("hint missing");
+    assert!(
+        hint.contains("buffered-middle-observation"),
+        "snapshot hint must include buffered tail chunk: {hint}"
+    );
+    assert!(
+        hint.contains("buffered-latest-observation"),
+        "snapshot hint must include latest buffered chunk: {hint}"
+    );
+    assert!(
+        !hint.contains("buffered-oldest-observation"),
+        "snapshot hint must keep only bounded buffered tail chunks: {hint}"
+    );
+}
+
+#[test]
+fn search_query_plan_notes_include_snapshot_reader_and_buffered_chunk_count() {
+    let (_temp, app) = setup_test_app();
+    upsert_records(
+        &app,
+        &[
+            resources_root_record("root-snapshot-note"),
+            resources_leaf_record(
+                "leaf-snapshot-note",
+                "snapshot-note.md",
+                "snapshot note",
+                "snapshot query plan note",
+                &["om"],
+            ),
+        ],
+    );
+
+    let scope_key =
+        build_scope_key(OmScope::Session, Some("s-snapshot-note"), None, None).expect("scope");
+    let now = Utc::now();
+    let mut record = base_om_record("om-snapshot-note-record", OmScope::Session, &scope_key, now);
+    record.session_id = Some("s-snapshot-note".to_string());
+    record.active_observations = "active snapshot hint".to_string();
+    app.state
+        .upsert_om_record(&record)
+        .expect("upsert om record");
+    app.state
+        .append_om_observation_chunk(&OmObservationChunk {
+            id: "obs-chunk-snapshot-note".to_string(),
+            record_id: record.id.clone(),
+            seq: 1,
+            cycle_id: "cycle-snapshot-note".to_string(),
+            observations: "buffered snapshot tail".to_string(),
+            token_count: 8,
+            message_tokens: 8,
+            message_ids: vec!["m-snapshot-note".to_string()],
+            last_observed_at: now,
+            created_at: now,
+        })
+        .expect("append chunk");
+
+    let result = app
+        .search(
+            "snapshot",
+            Some("axiom://resources"),
+            Some("s-snapshot-note"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("search");
+    let notes = &result.query_plan.notes;
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_reader:snapshot_v2")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_compaction:priority_v2")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_snapshot_buffered_chunks:1")
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|value| value == "om_hint_high_priority_selected:0")
     );
 }
 

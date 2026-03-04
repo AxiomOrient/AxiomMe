@@ -13,9 +13,12 @@ use crate::models::{
     FindResult, Message, MetadataFilter, RequestLogEntry, RuntimeHint, SearchBudget, SearchOptions,
     SearchRequest,
 };
-use crate::om::{OmScope, build_bounded_observation_hint, resolve_canonical_thread_id};
+use crate::om::{
+    OmObservationChunk, OmScope, build_bounded_observation_hint, resolve_canonical_thread_id,
+};
 use crate::om_bridge::OmHintReadStateV1;
 use crate::session::resolve_om_scope_binding_for_session_with_config;
+use crate::state::OmActiveEntry;
 use crate::uri::AxiomUri;
 
 use super::AxiomMe;
@@ -30,6 +33,8 @@ use result::{
 };
 
 const DEFAULT_OM_SCOPE_LOOKUP_FALLBACK_LIMIT: usize = 4;
+const OM_HINT_SNAPSHOT_BUFFERED_TAIL_LIMIT: usize = 2;
+const OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT: usize = 1;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct OmSearchMetrics {
@@ -39,6 +44,11 @@ struct OmSearchMetrics {
     observer_trigger_count: u32,
     reflector_trigger_count: u32,
     om_hint_applied: bool,
+    om_hint_reader_snapshot_v2: bool,
+    om_snapshot_buffered_chunk_count: u32,
+    om_hint_compaction_priority_v2: bool,
+    om_hint_high_priority_selected_count: u32,
+    om_hint_current_task_reserved: bool,
     session_recent_hint_count: u32,
     session_hint_count_final: u32,
     om_filtered_message_count: u32,
@@ -56,6 +66,38 @@ struct SessionHintSnapshot {
     recent_hints: Vec<String>,
     om_hint: Option<String>,
     metrics: OmSearchMetrics,
+}
+
+#[derive(Debug, Clone, Default)]
+struct OmHintSnapshotV2 {
+    scope_key: String,
+    search_visible_observations: String,
+    current_task: Option<String>,
+    suggested_response: Option<String>,
+    activated_message_ids: Vec<String>,
+    observation_tokens_active: u32,
+    observer_trigger_count_total: u32,
+    reflector_trigger_count_total: u32,
+    buffered_chunk_count: usize,
+    high_priority_selected_count: usize,
+}
+
+impl OmHintSnapshotV2 {
+    fn to_read_state(&self, bounds: OmHintBounds) -> OmHintReadStateV1 {
+        OmHintReadStateV1 {
+            scope_key: self.scope_key.clone(),
+            hint: bounded_om_hint_from_snapshot(
+                &self.search_visible_observations,
+                self.current_task.as_deref(),
+                self.suggested_response.as_deref(),
+                bounds,
+            ),
+            activated_message_ids: self.activated_message_ids.clone(),
+            observation_tokens_active: self.observation_tokens_active,
+            observer_trigger_count_total: self.observer_trigger_count_total,
+            reflector_trigger_count_total: self.reflector_trigger_count_total,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -225,12 +267,27 @@ impl AxiomMe {
         hint_bounds: OmHintBounds,
     ) -> Result<SessionHintSnapshot> {
         let mut metrics = OmSearchMetrics::default();
+        metrics.om_hint_reader_snapshot_v2 = self.config.om.enabled;
         let ctx = self.session(Some(session_id)).get_context_for_search(
             query,
             hint_policy.context_max_archives,
             hint_policy.context_max_messages,
         )?;
-        let om_state = self.fetch_session_om_state(session_id)?;
+        let om_snapshot =
+            self.fetch_session_om_hint_snapshot_with_enabled(session_id, self.config.om.enabled)?;
+        metrics.om_snapshot_buffered_chunk_count = om_snapshot.as_ref().map_or(0, |snapshot| {
+            saturating_usize_to_u32(snapshot.buffered_chunk_count)
+        });
+        metrics.om_hint_compaction_priority_v2 = om_snapshot.is_some();
+        metrics.om_hint_high_priority_selected_count = om_snapshot.as_ref().map_or(0, |snapshot| {
+            saturating_usize_to_u32(snapshot.high_priority_selected_count)
+        });
+        metrics.om_hint_current_task_reserved = om_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.current_task.is_some());
+        let om_state = om_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.to_read_state(hint_bounds));
         let pre_om_recent_hints =
             collect_recent_hints(&ctx.recent_messages, hint_policy.recent_hint_limit);
         let pre_om_hints = merge_recent_and_om_hints(&pre_om_recent_hints, None, hint_policy);
@@ -455,6 +512,29 @@ impl AxiomMe {
         preferred_thread_id: Option<&str>,
         om_enabled: bool,
     ) -> Result<Option<OmHintReadStateV1>> {
+        let snapshot = self.fetch_om_hint_snapshot_by_scope_key_with_enabled(
+            scope_key,
+            preferred_thread_id,
+            om_enabled,
+        )?;
+        Ok(snapshot.map(|snapshot| snapshot.to_read_state(self.config.search.om_hint_bounds)))
+    }
+
+    pub(crate) fn fetch_session_om_state_with_enabled(
+        &self,
+        session_id: &str,
+        om_enabled: bool,
+    ) -> Result<Option<OmHintReadStateV1>> {
+        let snapshot = self.fetch_session_om_hint_snapshot_with_enabled(session_id, om_enabled)?;
+        Ok(snapshot.map(|snapshot| snapshot.to_read_state(self.config.search.om_hint_bounds)))
+    }
+
+    fn fetch_om_hint_snapshot_by_scope_key_with_enabled(
+        &self,
+        scope_key: &str,
+        preferred_thread_id: Option<&str>,
+        om_enabled: bool,
+    ) -> Result<Option<OmHintSnapshotV2>> {
         if !om_enabled {
             return Ok(None);
         }
@@ -487,17 +567,17 @@ impl AxiomMe {
                 thread_id,
             )
         });
-        Ok(Some(self.build_om_hint_state_from_record(
+        Ok(Some(self.build_om_hint_snapshot_from_record(
             &record,
             preferred_thread_id.as_deref(),
         )?))
     }
 
-    pub(crate) fn fetch_session_om_state_with_enabled(
+    fn fetch_session_om_hint_snapshot_with_enabled(
         &self,
         session_id: &str,
         om_enabled: bool,
-    ) -> Result<Option<OmHintReadStateV1>> {
+    ) -> Result<Option<OmHintSnapshotV2>> {
         if !om_enabled {
             return Ok(None);
         }
@@ -546,52 +626,80 @@ impl AxiomMe {
                 session_id,
             )),
         };
-        Ok(Some(self.build_om_hint_state_from_record(
+        Ok(Some(self.build_om_hint_snapshot_from_record(
             &record,
             preferred_thread_id.as_deref(),
         )?))
     }
 
-    fn build_om_hint_state_from_record(
+    fn build_om_hint_snapshot_from_record(
         &self,
         record: &crate::om::OmRecord,
         preferred_thread_id: Option<&str>,
-    ) -> Result<OmHintReadStateV1> {
+    ) -> Result<OmHintSnapshotV2> {
         let preferred_thread_id = preferred_thread_id
             .map(str::trim)
             .filter(|value| !value.is_empty());
-        let thread_state_suggested_response = if record.scope == OmScope::Session {
-            None
+        let continuation_state = self
+            .state
+            .resolve_om_continuation_state(&record.scope_key, preferred_thread_id)?;
+        let continuation_current_task = continuation_state
+            .as_ref()
+            .and_then(|state| state.current_task.as_deref());
+        let continuation_suggested_response = continuation_state
+            .as_ref()
+            .and_then(|state| state.suggested_response.as_deref());
+        let (thread_state_current_task, thread_state_suggested_response) = if record.scope
+            == OmScope::Session
+            || (continuation_current_task.is_some() && continuation_suggested_response.is_some())
+        {
+            (None, None)
         } else {
             let thread_states = self.state.list_om_thread_states(&record.scope_key)?;
-            preferred_thread_id
-                .and_then(|thread_id| {
-                    thread_states
-                        .iter()
-                        .find(|state| state.thread_id == thread_id)
-                        .and_then(|state| state.suggested_response.as_deref())
-                })
-                .or_else(|| {
-                    thread_states
-                        .iter()
-                        .find_map(|state| state.suggested_response.as_deref())
-                })
-                .map(ToString::to_string)
+            let preferred_state = preferred_thread_id.and_then(|thread_id| {
+                thread_states
+                    .iter()
+                    .find(|state| state.thread_id == thread_id)
+            });
+            let fallback_state = thread_states.first();
+            let current_task = preferred_state
+                .and_then(|state| state.current_task.as_deref())
+                .or_else(|| fallback_state.and_then(|state| state.current_task.as_deref()))
+                .map(ToString::to_string);
+            let suggested_response = preferred_state
+                .and_then(|state| state.suggested_response.as_deref())
+                .or_else(|| fallback_state.and_then(|state| state.suggested_response.as_deref()))
+                .map(ToString::to_string);
+            (current_task, suggested_response)
         };
+        let current_task = continuation_current_task.or(thread_state_current_task.as_deref());
+        let suggested_response =
+            continuation_suggested_response.or(thread_state_suggested_response.as_deref());
+        let buffered_chunks = self.state.list_om_observation_chunks(&record.id)?;
+        let (search_visible_observations_base, buffered_chunk_count) =
+            build_search_visible_observations(&record.active_observations, &buffered_chunks);
+        let active_entries = self.state.list_om_active_entries(&record.scope_key)?;
+        let (reserved_high_texts, reserved_high_ids) = select_reserved_high_priority_entries(
+            &active_entries,
+            preferred_thread_id,
+            OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT,
+        );
+        let search_visible_observations = compact_observation_text_for_hint(
+            &search_visible_observations_base,
+            &reserved_high_texts,
+        );
 
-        Ok(OmHintReadStateV1 {
+        Ok(OmHintSnapshotV2 {
             scope_key: record.scope_key.clone(),
-            hint: bounded_om_hint_from_record(
-                &record.active_observations,
-                thread_state_suggested_response
-                    .as_deref()
-                    .or(record.suggested_response.as_deref()),
-                self.config.search.om_hint_bounds,
-            ),
+            search_visible_observations,
+            current_task: current_task.map(ToString::to_string),
+            suggested_response: suggested_response.map(ToString::to_string),
             activated_message_ids: record.last_activated_message_ids.clone(),
             observation_tokens_active: record.observation_token_count,
             observer_trigger_count_total: record.observer_trigger_count_total,
             reflector_trigger_count_total: record.reflector_trigger_count_total,
+            buffered_chunk_count,
+            high_priority_selected_count: reserved_high_ids.len(),
         })
     }
 }
@@ -612,6 +720,110 @@ fn filter_recent_messages_by_ids(
         .filter(|message| !ids.contains(message.id.as_str()))
         .cloned()
         .collect::<Vec<_>>()
+}
+
+fn build_search_visible_observations(
+    active_observations: &str,
+    buffered_chunks: &[OmObservationChunk],
+) -> (String, usize) {
+    let mut segments = buffered_chunks
+        .iter()
+        .rev()
+        .filter_map(|chunk| {
+            let normalized = chunk.observations.trim();
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized.to_string())
+            }
+        })
+        .take(OM_HINT_SNAPSHOT_BUFFERED_TAIL_LIMIT)
+        .collect::<Vec<_>>();
+    let buffered_chunk_count = segments.len();
+    if let Some(active) = non_empty_trimmed(active_observations) {
+        segments.push(active.to_string());
+    }
+    (segments.join("\n\n"), buffered_chunk_count)
+}
+
+fn select_reserved_high_priority_entries(
+    entries: &[OmActiveEntry],
+    preferred_thread_id: Option<&str>,
+    limit: usize,
+) -> (Vec<String>, Vec<String>) {
+    if limit == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    let preferred_thread_id = preferred_thread_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let mut high_entries = entries
+        .iter()
+        .filter(|entry| is_high_priority(entry.priority.as_str()))
+        .map(|entry| {
+            let preferred = preferred_thread_id
+                .is_some_and(|thread_id| thread_id == entry.canonical_thread_id.as_str());
+            (
+                preferred,
+                entry.created_at,
+                entry.entry_id.as_str(),
+                entry.text.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    high_entries.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| a.2.cmp(b.2))
+    });
+
+    let selected = high_entries.into_iter().take(limit).collect::<Vec<_>>();
+    let mut texts = Vec::<String>::with_capacity(selected.len());
+    let mut ids = Vec::<String>::with_capacity(selected.len());
+    for (_, _, entry_id, text) in selected {
+        if let Some(normalized) = non_empty_trimmed(text) {
+            texts.push(normalized.to_string());
+            ids.push(entry_id.to_string());
+        }
+    }
+    (texts, ids)
+}
+
+fn compact_observation_text_for_hint(base: &str, reserved_high_texts: &[String]) -> String {
+    let mut sections = Vec::<String>::new();
+    let mut seen = HashSet::<String>::new();
+
+    for text in reserved_high_texts {
+        if let Some(normalized) = non_empty_trimmed(text) {
+            let value = normalized.to_string();
+            if seen.insert(value.clone()) {
+                sections.push(value);
+            }
+        }
+    }
+
+    if let Some(base_normalized) = non_empty_trimmed(base) {
+        let base_value = base_normalized.to_string();
+        if seen.insert(base_value.clone()) {
+            sections.push(base_value);
+        }
+    }
+
+    sections.join("\n\n")
+}
+
+fn is_high_priority(priority: &str) -> bool {
+    priority.eq_ignore_ascii_case("high")
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn parse_optional_target_uri(target_uri: Option<&str>) -> Result<Option<AxiomUri>> {
@@ -822,8 +1034,36 @@ fn annotate_om_query_plan_visibility(
         && metrics.session_recent_hint_count == 0
         && metrics.session_hint_count_final == 0
         && metrics.om_filtered_message_count == 0
+        && !metrics.om_hint_reader_snapshot_v2
     {
         return;
+    }
+    if metrics.om_hint_reader_snapshot_v2 {
+        append_query_plan_note(result, "om_hint_reader:snapshot_v2");
+        append_query_plan_note(
+            result,
+            &format!(
+                "om_snapshot_buffered_chunks:{}",
+                metrics.om_snapshot_buffered_chunk_count
+            ),
+        );
+        if metrics.om_hint_compaction_priority_v2 {
+            append_query_plan_note(result, "om_hint_compaction:priority_v2");
+            append_query_plan_note(
+                result,
+                &format!(
+                    "om_hint_high_priority_selected:{}",
+                    metrics.om_hint_high_priority_selected_count
+                ),
+            );
+            append_query_plan_note(
+                result,
+                &format!(
+                    "om_hint_current_task_reserved:{}",
+                    u8::from(metrics.om_hint_current_task_reserved)
+                ),
+            );
+        }
     }
     append_query_plan_note(
         result,
@@ -895,6 +1135,11 @@ fn search_request_details(input: SearchRequestLogInput<'_>) -> serde_json::Value
         "observer_trigger_count": metrics.observer_trigger_count,
         "reflector_trigger_count": metrics.reflector_trigger_count,
         "om_hint_applied": metrics.om_hint_applied,
+        "om_hint_reader": if metrics.om_hint_reader_snapshot_v2 { "snapshot_v2" } else { "none" },
+        "om_snapshot_buffered_chunk_count": metrics.om_snapshot_buffered_chunk_count,
+        "om_hint_compaction": if metrics.om_hint_compaction_priority_v2 { "priority_v2" } else { "none" },
+        "om_hint_high_priority_selected_count": metrics.om_hint_high_priority_selected_count,
+        "om_hint_current_task_reserved": metrics.om_hint_current_task_reserved,
         "session_recent_hint_count": metrics.session_recent_hint_count,
         "session_hint_count_final": metrics.session_hint_count_final,
         "om_filtered_message_count": metrics.om_filtered_message_count,
@@ -934,34 +1179,76 @@ fn validate_search_cutoff_options(
     Ok(())
 }
 
-fn bounded_om_hint_from_record(
-    active_observations: &str,
+fn bounded_om_hint_from_snapshot(
+    search_visible_observations: &str,
+    current_task: Option<&str>,
     suggested_response: Option<&str>,
     bounds: OmHintBounds,
 ) -> Option<String> {
+    let continuation_hint =
+        compose_continuation_hint(current_task, suggested_response, bounds.max_suggested_chars);
     merge_observation_hint_with_suggested_response(
-        build_bounded_observation_hint(active_observations, bounds.max_lines, bounds.max_chars),
-        suggested_response,
+        build_bounded_observation_hint(
+            search_visible_observations,
+            bounds.max_lines,
+            bounds.max_chars,
+        ),
+        continuation_hint.as_deref(),
         bounds.max_suggested_chars,
     )
 }
 
+fn compose_continuation_hint(
+    current_task: Option<&str>,
+    suggested_response: Option<&str>,
+    max_chars: usize,
+) -> Option<String> {
+    if max_chars == 0 {
+        return None;
+    }
+    let current_task =
+        current_task.and_then(|value| normalize_hint_text(value, max_chars.saturating_sub(6)));
+    let suggested_response =
+        suggested_response.and_then(|value| normalize_hint_text(value, max_chars));
+
+    match (current_task, suggested_response) {
+        (Some(task), Some(next)) => Some(format!("task: {task} | next: {next}")),
+        (Some(task), None) => Some(format!("task: {task}")),
+        (None, Some(next)) => Some(format!("next: {next}")),
+        (None, None) => None,
+    }
+}
+
 fn merge_observation_hint_with_suggested_response(
     observation_hint: Option<String>,
-    suggested_response: Option<&str>,
+    continuation_hint: Option<&str>,
     max_suggested_chars: usize,
 ) -> Option<String> {
     if max_suggested_chars == 0 {
         return observation_hint;
     }
-    let suggested =
-        suggested_response.and_then(|value| normalize_hint_text(value, max_suggested_chars));
+    let continuation = continuation_hint
+        .and_then(|value| normalize_hint_text(value, max_suggested_chars))
+        .map(|value| normalize_continuation_hint_prefix(value.as_str()));
 
-    match (observation_hint, suggested) {
-        (Some(base), Some(next)) => Some(format!("{base} | next: {next}")),
-        (None, Some(next)) => Some(format!("om: next: {next}")),
+    match (observation_hint, continuation) {
+        (Some(base), Some(continuation)) => Some(format!("{base} | {continuation}")),
+        (None, Some(continuation)) => Some(format!("om: {continuation}")),
         (Some(base), None) => Some(base),
         (None, None) => None,
+    }
+}
+
+fn normalize_continuation_hint_prefix(value: &str) -> String {
+    let normalized = value.trim();
+    if normalized
+        .strip_prefix("task:")
+        .or_else(|| normalized.strip_prefix("next:"))
+        .is_some()
+    {
+        normalized.to_string()
+    } else {
+        format!("next: {normalized}")
     }
 }
 

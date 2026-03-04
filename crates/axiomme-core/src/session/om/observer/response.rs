@@ -19,6 +19,15 @@ use super::threading::{
     run_multi_thread_observer_response,
 };
 
+const DETERMINISTIC_CONTINUATION_MAX_CHARS: usize = 220;
+const DETERMINISTIC_SUGGESTED_RESPONSE_MIN_CONFIDENCE: f32 = 0.78;
+
+#[derive(Debug, Clone, Default)]
+struct DeterministicContinuationHints {
+    current_task: Option<String>,
+    suggested_response: Option<String>,
+}
+
 pub(in crate::session::om) fn merge_observe_after_cursor(
     record_last_observed_at: Option<DateTime<Utc>>,
     observe_cursor_after: Option<DateTime<Utc>>,
@@ -146,14 +155,276 @@ pub(in crate::session::om) fn deterministic_observer_response(
         &pending_messages,
         observation_max_chars,
     );
+    let continuation = infer_deterministic_continuation(&pending_messages);
     OmObserverResponse {
         observation_token_count: estimate_text_tokens(&observations),
         observations,
         observed_message_ids: selected.iter().map(|item| item.id.clone()).collect(),
-        current_task: None,
-        suggested_response: None,
+        current_task: continuation.current_task,
+        suggested_response: continuation.suggested_response,
         usage: OmInferenceUsage::default(),
     }
+}
+
+fn infer_deterministic_continuation(
+    pending_messages: &[OmPendingMessage],
+) -> DeterministicContinuationHints {
+    let last_user = pending_messages
+        .iter()
+        .rev()
+        .find(|message| role_eq(&message.role, "user"));
+    let last_blocking = pending_messages.iter().rev().find(|message| {
+        (role_eq(&message.role, "assistant") || role_eq(&message.role, "tool"))
+            && contains_error_signal(&message.text)
+    });
+
+    let task_candidate = last_user.and_then(|message| infer_task_from_user_message(&message.text));
+    let current_task = task_candidate
+        .as_ref()
+        .map(|candidate| candidate.normalized.as_str())
+        .and_then(|value| bounded_hint(value, DETERMINISTIC_CONTINUATION_MAX_CHARS))
+        .map(|value| format!("Primary: {value}"));
+
+    let suggested_response = infer_suggested_response(
+        task_candidate.as_ref(),
+        last_user.map(|message| message.text.as_str()),
+        last_blocking.map(|message| message.text.as_str()),
+    );
+
+    DeterministicContinuationHints {
+        current_task,
+        suggested_response,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TaskCandidate {
+    normalized: String,
+    confidence: f32,
+    has_identifier: bool,
+}
+
+fn infer_task_from_user_message(text: &str) -> Option<TaskCandidate> {
+    let normalized = normalize_sentence_like(text)?;
+    let actionable = contains_action_verb(&normalized);
+    let has_identifier = !extract_identifier_tokens(&normalized, 1).is_empty();
+    let confidence = task_confidence(actionable, has_identifier, &normalized);
+    if confidence < 0.62 {
+        return None;
+    }
+    Some(TaskCandidate {
+        normalized,
+        confidence,
+        has_identifier,
+    })
+}
+
+fn infer_suggested_response(
+    task_candidate: Option<&TaskCandidate>,
+    last_user_text: Option<&str>,
+    last_blocking_text: Option<&str>,
+) -> Option<String> {
+    let Some(task) = task_candidate else {
+        return None;
+    };
+    let blocking_identifiers = last_blocking_text
+        .map(|text| extract_identifier_tokens(text, 3))
+        .unwrap_or_default();
+    let user_identifiers = last_user_text
+        .map(|text| extract_identifier_tokens(text, 2))
+        .unwrap_or_default();
+    let has_blocking_signal = last_blocking_text.is_some();
+    let has_identifier = !blocking_identifiers.is_empty() || task.has_identifier;
+    let confidence =
+        suggested_response_confidence(task.confidence, has_blocking_signal, has_identifier);
+    if confidence < DETERMINISTIC_SUGGESTED_RESPONSE_MIN_CONFIDENCE {
+        return None;
+    }
+
+    let response = if has_blocking_signal {
+        let detail = if blocking_identifiers.is_empty() {
+            "the reported error".to_string()
+        } else {
+            blocking_identifiers.join(", ")
+        };
+        format!(
+            "Resolve {detail} and continue: {}",
+            task.normalized.trim_end_matches('.')
+        )
+    } else if user_identifiers.is_empty() {
+        format!(
+            "Proceed with {} and report verification evidence.",
+            task.normalized.trim_end_matches('.')
+        )
+    } else {
+        format!(
+            "Proceed with {} while preserving {}.",
+            task.normalized.trim_end_matches('.'),
+            user_identifiers.join(", ")
+        )
+    };
+
+    bounded_hint(&response, DETERMINISTIC_CONTINUATION_MAX_CHARS)
+}
+
+fn role_eq(role: &str, expected: &str) -> bool {
+    role.trim().eq_ignore_ascii_case(expected)
+}
+
+fn normalize_sentence_like(text: &str) -> Option<String> {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    let candidate = normalized
+        .split(['\n', '!', '?', ';'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .find(|line| contains_action_verb(line) || !extract_identifier_tokens(line, 1).is_empty())
+        .unwrap_or_else(|| normalized.as_str());
+    bounded_hint(candidate, DETERMINISTIC_CONTINUATION_MAX_CHARS)
+}
+
+fn contains_action_verb(text: &str) -> bool {
+    const ACTION_VERBS: [&str; 30] = [
+        "fix",
+        "add",
+        "update",
+        "implement",
+        "investigate",
+        "debug",
+        "refactor",
+        "remove",
+        "create",
+        "write",
+        "test",
+        "verify",
+        "review",
+        "analyze",
+        "find",
+        "search",
+        "configure",
+        "setup",
+        "migrate",
+        "optimize",
+        "clean",
+        "수정",
+        "구현",
+        "검토",
+        "확인",
+        "분석",
+        "찾",
+        "조사",
+        "개선",
+        "테스트",
+    ];
+    let lowered = text.to_ascii_lowercase();
+    ACTION_VERBS.iter().any(|verb| lowered.contains(verb))
+}
+
+fn contains_error_signal(text: &str) -> bool {
+    const ERROR_SIGNALS: [&str; 18] = [
+        "error",
+        "failed",
+        "failure",
+        "exception",
+        "panic",
+        "traceback",
+        "timeout",
+        "denied",
+        "invalid",
+        "not found",
+        "429",
+        "500",
+        "503",
+        "오류",
+        "실패",
+        "예외",
+        "타임아웃",
+        "에러",
+    ];
+    let lowered = text.to_ascii_lowercase();
+    ERROR_SIGNALS.iter().any(|signal| lowered.contains(signal))
+}
+
+fn task_confidence(actionable: bool, has_identifier: bool, normalized: &str) -> f32 {
+    let mut confidence: f32 = 0.48;
+    if actionable {
+        confidence += 0.23;
+    }
+    if has_identifier {
+        confidence += 0.14;
+    }
+    let word_count = normalized.split_whitespace().count();
+    if (3..=18).contains(&word_count) {
+        confidence += 0.08;
+    }
+    if !normalized.ends_with('?') {
+        confidence += 0.07;
+    }
+    confidence.min(0.95)
+}
+
+fn suggested_response_confidence(
+    task_confidence: f32,
+    has_blocking_signal: bool,
+    has_identifier: bool,
+) -> f32 {
+    let mut confidence: f32 = 0.42 + (task_confidence * 0.4);
+    if has_blocking_signal {
+        confidence += 0.18;
+    }
+    if has_identifier {
+        confidence += 0.09;
+    }
+    confidence.min(0.96)
+}
+
+fn extract_identifier_tokens(text: &str, max_items: usize) -> Vec<String> {
+    let mut out = Vec::<String>::new();
+    let mut seen = std::collections::BTreeSet::<String>::new();
+    for raw in text.split_whitespace() {
+        let candidate = raw.trim_matches(|ch: char| {
+            !ch.is_ascii_alphanumeric() && !matches!(ch, '_' | '-' | '.' | '/' | ':')
+        });
+        if candidate.len() < 3 || candidate.len() > 96 {
+            continue;
+        }
+        if !looks_like_identifier(candidate) {
+            continue;
+        }
+        let dedupe_key = candidate.to_ascii_lowercase();
+        if seen.insert(dedupe_key) {
+            out.push(candidate.to_string());
+        }
+        if out.len() >= max_items {
+            break;
+        }
+    }
+    out
+}
+
+fn looks_like_identifier(token: &str) -> bool {
+    if token.contains("::")
+        || token.contains('/')
+        || token.contains('.')
+        || token.contains('_')
+        || token.contains('-')
+        || token.chars().any(|ch| ch.is_ascii_digit())
+    {
+        return true;
+    }
+    let uppercase_count = token.chars().filter(|ch| ch.is_ascii_uppercase()).count();
+    let has_lowercase = token.chars().any(|ch| ch.is_ascii_lowercase());
+    uppercase_count >= 2 && !has_lowercase
+}
+
+fn bounded_hint(text: &str, max_chars: usize) -> Option<String> {
+    let normalized = text.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    Some(normalized.chars().take(max_chars).collect::<String>())
 }
 
 pub(in crate::session::om) fn llm_observer_response(

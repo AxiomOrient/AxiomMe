@@ -43,7 +43,7 @@ const EPISODIC_DEPENDENCY_NAME: &str = "episodic";
 const EPISODIC_REQUIRED_MAJOR: u64 = 0;
 const EPISODIC_REQUIRED_MINOR: u64 = 1;
 const EPISODIC_REQUIRED_GIT_URL: &str = "file:///Users/axient/repository/episodic";
-const EPISODIC_REQUIRED_GIT_REV: &str = "86b831e42186b8df663327ba6852c23a548685d1";
+const EPISODIC_REQUIRED_GIT_REV: &str = "9f4c075bf26b81c8a81fbb6539c46ec20ea8a181";
 const EPISODIC_LOCK_SOURCE_PREFIX: &str = "git+file:///Users/axient/repository/episodic";
 const EPISODIC_ALLOWED_MANIFEST_OPERATORS: &[&str] = &["exact_rev"];
 

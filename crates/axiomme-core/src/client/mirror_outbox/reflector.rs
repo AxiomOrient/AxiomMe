@@ -21,6 +21,7 @@ use crate::om_bridge::{
     OM_OUTBOX_SCHEMA_VERSION_V1, OmObserveBufferRequestedV1, OmReflectBufferRequestedV1,
     OmReflectRequestedV1,
 };
+use crate::state::OmActiveEntry;
 use crate::uri::{AxiomUri, Scope};
 
 const DEFAULT_OM_REFLECTOR_MODE: &str = "auto";
@@ -156,17 +157,12 @@ pub(super) fn buffered_or_resolved_reflector_response(
             reflection_token_count: record
                 .buffered_reflection_tokens
                 .unwrap_or_else(|| estimate_text_tokens(buffered)),
-            reflected_observation_line_count: record
-                .reflected_observation_line_count
-                .unwrap_or_else(|| {
-                    saturating_usize_to_u32(count_non_empty_lines(&record.active_observations))
-                }),
             usage: OmInferenceUsage {
                 input_tokens: record.buffered_reflection_input_tokens.unwrap_or(0),
                 output_tokens: record.buffered_reflection_tokens.unwrap_or(0),
             },
-            current_task: record.current_task.clone(),
-            suggested_response: record.suggested_response.clone(),
+            current_task: None,
+            suggested_response: None,
         });
     }
     resolve_reflector_response(
@@ -223,9 +219,6 @@ fn deterministic_reflector_response(
         reflection_token_count: draft
             .as_ref()
             .map_or(0, |value| value.reflection_token_count),
-        reflected_observation_line_count: draft
-            .as_ref()
-            .map_or(0, |value| value.reflected_observation_line_count),
         current_task: None,
         suggested_response: None,
         usage: OmInferenceUsage::default(),
@@ -236,7 +229,6 @@ fn deterministic_reflector_response(
 struct OmReflectorAttemptInput {
     active_observations: String,
     target_threshold_tokens: u32,
-    reflected_observation_line_count_override: Option<u32>,
     reflection_input_tokens_override: Option<u32>,
 }
 
@@ -255,7 +247,6 @@ fn prepare_reflector_attempt_input(
         return OmReflectorAttemptInput {
             active_observations: plan.sliced_observations,
             target_threshold_tokens: plan.compression_target_tokens,
-            reflected_observation_line_count_override: Some(plan.reflected_observation_line_count),
             reflection_input_tokens_override: Some(plan.slice_token_estimate),
         };
     }
@@ -263,7 +254,6 @@ fn prepare_reflector_attempt_input(
     OmReflectorAttemptInput {
         active_observations: record.active_observations.clone(),
         target_threshold_tokens: config.llm_target_observation_tokens,
-        reflected_observation_line_count_override: None,
         reflection_input_tokens_override: None,
     }
 }
@@ -349,9 +339,6 @@ fn llm_reflector_response(
 
     if total_usage != OmInferenceUsage::default() {
         parsed.usage = total_usage;
-    }
-    if let Some(reflected_line_count) = attempt_input.reflected_observation_line_count_override {
-        parsed.reflected_observation_line_count = reflected_line_count;
     }
     if let Some(input_tokens) = attempt_input.reflection_input_tokens_override {
         parsed.usage.input_tokens = input_tokens;
@@ -485,7 +472,7 @@ fn parse_llm_reflector_response(
 
 fn parse_reflector_response_value(
     value: &Value,
-    active_observations: &str,
+    _active_observations: &str,
     max_chars: usize,
 ) -> Option<OmReflectorResponse> {
     let object = value.as_object()?;
@@ -509,15 +496,6 @@ fn parse_reflector_response_value(
         return None;
     }
     let reflection = normalize_reflection_text(reflection_raw.unwrap_or(""), max_chars);
-
-    let fallback_line_count = saturating_usize_to_u32(count_non_empty_lines(active_observations));
-    let reflected_observation_line_count = object
-        .get("reflected_observation_line_count")
-        .or_else(|| object.get("reflectedObservationLineCount"))
-        .or_else(|| object.get("line_count"))
-        .or_else(|| object.get("lineCount"))
-        .and_then(parse_u32_value)
-        .unwrap_or(fallback_line_count);
 
     let usage = object
         .get("usage")
@@ -546,7 +524,6 @@ fn parse_reflector_response_value(
     Some(OmReflectorResponse {
         reflection,
         reflection_token_count,
-        reflected_observation_line_count,
         current_task: None,
         suggested_response: object
             .get("suggested_response")
@@ -563,7 +540,7 @@ fn parse_reflector_response_value(
 
 fn parse_reflector_response_xml_content(
     content: &str,
-    active_observations: &str,
+    _active_observations: &str,
     max_chars: usize,
 ) -> Option<OmReflectorResponse> {
     let parsed = parse_memory_section_xml_accuracy_first(content);
@@ -575,11 +552,8 @@ fn parse_reflector_response_xml_content(
     if reflection.is_empty() {
         return None;
     }
-    let reflected_observation_line_count =
-        saturating_usize_to_u32(count_non_empty_lines(active_observations));
     Some(OmReflectorResponse {
         reflection_token_count: estimate_text_tokens(&reflection),
-        reflected_observation_line_count,
         reflection,
         current_task: None,
         suggested_response: parsed.suggested_response,
@@ -589,7 +563,7 @@ fn parse_reflector_response_xml_content(
 
 fn parse_reflector_response_text_content(
     content: &str,
-    active_observations: &str,
+    _active_observations: &str,
     max_chars: usize,
 ) -> Option<OmReflectorResponse> {
     let reflection = normalize_reflection_text(content, max_chars);
@@ -598,14 +572,65 @@ fn parse_reflector_response_text_content(
     }
     Some(OmReflectorResponse {
         reflection_token_count: estimate_text_tokens(&reflection),
-        reflected_observation_line_count: saturating_usize_to_u32(count_non_empty_lines(
-            active_observations,
-        )),
         reflection,
         current_task: None,
         suggested_response: parse_memory_section_xml_accuracy_first(content).suggested_response,
         usage: OmInferenceUsage::default(),
     })
+}
+
+pub(super) fn resolve_reflection_cover_entry_ids(
+    record: &crate::om::OmRecord,
+    options: OmReflectorCallOptions,
+    config_snapshot: &OmReflectorConfigSnapshot,
+    active_entries: &[OmActiveEntry],
+) -> Vec<String> {
+    if active_entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut ordered_entries = active_entries.to_vec();
+    ordered_entries.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    });
+
+    let has_buffered_reflection = record
+        .buffered_reflection
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty());
+    let effective_options = if has_buffered_reflection {
+        OmReflectorCallOptions::BUFFERED
+    } else {
+        options
+    };
+    if effective_options == OmReflectorCallOptions::DEFAULT {
+        return ordered_entries
+            .into_iter()
+            .map(|entry| entry.entry_id)
+            .collect();
+    }
+
+    let config = OmReflectorConfig::from_snapshot(config_snapshot);
+    let plan = plan_buffered_reflection_slice(
+        &record.active_observations,
+        record.observation_token_count,
+        config.llm_target_observation_tokens,
+        config.llm_buffer_activation,
+    );
+    let mut remaining_lines =
+        usize::try_from(plan.reflected_observation_line_count).unwrap_or(usize::MAX);
+    let mut selected = Vec::<String>::new();
+    for entry in ordered_entries {
+        if remaining_lines == 0 {
+            break;
+        }
+        selected.push(entry.entry_id.clone());
+        let line_count = count_non_empty_lines(&entry.text).max(1);
+        remaining_lines = remaining_lines.saturating_sub(line_count);
+    }
+    selected
 }
 
 pub(super) fn parse_om_reflect_buffer_requested_payload(
@@ -752,10 +777,6 @@ fn count_non_empty_lines(text: &str) -> usize {
         .map(str::trim)
         .filter(|line| !line.is_empty())
         .count()
-}
-
-fn saturating_usize_to_u32(value: usize) -> u32 {
-    u32::try_from(value).unwrap_or(u32::MAX)
 }
 
 fn normalize_reflection_text(text: &str, max_chars: usize) -> String {

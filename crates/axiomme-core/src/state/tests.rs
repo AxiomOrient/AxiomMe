@@ -392,7 +392,7 @@ fn om_v2_migration_apply_is_idempotent() {
     assert_eq!(entries_count, 1);
     assert_eq!(continuation_count, 1);
     assert_eq!(protocol_version, OM_PROTOCOL_VERSION);
-    assert_eq!(episodic_rev, "86b831e42186b8df663327ba6852c23a548685d1");
+    assert_eq!(episodic_rev, "9f4c075bf26b81c8a81fbb6539c46ec20ea8a181");
     drop(conn);
 
     let marker = store
@@ -703,6 +703,79 @@ fn om_thread_states_upsert_and_list_preserves_existing_fields_with_coalesce() {
 }
 
 #[test]
+fn om_continuation_states_upsert_and_resolve_preferred_thread() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let store = SqliteStateStore::open(db_path).expect("open failed");
+    let now = Utc::now();
+
+    store
+        .upsert_om_continuation_state(
+            "resource:r-continuation",
+            "t-main",
+            Some("Primary: debug auth"),
+            Some("Reply with token scope check"),
+            0.92,
+            "observer",
+            Some(now),
+        )
+        .expect("upsert main initial");
+    store
+        .upsert_om_continuation_state(
+            "resource:r-continuation",
+            "t-alt",
+            Some("Primary: review migration"),
+            Some("Reply with migration status"),
+            0.88,
+            "observer",
+            Some(now + Duration::seconds(1)),
+        )
+        .expect("upsert alt");
+    store
+        .upsert_om_continuation_state(
+            "resource:r-continuation",
+            "t-main",
+            Some("Primary: debug auth v2"),
+            None,
+            0.82,
+            "observer_interval",
+            Some(now + Duration::seconds(2)),
+        )
+        .expect("upsert main partial");
+
+    let preferred = store
+        .resolve_om_continuation_state("resource:r-continuation", Some("t-main"))
+        .expect("resolve preferred")
+        .expect("preferred missing");
+    assert_eq!(preferred.canonical_thread_id, "t-main");
+    assert_eq!(
+        preferred.suggested_response.as_deref(),
+        Some("Reply with token scope check")
+    );
+
+    let default_selected = store
+        .resolve_om_continuation_state("resource:r-continuation", None)
+        .expect("resolve default")
+        .expect("default missing");
+    assert_eq!(default_selected.canonical_thread_id, "t-main");
+    let row: (Option<String>, String) = {
+        let conn = store.conn.lock().expect("lock");
+        conn.query_row(
+            r"
+            SELECT current_task, source_kind
+            FROM om_continuation_state
+            WHERE scope_key = ?1 AND canonical_thread_id = ?2
+            ",
+            params!["resource:r-continuation", "t-main"],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .expect("continuation row")
+    };
+    assert_eq!(row.0.as_deref(), Some("Primary: debug auth v2"));
+    assert_eq!(row.1, "observer_interval");
+}
+
+#[test]
 #[expect(
     clippy::too_many_lines,
     reason = "CAS/idempotency behavior is verified across a full reflection replay sequence"
@@ -753,7 +826,7 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
             0,
             41,
             "compact",
-            2,
+            &[],
             OmReflectionApplyContext {
                 current_task: Some("Primary: consolidate observations"),
                 suggested_response: Some("Ask user to confirm next action"),
@@ -769,21 +842,69 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
     assert_eq!(fetched.generation_count, 1);
     assert_eq!(fetched.last_applied_outbox_event_id, Some(41));
     assert_eq!(fetched.origin_type, OmOriginType::Reflection);
-    assert_eq!(fetched.active_observations, "compact\n\nline-3");
+    assert_eq!(fetched.active_observations, "compact");
     assert_eq!(fetched.buffered_reflection, None);
     assert_eq!(fetched.buffered_reflection_tokens, None);
     assert_eq!(fetched.buffered_reflection_input_tokens, None);
-    assert_eq!(fetched.reflected_observation_line_count, Some(2));
+    assert_eq!(fetched.reflected_observation_line_count, None);
+    assert!(!fetched.is_reflecting);
+    assert!(!fetched.is_buffering_reflection);
+    let (covers_entry_ids_json, reflection_entry_id): (String, String) = {
+        let conn = store.conn.lock().expect("lock");
+        conn.query_row(
+            r"
+            SELECT covers_entry_ids_json, reflection_entry_id
+            FROM om_reflection_events
+            WHERE event_id = ?1
+            ",
+            params!["outbox:41"],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .expect("reflection event row")
+    };
+    let covers_entry_ids =
+        serde_json::from_str::<Vec<String>>(&covers_entry_ids_json).expect("covers json");
+    assert_eq!(covers_entry_ids.len(), 0);
+    let superseded_count: i64 = {
+        let conn = store.conn.lock().expect("lock");
+        conn.query_row(
+            "SELECT COUNT(*) FROM om_entries WHERE superseded_by = ?1",
+            params![reflection_entry_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("superseded count")
+    };
+    assert_eq!(superseded_count, 0);
+    let continuation_row: (String, Option<String>, Option<String>, String) = {
+        let conn = store.conn.lock().expect("lock");
+        conn.query_row(
+            r"
+            SELECT canonical_thread_id, current_task, suggested_response, source_kind
+            FROM om_continuation_state
+            WHERE scope_key = ?1
+            ",
+            params!["session:s-reflect"],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .expect("continuation row")
+    };
+    assert_eq!(continuation_row.0, "s-reflect");
     assert_eq!(
-        fetched.current_task.as_deref(),
+        continuation_row.1.as_deref(),
         Some("Primary: consolidate observations")
     );
     assert_eq!(
-        fetched.suggested_response.as_deref(),
+        continuation_row.2.as_deref(),
         Some("Ask user to confirm next action")
     );
-    assert!(!fetched.is_reflecting);
-    assert!(!fetched.is_buffering_reflection);
+    assert_eq!(continuation_row.3, "reflection");
 
     let idempotent = store
         .apply_om_reflection_with_cas(
@@ -791,7 +912,7 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
             0,
             41,
             "compact-v2",
-            2,
+            &[],
             OmReflectionApplyContext::default(),
         )
         .expect("idempotent replay");
@@ -803,7 +924,7 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
             0,
             42,
             "compact-v3",
-            2,
+            &[],
             OmReflectionApplyContext::default(),
         )
         .expect("stale generation");
@@ -815,7 +936,7 @@ fn om_reflection_apply_uses_generation_cas_and_event_idempotency() {
         .expect("record missing");
     assert_eq!(fetched2.generation_count, 1);
     assert_eq!(fetched2.last_applied_outbox_event_id, Some(41));
-    assert_eq!(fetched2.active_observations, "compact\n\nline-3");
+    assert_eq!(fetched2.active_observations, "compact");
 
     let metrics = store
         .om_reflection_apply_metrics_snapshot()
@@ -876,9 +997,6 @@ fn om_reflection_buffer_apply_uses_generation_cas() {
                 reflection: "buffered",
                 reflection_token_count: 11,
                 reflection_input_tokens: 22,
-                reflected_observation_line_count: 2,
-                current_task: Some("Primary: consolidate observations"),
-                suggested_response: Some("Ask user to confirm next action"),
             },
         )
         .expect("buffer reflection");
@@ -892,15 +1010,9 @@ fn om_reflection_buffer_apply_uses_generation_cas() {
     assert_eq!(fetched.buffered_reflection.as_deref(), Some("buffered"));
     assert_eq!(fetched.buffered_reflection_tokens, Some(11));
     assert_eq!(fetched.buffered_reflection_input_tokens, Some(22));
-    assert_eq!(fetched.reflected_observation_line_count, Some(2));
-    assert_eq!(
-        fetched.current_task.as_deref(),
-        Some("Primary: consolidate observations")
-    );
-    assert_eq!(
-        fetched.suggested_response.as_deref(),
-        Some("Ask user to confirm next action")
-    );
+    assert_eq!(fetched.reflected_observation_line_count, None);
+    assert_eq!(fetched.current_task, None);
+    assert_eq!(fetched.suggested_response, None);
     assert!(!fetched.is_buffering_reflection);
 
     let duplicate = store
@@ -911,9 +1023,6 @@ fn om_reflection_buffer_apply_uses_generation_cas() {
                 reflection: "buffered-2",
                 reflection_token_count: 33,
                 reflection_input_tokens: 44,
-                reflected_observation_line_count: 2,
-                current_task: None,
-                suggested_response: None,
             },
         )
         .expect("duplicate buffer");
@@ -927,9 +1036,6 @@ fn om_reflection_buffer_apply_uses_generation_cas() {
                 reflection: "buffered-3",
                 reflection_token_count: 55,
                 reflection_input_tokens: 66,
-                reflected_observation_line_count: 2,
-                current_task: None,
-                suggested_response: None,
             },
         )
         .expect("stale generation");
@@ -1031,6 +1137,40 @@ fn om_observation_chunks_roundtrip_and_clear_by_seq() {
         listed[1].message_ids,
         vec!["m2".to_string(), "m3".to_string()]
     );
+    let entry_rows: Vec<(String, String, String)> = {
+        let conn = store.conn.lock().expect("lock");
+        let mut stmt = conn
+            .prepare(
+                r"
+                SELECT entry_id, canonical_thread_id, text
+                FROM om_entries
+                WHERE scope_key = ?1 AND origin_kind = ?2
+                ORDER BY created_at ASC, entry_id ASC
+                ",
+            )
+            .expect("prepare om_entries query");
+        let rows = stmt
+            .query_map(params!["session:s-chunk", "observation"], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })
+            .expect("query om_entries");
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.expect("entry row"));
+        }
+        out
+    };
+    assert_eq!(entry_rows.len(), 2);
+    assert_eq!(entry_rows[0].0, "observation:chunk-1:1:0");
+    assert_eq!(entry_rows[0].1, "s-chunk");
+    assert_eq!(entry_rows[0].2, "obs-1");
+    assert_eq!(entry_rows[1].0, "observation:chunk-2:2:0");
+    assert_eq!(entry_rows[1].1, "s-chunk");
+    assert_eq!(entry_rows[1].2, "obs-2");
 
     let removed = store
         .clear_om_observation_chunks_through_seq("record-chunk", 1)
@@ -1117,6 +1257,16 @@ fn om_observation_chunk_event_cas_blocks_duplicate_replay() {
         .expect("list chunks");
     assert_eq!(chunks.len(), 1);
     assert_eq!(chunks[0].id, "chunk-cas-1");
+    let observation_entries_count: i64 = {
+        let conn = store.conn.lock().expect("lock");
+        conn.query_row(
+            "SELECT COUNT(*) FROM om_entries WHERE scope_key = ?1 AND origin_kind = ?2",
+            params!["session:s-obs-cas", "observation"],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count observation entries")
+    };
+    assert_eq!(observation_entries_count, 1);
 }
 
 #[test]

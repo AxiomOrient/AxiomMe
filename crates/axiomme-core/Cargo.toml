@@ -35,7 +35,7 @@ serde_norway = { workspace = true }
 pulldown-cmark = { workspace = true, optional = true }
 toml = { workspace = true }
 semver = { workspace = true }
-episodic = { git = "file:///Users/axient/repository/episodic", rev = "86b831e42186b8df663327ba6852c23a548685d1" }
+episodic = { git = "file:///Users/axient/repository/episodic", rev = "9f4c075bf26b81c8a81fbb6539c46ec20ea8a181" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

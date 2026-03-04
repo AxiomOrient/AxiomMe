@@ -3,7 +3,7 @@ use rusqlite::params;
 
 use crate::error::Result;
 
-use super::{OmThreadState, SqliteStateStore};
+use super::{OmActiveEntry, OmContinuationState, OmThreadState, SqliteStateStore};
 
 impl SqliteStateStore {
     pub fn upsert_om_scope_session(&self, scope_key: &str, session_id: &str) -> Result<()> {
@@ -164,4 +164,151 @@ impl SqliteStateStore {
             Ok(out)
         })
     }
+
+    pub(crate) fn upsert_om_continuation_state(
+        &self,
+        scope_key: &str,
+        canonical_thread_id: &str,
+        current_task: Option<&str>,
+        suggested_response: Option<&str>,
+        confidence: f64,
+        source_kind: &str,
+        updated_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let scope_key = scope_key.trim();
+        let canonical_thread_id = canonical_thread_id.trim();
+        let source_kind = source_kind.trim();
+        if scope_key.is_empty() || canonical_thread_id.is_empty() || source_kind.is_empty() {
+            return Ok(());
+        }
+        let current_task = normalize_optional_text(current_task);
+        let suggested_response = normalize_optional_text(suggested_response);
+        if current_task.is_none() && suggested_response.is_none() {
+            return Ok(());
+        }
+
+        let now = updated_at.unwrap_or_else(Utc::now).to_rfc3339();
+        self.with_conn(|conn| {
+            conn.execute(
+                r"
+                INSERT INTO om_continuation_state(
+                    scope_key, canonical_thread_id, current_task, suggested_response,
+                    confidence, source_kind, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                ON CONFLICT(scope_key, canonical_thread_id) DO UPDATE SET
+                    current_task=COALESCE(excluded.current_task, om_continuation_state.current_task),
+                    suggested_response=COALESCE(excluded.suggested_response, om_continuation_state.suggested_response),
+                    confidence=CASE
+                        WHEN excluded.current_task IS NULL AND excluded.suggested_response IS NULL
+                        THEN om_continuation_state.confidence
+                        ELSE excluded.confidence
+                    END,
+                    source_kind=CASE
+                        WHEN excluded.current_task IS NULL AND excluded.suggested_response IS NULL
+                        THEN om_continuation_state.source_kind
+                        ELSE excluded.source_kind
+                    END,
+                    updated_at=excluded.updated_at
+                ",
+                params![
+                    scope_key,
+                    canonical_thread_id,
+                    current_task,
+                    suggested_response,
+                    confidence,
+                    source_kind,
+                    now
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn list_om_continuation_states(
+        &self,
+        scope_key: &str,
+    ) -> Result<Vec<OmContinuationState>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r"
+                SELECT canonical_thread_id, current_task, suggested_response
+                FROM om_continuation_state
+                WHERE scope_key = ?1
+                ORDER BY updated_at DESC, confidence DESC, canonical_thread_id ASC
+                ",
+            )?;
+            let rows = stmt.query_map(params![scope_key], |row| {
+                Ok(OmContinuationState {
+                    canonical_thread_id: row.get(0)?,
+                    current_task: row.get(1)?,
+                    suggested_response: row.get(2)?,
+                })
+            })?;
+            let mut out = Vec::<OmContinuationState>::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
+    pub(crate) fn resolve_om_continuation_state(
+        &self,
+        scope_key: &str,
+        preferred_thread_id: Option<&str>,
+    ) -> Result<Option<OmContinuationState>> {
+        let preferred_thread_id = preferred_thread_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let states = self.list_om_continuation_states(scope_key)?;
+        if states.is_empty() {
+            return Ok(None);
+        }
+        if let Some(preferred_thread_id) = preferred_thread_id
+            && let Some(state) = states
+                .iter()
+                .find(|state| state.canonical_thread_id == preferred_thread_id)
+        {
+            return Ok(Some(state.clone()));
+        }
+        Ok(states.into_iter().next())
+    }
+
+    pub(crate) fn list_om_active_entries(&self, scope_key: &str) -> Result<Vec<OmActiveEntry>> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r"
+                SELECT entry_id, canonical_thread_id, priority, text, origin_kind, created_at
+                FROM om_entries
+                WHERE scope_key = ?1
+                  AND superseded_by IS NULL
+                ORDER BY created_at DESC, entry_id ASC
+                ",
+            )?;
+            let rows = stmt.query_map(params![scope_key], |row| {
+                let created_at_raw = row.get::<_, String>(5)?;
+                Ok(OmActiveEntry {
+                    entry_id: row.get(0)?,
+                    canonical_thread_id: row.get(1)?,
+                    priority: row.get(2)?,
+                    text: row.get(3)?,
+                    origin_kind: row.get(4)?,
+                    created_at: super::parse_required_rfc3339(5, &created_at_raw)?,
+                })
+            })?;
+            let mut out = Vec::<OmActiveEntry>::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+}
+
+fn normalize_optional_text(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
