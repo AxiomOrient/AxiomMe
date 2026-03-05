@@ -64,6 +64,7 @@ struct OmSearchMetrics {
     om_snapshot_buffered_chunk_ids: Vec<String>,
     om_hint_compaction_priority_v2: bool,
     om_hint_high_priority_selected_count: u32,
+    om_snapshot_reserved_high_entry_ids: Vec<String>,
     om_snapshot_visible_entry_ids: Vec<String>,
     om_snapshot_visible_activated_entry_ids: Vec<String>,
     om_snapshot_visible_buffered_entry_ids: Vec<String>,
@@ -98,6 +99,7 @@ struct OmHintSnapshotV2 {
     suggested_response: Option<String>,
     activated_message_ids: Vec<String>,
     buffered_chunk_ids: Vec<String>,
+    reserved_high_entry_ids: Vec<String>,
     selected_entry_ids: Vec<String>,
     activated_visible_entry_ids: Vec<String>,
     buffered_visible_entry_ids: Vec<String>,
@@ -150,6 +152,7 @@ struct SearchOptionsInput {
 struct SnapshotEntryInputs {
     fallback_thread_id: String,
     reserved_high_texts: Vec<String>,
+    reserved_high_entry_ids: Vec<String>,
     high_priority_selected_count: usize,
     buffered_entries: Vec<OmObservationEntryV2>,
     buffered_chunk_ids: Vec<String>,
@@ -320,6 +323,10 @@ impl AxiomMe {
         metrics.om_hint_high_priority_selected_count = om_snapshot.as_ref().map_or(0, |snapshot| {
             saturating_usize_to_u32(snapshot.high_priority_selected_count)
         });
+        metrics.om_snapshot_reserved_high_entry_ids =
+            om_snapshot.as_ref().map_or_else(Vec::new, |snapshot| {
+                snapshot.reserved_high_entry_ids.clone()
+            });
         metrics.om_snapshot_visible_entry_ids = om_snapshot
             .as_ref()
             .map_or_else(Vec::new, |snapshot| snapshot.selected_entry_ids.clone());
@@ -765,6 +772,7 @@ impl AxiomMe {
             suggested_response,
             activated_message_ids: record.last_activated_message_ids.clone(),
             buffered_chunk_ids: snapshot_entry_inputs.buffered_chunk_ids,
+            reserved_high_entry_ids: snapshot_entry_inputs.reserved_high_entry_ids,
             selected_entry_ids: visible_entry_selection.selected_entry_ids,
             activated_visible_entry_ids: visible_entry_selection.activated_visible_entry_ids,
             buffered_visible_entry_ids: visible_entry_selection.buffered_visible_entry_ids,
@@ -827,6 +835,7 @@ impl AxiomMe {
             preferred_thread_id,
             OM_HINT_COMPACTION_RESERVED_HIGH_LIMIT,
         );
+        let high_priority_selected_count = reserved_high_ids.len();
         let buffered_chunks = self.state.list_om_observation_chunks(&record.id)?;
         let fallback_thread_id = preferred_thread_id
             .or(record.thread_id.as_deref())
@@ -841,7 +850,8 @@ impl AxiomMe {
         Ok(SnapshotEntryInputs {
             fallback_thread_id,
             reserved_high_texts,
-            high_priority_selected_count: reserved_high_ids.len(),
+            reserved_high_entry_ids: reserved_high_ids,
+            high_priority_selected_count,
             buffered_entries,
             buffered_chunk_ids,
         })

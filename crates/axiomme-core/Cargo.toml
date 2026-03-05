@@ -35,7 +35,7 @@ serde_norway = { workspace = true }
 pulldown-cmark = { workspace = true, optional = true }
 toml = { workspace = true }
 semver = { workspace = true }
-episodic = { version = "0.2.1", git = "https://github.com/AxiomOrient/episodic.git", rev = "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5" }
+episodic = { version = "0.2.2", git = "https://github.com/AxiomOrient/episodic.git", rev = "19d40691bdba3493150d6afdbc728df97550a21a" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

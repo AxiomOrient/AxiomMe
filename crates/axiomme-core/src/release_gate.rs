@@ -43,7 +43,7 @@ const EPISODIC_DEPENDENCY_NAME: &str = "episodic";
 const EPISODIC_REQUIRED_MAJOR: u64 = 0;
 const EPISODIC_REQUIRED_MINOR: u64 = 2;
 const EPISODIC_REQUIRED_GIT_URL: &str = "https://github.com/AxiomOrient/episodic.git";
-const EPISODIC_REQUIRED_GIT_REV: &str = "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5";
+const EPISODIC_REQUIRED_GIT_REV: &str = "19d40691bdba3493150d6afdbc728df97550a21a";
 const EPISODIC_LOCK_SOURCE_PREFIX: &str = "git+https://github.com/AxiomOrient/episodic.git";
 const EPISODIC_ALLOWED_MANIFEST_OPERATORS: &[&str] = &["exact_rev"];
 

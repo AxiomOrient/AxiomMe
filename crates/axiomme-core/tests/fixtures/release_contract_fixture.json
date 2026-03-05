@@ -12,7 +12,7 @@
           "required_lock_source_prefix": "git+https://github.com/AxiomOrient/episodic.git",
           "allowed_manifest_operators": ["exact_rev"],
           "required_git_url": "https://github.com/AxiomOrient/episodic.git",
-          "required_git_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5"
+          "required_git_rev": "19d40691bdba3493150d6afdbc728df97550a21a"
         },
         "contract_probe": {
           "test_name": "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms",
@@ -31,20 +31,20 @@
         "episodic_semver_probe": {
           "passed": true,
           "error": null,
-          "manifest_req": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+          "manifest_req": "19d40691bdba3493150d6afdbc728df97550a21a",
           "manifest_req_ok": true,
           "manifest_git": "https://github.com/AxiomOrient/episodic.git",
           "manifest_git_ok": true,
-          "manifest_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+          "manifest_rev": "19d40691bdba3493150d6afdbc728df97550a21a",
           "manifest_rev_ok": true,
           "manifest_uses_path": false,
           "manifest_uses_git": true,
           "manifest_source_ok": true,
-          "lock_version": "0.2.0",
+          "lock_version": "0.2.2",
           "lock_version_ok": true,
-          "lock_source": "git+https://github.com/AxiomOrient/episodic.git?rev=53dfe97bc7df8e32dbee5f7b2be862a6da9171c5#53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+          "lock_source": "git+https://github.com/AxiomOrient/episodic.git?rev=19d40691bdba3493150d6afdbc728df97550a21a#19d40691bdba3493150d6afdbc728df97550a21a",
           "lock_source_ok": true,
-          "lock_revision": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+          "lock_revision": "19d40691bdba3493150d6afdbc728df97550a21a",
           "lock_revision_ok": true
         }
       }
@@ -89,7 +89,7 @@
               "required_lock_source_prefix": "git+https://github.com/AxiomOrient/episodic.git",
               "allowed_manifest_operators": ["exact_rev"],
               "required_git_url": "https://github.com/AxiomOrient/episodic.git",
-              "required_git_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5"
+              "required_git_rev": "19d40691bdba3493150d6afdbc728df97550a21a"
             },
             "contract_probe": {
               "test_name": "client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms",
@@ -108,20 +108,20 @@
             "episodic_semver_probe": {
               "passed": true,
               "error": null,
-              "manifest_req": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+              "manifest_req": "19d40691bdba3493150d6afdbc728df97550a21a",
               "manifest_req_ok": true,
               "manifest_git": "https://github.com/AxiomOrient/episodic.git",
               "manifest_git_ok": true,
-              "manifest_rev": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+              "manifest_rev": "19d40691bdba3493150d6afdbc728df97550a21a",
               "manifest_rev_ok": true,
               "manifest_uses_path": false,
               "manifest_uses_git": true,
               "manifest_source_ok": true,
-              "lock_version": "0.2.0",
+              "lock_version": "0.2.2",
               "lock_version_ok": true,
-              "lock_source": "git+https://github.com/AxiomOrient/episodic.git?rev=53dfe97bc7df8e32dbee5f7b2be862a6da9171c5#53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+              "lock_source": "git+https://github.com/AxiomOrient/episodic.git?rev=19d40691bdba3493150d6afdbc728df97550a21a#19d40691bdba3493150d6afdbc728df97550a21a",
               "lock_source_ok": true,
-              "lock_revision": "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5",
+              "lock_revision": "19d40691bdba3493150d6afdbc728df97550a21a",
               "lock_revision_ok": true
             }
           }

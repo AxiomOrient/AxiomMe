@@ -184,12 +184,12 @@ fn release_gate_pack_orchestrates_decisions_with_mocked_workspace_commands() {
             .join("crates")
             .join("axiomme-core")
             .join("Cargo.toml"),
-        "[package]\nname = \"axiomme-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nepisodic = { version = \"0.2.1\", git = \"https://github.com/AxiomOrient/episodic.git\", rev = \"53dfe97bc7df8e32dbee5f7b2be862a6da9171c5\" }\n",
+        "[package]\nname = \"axiomme-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nepisodic = { version = \"0.2.2\", git = \"https://github.com/AxiomOrient/episodic.git\", rev = \"19d40691bdba3493150d6afdbc728df97550a21a\" }\n",
     )
     .expect("write core Cargo.toml");
     fs::write(
         workspace.join("Cargo.lock"),
-        "[[package]]\nname = \"episodic\"\nversion = \"0.2.1\"\nsource = \"git+https://github.com/AxiomOrient/episodic.git#53dfe97bc7df8e32dbee5f7b2be862a6da9171c5\"\n",
+        "[[package]]\nname = \"episodic\"\nversion = \"0.2.2\"\nsource = \"git+https://github.com/AxiomOrient/episodic.git#19d40691bdba3493150d6afdbc728df97550a21a\"\n",
     )
     .expect("write lockfile");
     let options = crate::models::ReleaseGatePackOptions {

@@ -64,6 +64,15 @@ pub(super) fn annotate_om_query_plan_visibility(
                     metrics.om_hint_high_priority_selected_count
                 ),
             );
+            if !metrics.om_snapshot_reserved_high_entry_ids.is_empty() {
+                append_query_plan_note(
+                    result,
+                    &format!(
+                        "om_snapshot_reserved_high_entries:{}",
+                        metrics.om_snapshot_reserved_high_entry_ids.join(",")
+                    ),
+                );
+            }
             append_query_plan_note(
                 result,
                 &format!(
@@ -184,6 +193,8 @@ pub(super) fn search_request_details(input: SearchRequestLogInput<'_>) -> serde_
         "om_snapshot_buffered_chunk_ids": metrics.om_snapshot_buffered_chunk_ids,
         "om_hint_compaction": if metrics.om_hint_compaction_priority_v2 { "priority_v2" } else { "none" },
         "om_hint_high_priority_selected_count": metrics.om_hint_high_priority_selected_count,
+        "om_snapshot_reserved_high_entry_ids": metrics.om_snapshot_reserved_high_entry_ids,
+        "om_hint_reserved_high_entry_ids": metrics.om_snapshot_reserved_high_entry_ids,
         "om_snapshot_visible_entry_ids": metrics.om_snapshot_visible_entry_ids,
         "om_hint_selected_entry_ids": metrics.om_snapshot_visible_entry_ids,
         "om_snapshot_visible_activated_entry_ids": metrics.om_snapshot_visible_activated_entry_ids,

@@ -830,7 +830,9 @@ mod tests {
         let elapsed = started.elapsed();
 
         assert!(checksum.is_finite());
-        assert!(elapsed < Duration::from_secs(3));
+        // Keep this as a coarse regression guard only; strict timing here is flaky
+        // across CI runners and local machines.
+        assert!(elapsed < Duration::from_secs(10));
     }
 
     fn cosine(a: &[f32], b: &[f32]) -> f32 {

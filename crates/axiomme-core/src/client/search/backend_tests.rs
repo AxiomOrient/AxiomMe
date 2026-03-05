@@ -1115,6 +1115,12 @@ fn search_query_plan_notes_include_snapshot_reader_and_buffered_chunk_count() {
             .any(|value| value == "om_hint_high_priority_selected:0")
     );
     assert!(
+        !notes
+            .iter()
+            .any(|value| value.starts_with("om_snapshot_reserved_high_entries:")),
+        "reserved-high entry ids must be omitted when reserve set is empty"
+    );
+    assert!(
         notes.iter().any(|value| {
             value.starts_with("om_snapshot_visible_entries:")
                 && value.match_indices("obs-chunk-snapshot-note").count() == 1

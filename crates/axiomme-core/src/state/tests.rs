@@ -415,7 +415,7 @@ fn om_v2_migration_apply_is_idempotent() {
     assert_eq!(entries_count, 1);
     assert_eq!(continuation_count, 1);
     assert_eq!(protocol_version, OM_PROTOCOL_VERSION);
-    assert_eq!(episodic_rev, "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5");
+    assert_eq!(episodic_rev, "19d40691bdba3493150d6afdbc728df97550a21a");
     drop(conn);
 
     let marker = store
