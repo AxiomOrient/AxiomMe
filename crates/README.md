@@ -2,6 +2,10 @@
 
 Minimal crate index for the runtime repository.
 
+## Entry Links
+- [Root README](../README.md)
+- [Docs Index](../docs/README.md)
+
 ## Modules
 
 - [`axiomme-core`](./axiomme-core/README.md): domain/runtime engine, persistence, retrieval.

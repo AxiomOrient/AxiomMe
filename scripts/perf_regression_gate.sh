@@ -3,7 +3,9 @@ set -euo pipefail
 
 ROOT_DIR=""
 ROOT_CREATED=false
-BIN="${AXIOMME_BIN:-$(pwd)/target/debug/axiomme-cli}"
+DEFAULT_BIN="$(pwd)/target/debug/axiomme-cli"
+BIN="${AXIOMME_BIN:-${DEFAULT_BIN}}"
+BIN_OVERRIDDEN=false
 OUTPUT_PATH=""
 QUERY_LIMIT=120
 SEARCH_LIMIT=10
@@ -44,6 +46,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --axiomme-bin)
       BIN="${2:-}"
+      BIN_OVERRIDDEN=true
       shift 2
       ;;
     --output)
@@ -103,12 +106,36 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+# Resolve override intent from environment as well.
+if [[ -n "${AXIOMME_BIN:-}" ]]; then
+  BIN_OVERRIDDEN=true
+fi
+
+resolve_bin_path() {
+  if [[ -x "$BIN" ]]; then
+    return 0
+  fi
+  if command -v "$BIN" >/dev/null 2>&1; then
+    BIN="$(command -v "$BIN")"
+    return 0
+  fi
+  return 1
+}
+
 # Default local binary path should reflect latest source changes.
-# If caller provides AXIOMME_BIN explicitly, respect it and only validate executability.
-if [[ -z "${AXIOMME_BIN:-}" ]]; then
+if [[ "$BIN_OVERRIDDEN" != "true" ]]; then
   cargo build -p axiomme-cli >/dev/null
-elif [[ ! -x "$BIN" ]]; then
-  cargo build -p axiomme-cli
+  BIN="${DEFAULT_BIN}"
+fi
+
+if ! resolve_bin_path; then
+  echo "axiomme CLI binary not found/executable: ${BIN}" >&2
+  if [[ "$BIN_OVERRIDDEN" == "true" ]]; then
+    echo "hint: fix --axiomme-bin or AXIOMME_BIN" >&2
+  else
+    echo "hint: build failed or binary path is invalid: ${DEFAULT_BIN}" >&2
+  fi
+  exit 1
 fi
 
 if [[ -z "$ROOT_DIR" ]]; then
@@ -186,8 +213,12 @@ run_json eval golden add --query "aurora session memory" --target axiom://resour
 run1_json="$(run_json benchmark run --query-limit "$QUERY_LIMIT" --search-limit "$SEARCH_LIMIT" --include-golden true --include-trace false --include-stress true)"
 run2_json="$(run_json benchmark run --query-limit "$QUERY_LIMIT" --search-limit "$SEARCH_LIMIT" --include-golden true --include-trace false --include-stress true)"
 
-run1_cases="$(echo "$run1_json" | jq '.executed_cases')"
-run2_cases="$(echo "$run2_json" | jq '.executed_cases')"
+run1_cases="$(echo "$run1_json" | jq -r '(.quality.executed_cases // .executed_cases // 0)')"
+run2_cases="$(echo "$run2_json" | jq -r '(.quality.executed_cases // .executed_cases // 0)')"
+if ! [[ "$run1_cases" =~ ^[0-9]+$ && "$run2_cases" =~ ^[0-9]+$ ]]; then
+  echo "invalid benchmark case count in run output: run1=${run1_cases}, run2=${run2_cases}" >&2
+  exit 1
+fi
 if [[ "$run1_cases" -lt "$MIN_CASES" || "$run2_cases" -lt "$MIN_CASES" ]]; then
   echo "insufficient benchmark case count: run1=${run1_cases}, run2=${run2_cases}, required=${MIN_CASES}" >&2
   exit 1
@@ -215,24 +246,20 @@ summary_json="$(jq -n \
   --argjson run1 "$run1_json" \
   --argjson run2 "$run2_json" \
   --argjson gate "$gate_json" \
-  '{
+  '
+    def run_summary($run):
+      {
+        run_id: $run.run_id,
+        executed_cases: ($run.quality.executed_cases // $run.executed_cases // 0),
+        top1_accuracy: ($run.quality.top1_accuracy // $run.top1_accuracy // 0),
+        p95_latency_ms: ($run.latency.search.p95_ms // $run.p95_latency_ms // 0),
+        p95_latency_us: ($run.latency.search.p95_us // $run.p95_latency_us // null),
+        report_uri: ($run.artifacts.report_uri // $run.report_uri // null)
+      };
+    {
     root_dir: $root_dir,
-    run_1: {
-      run_id: $run1.run_id,
-      executed_cases: $run1.executed_cases,
-      top1_accuracy: $run1.top1_accuracy,
-      p95_latency_ms: $run1.p95_latency_ms,
-      p95_latency_us: ($run1.p95_latency_us // null),
-      report_uri: $run1.report_uri
-    },
-    run_2: {
-      run_id: $run2.run_id,
-      executed_cases: $run2.executed_cases,
-      top1_accuracy: $run2.top1_accuracy,
-      p95_latency_ms: $run2.p95_latency_ms,
-      p95_latency_us: ($run2.p95_latency_us // null),
-      report_uri: $run2.report_uri
-    },
+    run_1: run_summary($run1),
+    run_2: run_summary($run2),
     gate: $gate
   }')"
 

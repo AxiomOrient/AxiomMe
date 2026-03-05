@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT_DIR=""
 ROOT_CREATED=false
 WORKSPACE_DIR="$(pwd)"
-BIN="${AXIOMME_BIN:-$(pwd)/target/debug/axiomme-cli}"
+DEFAULT_BIN="$(pwd)/target/debug/axiomme-cli"
+BIN="${AXIOMME_BIN:-${DEFAULT_BIN}}"
+BIN_OVERRIDDEN=false
 OUTPUT_PATH=""
 
 REPLAY_LIMIT=20
@@ -59,6 +61,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --axiomme-bin)
       BIN="${2:-}"
+      BIN_OVERRIDDEN=true
       shift 2
       ;;
     --output)
@@ -139,10 +142,34 @@ if [[ ! -d "$WORKSPACE_DIR" ]]; then
   exit 1
 fi
 
-if [[ -z "${AXIOMME_BIN:-}" ]]; then
+if [[ -n "${AXIOMME_BIN:-}" ]]; then
+  BIN_OVERRIDDEN=true
+fi
+
+resolve_bin_path() {
+  if [[ -x "$BIN" ]]; then
+    return 0
+  fi
+  if command -v "$BIN" >/dev/null 2>&1; then
+    BIN="$(command -v "$BIN")"
+    return 0
+  fi
+  return 1
+}
+
+if [[ "$BIN_OVERRIDDEN" != "true" ]]; then
   cargo build -p axiomme-cli >/dev/null
-elif [[ ! -x "$BIN" ]]; then
-  cargo build -p axiomme-cli >/dev/null
+  BIN="${DEFAULT_BIN}"
+fi
+
+if ! resolve_bin_path; then
+  echo "axiomme CLI binary not found/executable: ${BIN}" >&2
+  if [[ "$BIN_OVERRIDDEN" == "true" ]]; then
+    echo "hint: fix --axiomme-bin or AXIOMME_BIN" >&2
+  else
+    echo "hint: build failed or binary path is invalid: ${DEFAULT_BIN}" >&2
+  fi
+  exit 1
 fi
 
 if [[ -z "$ROOT_DIR" ]]; then

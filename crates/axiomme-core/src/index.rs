@@ -75,6 +75,15 @@ pub struct InMemoryIndex {
     total_doc_length: usize,
 }
 
+#[derive(Debug)]
+struct IndexDocumentPayload {
+    exact_keys: ExactRecordKeys,
+    text_lower: String,
+    term_freq: HashMap<String, u32>,
+    doc_len: usize,
+    vector: Vec<f32>,
+}
+
 impl InMemoryIndex {
     #[must_use]
     pub fn new() -> Self {
@@ -128,28 +137,18 @@ impl InMemoryIndex {
             depth: record.depth,
         };
         let parent_uri = record.parent_uri.clone();
-        let exact_keys = ExactRecordKeys::from_record(&record);
-        let text = build_upsert_text(&record);
-        let text_lower = text.to_lowercase();
-        let mut term_freq = HashMap::new();
-        apply_weighted_token_features(&mut term_freq, tokenize_features(&text), 1, 1);
-        apply_weighted_token_features(&mut term_freq, tokenize_features(&record.name), 2, 3);
-        apply_weighted_token_features(&mut term_freq, tokenize_features(&record.uri), 2, 4);
-        for tag in &record.tags {
-            apply_weighted_token_features(&mut term_freq, tokenize_features(tag), 2, 2);
-        }
-        for token in term_freq.keys() {
+        let payload = build_index_document_payload(&record);
+        for token in payload.term_freq.keys() {
             *self.doc_freqs.entry(token.clone()).or_insert(0) += 1;
         }
-        let doc_len = term_freq.values().map(|x| *x as usize).sum::<usize>();
-        self.total_doc_length += doc_len;
-        self.doc_lengths.insert(key.clone(), doc_len);
-        self.token_sets
-            .insert(key.clone(), term_freq.keys().cloned().collect());
-        self.term_freqs.insert(key.clone(), term_freq);
-        self.raw_text_lower.insert(key.clone(), text_lower);
-        self.exact_keys.insert(key.clone(), exact_keys);
-        self.vectors.insert(key.clone(), embed_text(&text));
+        self.total_doc_length += payload.doc_len;
+        self.doc_lengths.insert(key.clone(), payload.doc_len);
+        let token_set = payload.term_freq.keys().cloned().collect::<HashSet<_>>();
+        self.token_sets.insert(key.clone(), token_set);
+        self.term_freqs.insert(key.clone(), payload.term_freq);
+        self.raw_text_lower.insert(key.clone(), payload.text_lower);
+        self.exact_keys.insert(key.clone(), payload.exact_keys);
+        self.vectors.insert(key.clone(), payload.vector);
         self.records.insert(key.clone(), record);
         self.upsert_child_index_entry(parent_uri.as_deref(), key, child_entry);
     }
@@ -294,6 +293,28 @@ fn apply_weighted_token_features(
     }
     for token in features.symbolic {
         *term_freq.entry(token).or_insert(0) += symbolic_weight;
+    }
+}
+
+fn build_index_document_payload(record: &IndexRecord) -> IndexDocumentPayload {
+    let exact_keys = ExactRecordKeys::from_record(record);
+    let text = build_upsert_text(record);
+    let text_lower = text.to_lowercase();
+    let vector = embed_text(&text);
+    let mut term_freq = HashMap::new();
+    apply_weighted_token_features(&mut term_freq, tokenize_features(&text), 1, 1);
+    apply_weighted_token_features(&mut term_freq, tokenize_features(&record.name), 2, 3);
+    apply_weighted_token_features(&mut term_freq, tokenize_features(&record.uri), 2, 4);
+    for tag in &record.tags {
+        apply_weighted_token_features(&mut term_freq, tokenize_features(tag), 2, 2);
+    }
+    let doc_len = term_freq.values().map(|x| *x as usize).sum::<usize>();
+    IndexDocumentPayload {
+        exact_keys,
+        text_lower,
+        term_freq,
+        doc_len,
+        vector,
     }
 }
 

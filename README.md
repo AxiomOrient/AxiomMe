@@ -2,13 +2,14 @@
 
 **Production-grade Context Management System for Agentic Runtimes**
 
-AxiomMe는 에이전트 환경을 위한 Rust 기반의 로컬 컨텍스트 관리 시스템입니다. `axiom://` 가상 파일 시스템을 통해 데이터의 일관성을 보장하며, 고성능 검색 엔진과 정밀한 세션 메모리 관리 기능을 제공합니다.
+AxiomMe는 에이전트 환경을 위한 Rust 기반 로컬 컨텍스트 런타임입니다.
+`axiom://` URI를 기준으로 파일, 상태, 검색, 세션 메모리를 일관된 계약으로 다룹니다.
 
-## Key Features
-- **Local-first Architecture**: 모든 데이터는 로컬 디스크(`fs`), SQLite(`state`), 그리고 인메모리 인덱스(`index`)에서 관리됩니다.
-- **High Performance Retrieval**: John Carmack의 성능 철학을 반영한 최적화된 DRR(Document Retrieval and Ranking) 엔진을 탑재하여 수만 개의 문서에서도 밀리초 단위의 검색을 보장합니다.
-- **Atomic Memory Promotion**: 세션의 대화 내용을 분석하여 유의미한 기억으로 승격시키는 과정을 체크포인트 기반의 원자적 작업으로 수행합니다.
-- **Rigorous Quality Gates**: 600개 이상의 테스트와 다층 품질 게이트를 통해 상용 수준의 안정성을 유지합니다.
+## Overview
+- Local-first: `fs + sqlite + in-memory index`
+- Deterministic retrieval: `find/search` + trace metadata
+- Session/OM memory flow: checkpointed promotion and replay-safe updates
+- Release safety: contract/reliability/security gates
 
 ## Quick Start
 ```bash
@@ -25,7 +26,27 @@ axiomme search "oauth flow"
 axiomme session commit
 ```
 
-## Documentation
-- [Architecture](./docs/ARCHITECTURE.md): 시스템 설계 및 데이터 흐름 명세
-- [API Contract](./docs/API_CONTRACT.md): 인터페이스 규약 및 데이터 모델
-- [Ontology Policy](./docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md): 데이터 스키마 진화 정책
+## Repository Structure
+- [crates/README.md](./crates/README.md): crate index
+- [docs/README.md](./docs/README.md): canonical docs index
+
+## Core Modules
+- [crates/axiomme-core](./crates/axiomme-core/README.md): runtime/data engine
+- [crates/axiomme-cli](./crates/axiomme-cli/README.md): CLI surface
+- [crates/axiomme-mobile-ffi](./crates/axiomme-mobile-ffi/README.md): mobile FFI boundary
+
+## Guides
+- [Architecture](./docs/ARCHITECTURE.md)
+- [API Contract](./docs/API_CONTRACT.md)
+- [Ontology Evolution Policy](./docs/ONTOLOGY_SCHEMA_EVOLUTION_POLICY.md)
+
+## Operations/Quality
+```bash
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo audit -q
+```
+
+## Constraints
+- canonical URI protocol: `axiom://`
+- runtime code and pure OM contract boundary must remain explicit (`axiomme-core` vs `episodic`)
