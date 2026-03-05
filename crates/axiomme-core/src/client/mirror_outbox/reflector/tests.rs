@@ -464,6 +464,33 @@ fn parse_llm_reflector_response_rejects_xml_protocol_version_mismatch_marker() {
 }
 
 #[test]
+fn parse_llm_reflector_response_rejects_structured_contract_payload_with_unsupported_schema() {
+    let payload = serde_json::json!({
+        "message": {
+            "content": "```json\n{\"header\":{\"contract_name\":\"axiomme.om.prompt\",\"contract_version\":\"2.0.0\",\"protocol_version\":\"om-v2\"},\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n```\nfallback summary text"
+        }
+    });
+    let err =
+        parse_llm_reflector_response(&payload, "line-1\nline-2", DEFAULT_OM_REFLECTOR_MAX_CHARS)
+            .expect_err("must reject structured contract payload with unsupported schema");
+    match err {
+        AxiomError::OmInference {
+            inference_source,
+            kind,
+            message,
+        } => {
+            assert_eq!(inference_source, OmInferenceSource::Reflector);
+            assert_eq!(kind, OmInferenceFailureKind::Schema);
+            assert!(
+                message.contains("unsupported schema"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
 fn parse_llm_reflector_response_returns_schema_taxonomy_for_invalid_payload() {
     let payload = serde_json::json!({"unexpected": "shape"});
     let err = parse_llm_reflector_response(
@@ -480,6 +507,46 @@ fn parse_llm_reflector_response_returns_schema_taxonomy_for_invalid_payload() {
         } => {
             assert_eq!(inference_source, OmInferenceSource::Reflector);
             assert_eq!(kind, OmInferenceFailureKind::Schema);
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_observe_session_id_accepts_matching_payload_and_uri() {
+    let session_id = parse_observe_session_id(
+        Some("session-release-check"),
+        "axiom://session/session-release-check/messages",
+    )
+    .expect("matching session_id");
+    assert_eq!(session_id, "session-release-check");
+}
+
+#[test]
+fn parse_observe_session_id_rejects_payload_uri_mismatch() {
+    let err = parse_observe_session_id(Some("session-a"), "axiom://session/session-b/messages")
+        .expect_err("must reject payload/uri mismatch");
+    match err {
+        AxiomError::Validation(message) => {
+            assert!(
+                message.contains("session_id mismatch"),
+                "unexpected message: {message}"
+            );
+        }
+        other => panic!("unexpected error type: {other}"),
+    }
+}
+
+#[test]
+fn parse_observe_session_id_rejects_non_session_uri_with_payload() {
+    let err = parse_observe_session_id(Some("session-a"), "axiom://resources/demo")
+        .expect_err("must reject non-session uri");
+    match err {
+        AxiomError::Validation(message) => {
+            assert!(
+                message.contains("uri must use session scope"),
+                "unexpected message: {message}"
+            );
         }
         other => panic!("unexpected error type: {other}"),
     }

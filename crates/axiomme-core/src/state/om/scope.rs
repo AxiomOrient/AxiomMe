@@ -311,17 +311,23 @@ impl SqliteStateStore {
         let preferred_thread_id = preferred_thread_id
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .map(ToString::to_string);
+            .map(|value| {
+                value
+                    .strip_prefix("thread:")
+                    .or_else(|| value.strip_prefix("session:"))
+                    .unwrap_or(value)
+                    .trim()
+                    .to_string()
+            })
+            .filter(|value| !value.is_empty());
         let states = self.list_om_continuation_states(scope_key)?;
         if states.is_empty() {
             return Ok(None);
         }
-        if let Some(preferred_thread_id) = preferred_thread_id
-            && let Some(state) = states
-                .iter()
-                .find(|state| state.canonical_thread_id == preferred_thread_id)
-        {
-            return Ok(Some(state.clone()));
+        if let Some(preferred_thread_id) = preferred_thread_id {
+            return Ok(states
+                .into_iter()
+                .find(|state| state.canonical_thread_id == preferred_thread_id));
         }
         Ok(states.into_iter().next())
     }

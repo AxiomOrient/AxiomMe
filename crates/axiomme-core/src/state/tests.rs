@@ -849,6 +849,13 @@ fn om_continuation_states_upsert_and_resolve_preferred_thread() {
         preferred.suggested_response.as_deref(),
         Some("Reply with token scope check")
     );
+    let missing_preferred = store
+        .resolve_om_continuation_state("resource:r-continuation", Some("t-missing"))
+        .expect("resolve missing preferred");
+    assert!(
+        missing_preferred.is_none(),
+        "missing preferred thread must not fall back to a different thread"
+    );
 
     let default_selected = store
         .resolve_om_continuation_state("resource:r-continuation", None)

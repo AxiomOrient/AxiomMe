@@ -180,24 +180,15 @@ fn load_bootstrapped_ontology_schema(
 fn verify_prompt_contract_version_bump_policy(
     workspace_dir: &Path,
 ) -> std::result::Result<(), String> {
-    let (rev_ok, _rev_output) =
-        run_workspace_command(workspace_dir, "git", &["rev-parse", "--verify", "HEAD~1"]);
-    if !rev_ok {
-        // Shallow/squash histories may not expose HEAD~1; keep the gate portable
-        // by validating current policy shape instead of hard-failing.
-        return parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD").map(|_| ());
-    }
-    let previous = match parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD~1") {
-        Ok(value) => value,
-        Err(_reason) => {
-            // Older base revisions may predate the prompt-signature policy map.
-            // Keep the gate portable by validating current policy shape instead
-            // of hard-failing on legacy ancestry.
-            return parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD").map(|_| ());
-        }
-    };
     let current = parse_prompt_signature_policy_for_revision(workspace_dir, "HEAD")
         .map_err(|reason| format!("current_prompt_signature_policy_load_failed: {reason}"))?;
+    let baseline_revision = resolve_prompt_signature_baseline_revision(workspace_dir)?;
+    let previous = parse_prompt_signature_policy_for_revision(workspace_dir, baseline_revision.as_str())
+        .map_err(|reason| {
+            format!(
+                "baseline_prompt_signature_policy_load_failed revision={baseline_revision} reason={reason}"
+            )
+        })?;
 
     if prompt_contract_signature_changed_without_version_bump(&previous, &current) {
         return Err(
@@ -206,6 +197,41 @@ fn verify_prompt_contract_version_bump_policy(
         );
     }
     Ok(())
+}
+
+fn resolve_prompt_signature_baseline_revision(
+    workspace_dir: &Path,
+) -> std::result::Result<String, String> {
+    if let Ok(explicit_base_revision) = std::env::var("AXIOMME_PROMPT_SIGNATURE_BASE_REV") {
+        let revision = explicit_base_revision.trim();
+        if revision.is_empty() {
+            return Err("prompt_signature_base_revision_env_empty".to_string());
+        }
+        return Ok(revision.to_string());
+    }
+
+    if workspace_dir.join(".git").exists() {
+        let (merge_ok, merge_output) =
+            run_workspace_command(workspace_dir, "git", &["merge-base", "HEAD", "origin/main"]);
+        if merge_ok {
+            let revision = merge_output
+                .lines()
+                .map(str::trim)
+                .find(|value| !value.is_empty())
+                .ok_or_else(|| "prompt_signature_base_revision_merge_base_empty".to_string())?;
+            return Ok(revision.to_string());
+        }
+    }
+
+    let (rev_ok, rev_output) =
+        run_workspace_command(workspace_dir, "git", &["rev-parse", "--verify", "HEAD~1"]);
+    if rev_ok {
+        return Ok("HEAD~1".to_string());
+    }
+    Err(format!(
+        "prompt_signature_base_revision_unavailable: {}",
+        rev_output.trim()
+    ))
 }
 
 fn parse_prompt_signature_policy_for_revision(

@@ -812,6 +812,97 @@ fn contract_integrity_gate_fails_when_prompt_contract_signature_changes_without_
 }
 
 #[test]
+fn contract_integrity_gate_uses_merge_base_revision_when_available() {
+    let temp = tempdir().expect("tempdir");
+    let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
+    let manifest_dep = format!(
+        "episodic = {{ version = \"0.2.0\", git = \"{EPISODIC_REQUIRED_GIT_URL}\", rev = \"{EPISODIC_REQUIRED_GIT_REV}\" }}"
+    );
+    write_contract_gate_workspace_fixture(temp.path(), &manifest_dep, Some(lock_source.as_str()));
+    fs::create_dir_all(temp.path().join(".git")).expect("mkdir .git");
+
+    let decision = with_workspace_command_mocks(
+        &[
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    CONTRACT_EXECUTION_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::contract_execution_probe_validates_core_algorithms ... ok\n",
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    EPISODIC_API_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest client::tests::relation_trace_logs::episodic_api_probe_validates_om_contract ... ok\n",
+            ),
+            (
+                "git",
+                &["merge-base", "HEAD", "origin/main"],
+                true,
+                "base123\n",
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "base123:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_OLD,
+            ),
+            (
+                "git",
+                &[
+                    "show",
+                    "HEAD:crates/axiomme-core/src/client/tests/relation_trace_logs.rs",
+                ],
+                true,
+                PROMPT_SIGNATURE_POLICY_HEAD_CHANGED_WITHOUT_BUMP,
+            ),
+            (
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "axiomme-core",
+                    ONTOLOGY_CONTRACT_PROBE_TEST_NAME,
+                    "--",
+                    "--exact",
+                ],
+                true,
+                "running 1 test\ntest ontology::validate::tests::ontology_contract_probe_default_schema_is_compilable ... ok\n",
+            ),
+        ],
+        || evaluate_contract_integrity_gate(temp.path()),
+    );
+    assert!(!decision.passed);
+    let details = parse_gate_details(&decision);
+    match details {
+        ReleaseGateDetails::ContractIntegrity(value) => {
+            assert!(!value.episodic_api_probe.passed);
+            assert!(value.episodic_api_probe.output_excerpt.contains(
+                "prompt_contract_signature_changed_without_contract_or_protocol_version_bump"
+            ));
+        }
+        other => panic!("expected contract_integrity details, got {other:?}"),
+    }
+}
+
+#[test]
 fn contract_integrity_gate_allows_prompt_contract_signature_change_with_version_bump() {
     let temp = tempdir().expect("tempdir");
     let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
@@ -892,7 +983,7 @@ fn contract_integrity_gate_allows_prompt_contract_signature_change_with_version_
 }
 
 #[test]
-fn contract_integrity_gate_allows_prompt_signature_policy_when_head_parent_is_unavailable() {
+fn contract_integrity_gate_fails_when_prompt_signature_baseline_is_unavailable() {
     let temp = tempdir().expect("tempdir");
     let lock_source = format!("{EPISODIC_LOCK_SOURCE_PREFIX}#{EPISODIC_REQUIRED_GIT_REV}");
     let manifest_dep = format!(
@@ -959,5 +1050,20 @@ fn contract_integrity_gate_allows_prompt_signature_policy_when_head_parent_is_un
         ],
         || evaluate_contract_integrity_gate(temp.path()),
     );
-    assert!(decision.passed, "{:?}", decision.details);
+    assert!(!decision.passed);
+    let details = parse_gate_details(&decision);
+    match details {
+        ReleaseGateDetails::ContractIntegrity(value) => {
+            assert!(!value.episodic_api_probe.passed);
+            assert!(
+                value
+                    .episodic_api_probe
+                    .output_excerpt
+                    .contains("prompt_signature_base_revision_unavailable"),
+                "unexpected output excerpt: {}",
+                value.episodic_api_probe.output_excerpt
+            );
+        }
+        other => panic!("expected contract_integrity details, got {other:?}"),
+    }
 }

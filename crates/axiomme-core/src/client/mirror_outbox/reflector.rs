@@ -487,15 +487,26 @@ fn parse_llm_reflector_response(
         require_reflector_contract_marker_in_content(&content)?;
         return Ok(parsed);
     }
+    let mut saw_structured_contract_payload = false;
     if let Some(json_fragment) = extract_json_fragment(&content)
         && let Ok(parsed_json) = serde_json::from_str::<Value>(&json_fragment)
+        && reflector_response_object(&parsed_json)
+            .and_then(|object| object.get("header").and_then(Value::as_object))
+            .is_some()
     {
+        saw_structured_contract_payload = true;
         validate_reflector_contract_header_for_value(&parsed_json)?;
         if let Some(parsed) =
             parse_reflector_response_value(&parsed_json, active_observations, max_chars)
         {
             return Ok(parsed);
         }
+    }
+    if saw_structured_contract_payload {
+        return Err(om_reflector_error(
+            OmInferenceFailureKind::Schema,
+            "reflector structured contract payload has unsupported schema".to_string(),
+        ));
     }
     if let Some(parsed) =
         parse_reflector_response_text_content(&content, active_observations, max_chars)
@@ -969,13 +980,22 @@ pub(super) fn parse_observe_session_id(
     session_id_payload: Option<&str>,
     uri: &str,
 ) -> Result<String> {
+    let session_id_from_uri = parse_session_id_from_uri(uri)?;
     if let Some(session_id) = session_id_payload
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
+        if session_id != session_id_from_uri {
+            return Err(AxiomError::Validation(format!(
+                "om_observe_buffer_requested session_id mismatch: payload={session_id} uri={session_id_from_uri}"
+            )));
+        }
         return Ok(session_id.to_string());
     }
+    Ok(session_id_from_uri)
+}
 
+fn parse_session_id_from_uri(uri: &str) -> Result<String> {
     let parsed_uri = AxiomUri::parse(uri)?;
     if parsed_uri.scope() != Scope::Session {
         return Err(AxiomError::Validation(format!(
