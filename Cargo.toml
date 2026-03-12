@@ -1,0 +1,33 @@
+[workspace]
+members = [
+    "crates/axiomsync",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+version = "1.0.1"
+license = "Apache-2.0"
+authors = ["axient"]
+repository = "https://github.com/AxiomOrient/AxiomSync"
+homepage = "https://github.com/AxiomOrient/AxiomSync"
+
+[workspace.dependencies]
+anyhow = "1.0.98"
+thiserror = "2.0.12"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.142"
+uuid = { version = "1.18.0", features = ["v4", "serde"] }
+chrono = { version = "0.4.41", features = ["serde"] }
+walkdir = "2.5.0"
+globset = "0.4.16"
+blake3 = { version = "1.8.2", features = ["no_neon"] }
+zip = "4.3.0"
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+reqwest = { version = "0.12.23", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+tempfile = "3.21.0"
+clap = { version = "4.5.41", features = ["derive"] }
+pulldown-cmark = "0.13.0"
+serde_norway = "0.9.42"
+toml = "0.8.23"
+semver = "1.0.27"

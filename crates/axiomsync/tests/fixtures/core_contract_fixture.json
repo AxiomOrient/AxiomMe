@@ -1,0 +1,27 @@
+{
+  "queue_status": {
+    "semantic": {
+      "new_total": 2,
+      "new_due": 1,
+      "processing": 0,
+      "processed": 10,
+      "error_count": 0,
+      "errors": []
+    },
+    "embedding": {
+      "new_total": 1,
+      "new_due": 0,
+      "processing": 1,
+      "processed": 4,
+      "error_count": 1,
+      "errors": []
+    }
+  },
+  "error_payload_invalid_uri": {
+    "code": "INVALID_URI",
+    "message": "invalid URI: axiom://invalid",
+    "operation": "read",
+    "trace_id": "00000000-0000-0000-0000-000000000000",
+    "uri": "axiom://invalid"
+  }
+}

@@ -1,0 +1,8 @@
+version: "0.5"
+
+processes:
+  queue_daemon:
+    command: >-
+      sh -lc 'mkdir -p logs && cargo run -p axiomsync -- --root .axiomsync queue daemon --max-cycles 1000000 --sleep-ms 1000 --stop-when-idle=false --idle-cycles 3 >> logs/queue_daemon.log 2>&1'
+    availability:
+      restart: on_failure

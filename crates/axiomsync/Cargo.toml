@@ -1,0 +1,42 @@
+[package]
+name = "axiomsync"
+version = "1.0.1"
+authors = { workspace = true }
+edition = { workspace = true }
+description = "Local retrieval runtime and CLI for AxiomSync."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+readme = "README.md"
+exclude = [
+    "tests/fixtures/*",
+    "../../logs/*",
+    "../../target/*",
+]
+
+[features]
+default = ["host-tools", "markdown-preview"]
+host-tools = []
+markdown-preview = ["dep:pulldown-cmark"]
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+walkdir = { workspace = true }
+globset = { workspace = true }
+blake3 = { workspace = true }
+zip = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+serde_norway = { workspace = true }
+pulldown-cmark = { workspace = true, optional = true }
+toml = { workspace = true }
+semver = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
