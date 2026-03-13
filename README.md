@@ -5,7 +5,7 @@ Local-first context runtime and operator CLI for agentic systems.
 AxiomSync는 `axiom://` URI, 단일 SQLite 상태 저장소, 메모리 검색 인덱스, 세션/OM 메모리 흐름을 하나의 로컬 런타임 계약으로 묶습니다. 이 저장소는 런타임과 CLI만 소유합니다.
 
 ## Release Line
-- Current repository release line: `v1.0.1`
+- Current repository release line: `v1.1.0`
 - Canonical local store: `<root>/context.db`
 - Retrieval policy: `memory_only`
 - Persistence policy: SQLite only
