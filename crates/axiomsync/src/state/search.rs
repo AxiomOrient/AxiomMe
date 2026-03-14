@@ -8,6 +8,35 @@ use crate::models::IndexRecord;
 use super::SqliteStateStore;
 
 impl SqliteStateStore {
+    pub fn search_documents_fts(&self, query: &str, limit: usize) -> Result<Vec<String>> {
+        let query = query.trim();
+        if query.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                r"
+                SELECT d.uri
+                FROM search_docs_fts
+                JOIN search_docs d ON d.id = search_docs_fts.rowid
+                WHERE search_docs_fts MATCH ?1
+                ORDER BY bm25(search_docs_fts) ASC, d.uri ASC
+                LIMIT ?2
+                ",
+            )?;
+            let rows = stmt.query_map(params![query, usize_to_i64_saturating(limit)], |row| {
+                row.get::<_, String>(0)
+            })?;
+
+            let mut uris = Vec::new();
+            for row in rows {
+                uris.push(row?);
+            }
+            Ok(uris)
+        })
+    }
+
     pub fn list_search_documents(&self) -> Result<Vec<IndexRecord>> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(

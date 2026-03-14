@@ -1,31 +1,34 @@
 # Docs
 
-현재 유지하는 문서는 이 다섯 개면 충분합니다. 나머지는 crate README와 코드가 증거 원본입니다.
+읽을 문서는 아래면 충분합니다.
 
 ## Start Here
-- [README.md](../README.md): 저장소가 무엇을 소유하는지, 어떻게 실행하는지, 어떤 gate로 릴리즈하는지
-- [ARCHITECTURE.md](./ARCHITECTURE.md): 런타임 레이어, 데이터 흐름, 외부 프로젝트 경계
-- [API_CONTRACT.md](./API_CONTRACT.md): URI, 저장소, 검색, 세션, 릴리즈 계약
-- [BUILD_ARTIFACT_CONTROL.md](./BUILD_ARTIFACT_CONTROL.md): Rust `target/` 폭증 원인과 artifact 절감 운영 방법
-- [../crates/README.md](../crates/README.md): runtime package map
+- [README.md](../README.md): 저장소 요약
+- [API_CONTRACT.md](./API_CONTRACT.md): 안정 계약
+- [ARCHITECTURE.md](./ARCHITECTURE.md): 구조와 경계
+- [RETRIEVAL_STACK.md](./RETRIEVAL_STACK.md): 검색 경로
+- [OWNERSHIP_MAP.md](./OWNERSHIP_MAP.md): 변경 시작점
+- [BUILD_ARTIFACT_CONTROL.md](./BUILD_ARTIFACT_CONTROL.md): 빌드 산출물 운영
+- [../plans/README.md](../plans/README.md): 계획과 실행 순서
 
 ## Read By Need
 - Operator:
-  Root README, `crates/axiomsync/README.md`
+  `README.md`
 - Runtime developer:
-  `ARCHITECTURE.md`, `API_CONTRACT.md`, `crates/axiomsync/README.md`
+  `API_CONTRACT.md`, `ARCHITECTURE.md`, `RETRIEVAL_STACK.md`, `OWNERSHIP_MAP.md`
 - Release owner:
-  Root README, `API_CONTRACT.md`, `scripts/quality_gates.sh`, `scripts/release_pack_strict_gate.sh`
+  `README.md`, `API_CONTRACT.md`, `scripts/quality_gates.sh`, `scripts/release_pack_strict_gate.sh`
 - Rust workspace operator:
   `BUILD_ARTIFACT_CONTROL.md`, `scripts/quality_gates.sh`, `Cargo.toml`
 
 ## Repository Boundary
 - This repository owns the runtime library and CLI only.
 - Web and mobile companion projects are external.
-- Long-lived plan logs and historical rollout notes do not belong in `docs/`.
+- 계획과 실행 기록은 [`plans/`](../plans/README.md)에 둔다.
 
 ## Documentation Rules
-- Stable runtime behavior is described in `API_CONTRACT.md`.
-- Structural explanation belongs in `ARCHITECTURE.md`.
-- Package-local detail belongs in each crate README.
-- If a claim cannot be backed by code or scripts in this repo, it should not be promoted into a maintained doc.
+- 계약은 `API_CONTRACT.md`
+- 구조는 `ARCHITECTURE.md`
+- 검색은 `RETRIEVAL_STACK.md`
+- 소유 경계는 `OWNERSHIP_MAP.md`
+- 계획과 실험 rationale 은 `plans/`

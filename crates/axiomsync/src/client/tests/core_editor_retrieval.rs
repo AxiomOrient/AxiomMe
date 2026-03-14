@@ -29,6 +29,59 @@ fn end_to_end_add_and_find() {
 }
 
 #[test]
+fn fts5_prototype_matches_runtime_top_hit_for_exact_lexical_query() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let auth = temp.path().join("fts-auth.md");
+    let queue = temp.path().join("fts-queue.md");
+    fs::write(&auth, "OAuth lexical probe and authorization exchange.").expect("write auth");
+    fs::write(&queue, "Queue replay backlog review and retry window.").expect("write queue");
+
+    app.add_resource(
+        auth.to_str().expect("auth str"),
+        Some("axiom://resources/fts"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add auth");
+    app.add_resource(
+        queue.to_str().expect("queue str"),
+        Some("axiom://resources/fts"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add queue");
+
+    let fts_hits = app
+        .state
+        .search_documents_fts("authorization exchange", 5)
+        .expect("fts hits");
+    let runtime_hits = app
+        .find(
+            "authorization exchange",
+            Some("axiom://resources/fts"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("runtime find");
+
+    assert_eq!(
+        fts_hits.first().map(String::as_str),
+        runtime_hits
+            .query_results
+            .first()
+            .map(|hit| hit.uri.as_str())
+    );
+}
+
+#[test]
 fn mkdir_enforces_scope_policy_and_enqueues_reindex_event() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomSync::new(temp.path()).expect("app new");

@@ -54,6 +54,53 @@ fn benchmark_suite_generates_report_and_artifacts() {
 }
 
 #[test]
+fn benchmark_trace_latency_reuses_single_retrieval_measurement() {
+    let temp = tempdir().expect("tempdir");
+    let app = AxiomSync::new(temp.path()).expect("app new");
+    app.initialize().expect("init failed");
+
+    let src = temp.path().join("benchmark_reuse_input.txt");
+    fs::write(&src, "OAuth benchmark latency reuse coverage.").expect("write input");
+    app.add_resource(
+        src.to_str().expect("src str"),
+        Some("axiom://resources/bench-reuse"),
+        None,
+        None,
+        true,
+        None,
+    )
+    .expect("add failed");
+    let _ = app
+        .find(
+            "oauth latency reuse",
+            Some("axiom://resources/bench-reuse"),
+            Some(5),
+            None,
+            None,
+        )
+        .expect("find");
+
+    let report = app
+        .run_benchmark_suite(&BenchmarkRunOptions {
+            query_limit: 5,
+            search_limit: 5,
+            include_golden: false,
+            include_trace: true,
+            include_stress: false,
+            trace_expectations: true,
+            fixture_name: None,
+        })
+        .expect("benchmark");
+
+    assert_eq!(report.latency.find.p50_ms, report.latency.search.p50_ms);
+    assert_eq!(report.latency.find.p95_ms, report.latency.search.p95_ms);
+    assert_eq!(report.latency.find.p99_ms, report.latency.search.p99_ms);
+    assert_eq!(report.latency.find.p50_us, report.latency.search.p50_us);
+    assert_eq!(report.latency.find.p95_us, report.latency.search.p95_us);
+    assert_eq!(report.latency.find.p99_us, report.latency.search.p99_us);
+}
+
+#[test]
 fn benchmark_report_includes_protocol_metadata_and_acceptance_mapping() {
     let temp = tempdir().expect("tempdir");
     let app = AxiomSync::new(temp.path()).expect("app new");

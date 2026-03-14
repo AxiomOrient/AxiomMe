@@ -2,24 +2,17 @@
 
 Local-first context runtime and operator CLI for agentic systems.
 
-AxiomSync는 `axiom://` URI, 단일 SQLite 상태 저장소, 메모리 검색 인덱스, 세션/OM 메모리 흐름을 하나의 로컬 런타임 계약으로 묶습니다. 이 저장소는 런타임과 CLI만 소유합니다.
+AxiomSync는 `axiom://` URI, `context.db`, 메모리 검색 런타임, 세션/OM 상태를 하나로 묶는 로컬 런타임입니다. 이 저장소는 런타임과 CLI만 소유합니다.
 
 ## Release Line
-- Current repository release line: `v1.1.0`
+- Current repository release line: `v1.2.0`
 - Canonical local store: `<root>/context.db`
 - Retrieval policy: `memory_only`
 - Persistence policy: SQLite only
 
 ## Repository Boundary
-In this repository:
-- `crates/axiomsync`: runtime library and operator CLI binary
-- `docs/`: architecture and contract documentation
-- `scripts/`: quality and release gate entrypoints
-
-Outside this repository:
-- web companion project
-- mobile FFI companion project
-- app-specific frontend shells
+- In this repository: `crates/axiomsync`, `docs/`, `scripts/`
+- Outside this repository: web companion, mobile FFI companion, app-specific frontend shells
 
 ## Quick Start
 ```bash
@@ -33,17 +26,20 @@ cargo run -p axiomsync -- session commit
 
 ## Runtime Model
 - URI model: `axiom://{scope}/{path}`
-- State store: `context.db` stores queue, checkpoints, OM state, and persisted search state
-- Query path: runtime restores an in-memory index from persisted search state and executes `find/search`
-- Session/OM path: observer and reflector flows update explicit session memory state
-- Release path: contract, reliability, eval, security, benchmark, and operability gates are executable
+- State store: `context.db`
+- Retrieval runtime: `memory_only`
+- Persisted retrieval state: `search_docs` + `search_docs_fts`
+- Canonical result shape: `FindResult.query_results` + `hit_buckets`
+- Compatibility result shape: `memories/resources/skills`
+- Session/OM state: explicit and durable
 
 ## Documentation Map
 - [docs/README.md](./docs/README.md): documentation entrypoint
-- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): runtime layers and data flow
-- [docs/API_CONTRACT.md](./docs/API_CONTRACT.md): stable runtime and release contracts
-- [crates/README.md](./crates/README.md): package map
-- [crates/axiomsync/README.md](./crates/axiomsync/README.md): runtime and CLI package boundary
+- [docs/API_CONTRACT.md](./docs/API_CONTRACT.md): stable contract
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): runtime structure
+- [docs/RETRIEVAL_STACK.md](./docs/RETRIEVAL_STACK.md): retrieval path
+- [docs/OWNERSHIP_MAP.md](./docs/OWNERSHIP_MAP.md): change routing
+- [plans/README.md](./plans/README.md): roadmap, task tracker, and rollout rationale
 
 ## Quality And Release
 ```bash
@@ -55,5 +51,6 @@ bash scripts/release_pack_strict_gate.sh --workspace-dir "$(pwd)"
 - Canonical URI protocol stays `axiom://`
 - Runtime startup is a hard cutover to `context.db`
 - Legacy DB filename discovery or migration is not supported
+- Known in-place compatibility repair stays inside `context.db` only
 - Retrieval backend remains `memory_only`; `sqlite` retrieval mode is rejected
 - Vendored pure-OM boundary remains explicit under `axiomsync::om`

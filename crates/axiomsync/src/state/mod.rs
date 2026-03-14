@@ -2,6 +2,7 @@ use std::path::Path;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -79,6 +80,7 @@ impl SqliteStateStore {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
+        conn.busy_timeout(Duration::from_millis(5_000))?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
         };

@@ -83,7 +83,7 @@ impl SqliteStateStore {
                 SELECT id, event_type, uri, payload_json, status, attempt_count, next_attempt_at
                 FROM outbox
                 WHERE status = ?1
-                  AND (?4 = 1 OR COALESCE(next_attempt_at, created_at) <= ?3)
+                  AND (?4 = 1 OR next_attempt_at <= ?3)
                 ORDER BY id ASC
                 LIMIT ?2
                 ",
@@ -177,7 +177,7 @@ impl SqliteStateStore {
                 UPDATE outbox
                 SET status = ?2
                 WHERE status = ?3
-                  AND COALESCE(next_attempt_at, created_at) <= ?1
+                  AND next_attempt_at <= ?1
                 ",
                 params![
                     stale_before,
@@ -319,7 +319,7 @@ impl SqliteStateStore {
                             ELSE ?3
                         END AS lane_norm,
                         status,
-                        COALESCE(next_attempt_at, created_at) AS due_at
+                        next_attempt_at AS due_at
                     FROM outbox
                 )
                 SELECT

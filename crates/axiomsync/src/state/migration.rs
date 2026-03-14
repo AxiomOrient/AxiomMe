@@ -9,6 +9,8 @@ use super::SqliteStateStore;
 
 const OM_V2_MIGRATION_APPLIED_AT_KEY: &str = "om_v2_one_shot_migration_applied_at";
 const OM_V2_REQUIRED_EPISODIC_REV: &str = "53dfe97bc7df8e32dbee5f7b2be862a6da9171c5";
+const SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY: &str = "search_docs_fts_schema_version";
+const SEARCH_DOCS_FTS_SCHEMA_VERSION: &str = "fts5-v1";
 
 const MIGRATION_SCHEMA_SQL: &str = r"
     PRAGMA journal_mode = WAL;
@@ -86,6 +88,35 @@ const MIGRATION_SCHEMA_SQL: &str = r"
         PRIMARY KEY (doc_id, tag),
         FOREIGN KEY (doc_id) REFERENCES search_docs(id) ON DELETE CASCADE
     );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS search_docs_fts
+    USING fts5(
+        uri UNINDEXED,
+        name,
+        abstract_text,
+        content,
+        tags_text,
+        content='search_docs',
+        content_rowid='id',
+        tokenize='unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS search_docs_ai AFTER INSERT ON search_docs BEGIN
+        INSERT INTO search_docs_fts(rowid, uri, name, abstract_text, content, tags_text)
+        VALUES (new.id, new.uri, new.name, new.abstract_text, new.content, new.tags_text);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS search_docs_ad AFTER DELETE ON search_docs BEGIN
+        INSERT INTO search_docs_fts(search_docs_fts, rowid, uri, name, abstract_text, content, tags_text)
+        VALUES ('delete', old.id, old.uri, old.name, old.abstract_text, old.content, old.tags_text);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS search_docs_au AFTER UPDATE ON search_docs BEGIN
+        INSERT INTO search_docs_fts(search_docs_fts, rowid, uri, name, abstract_text, content, tags_text)
+        VALUES ('delete', old.id, old.uri, old.name, old.abstract_text, old.content, old.tags_text);
+        INSERT INTO search_docs_fts(rowid, uri, name, abstract_text, content, tags_text)
+        VALUES (new.id, new.uri, new.name, new.abstract_text, new.content, new.tags_text);
+    END;
 
     CREATE TABLE IF NOT EXISTS om_records (
         id TEXT PRIMARY KEY,
@@ -224,6 +255,7 @@ const MIGRATION_SCHEMA_SQL: &str = r"
 
     CREATE INDEX IF NOT EXISTS idx_search_docs_uri ON search_docs(uri);
     CREATE INDEX IF NOT EXISTS idx_search_docs_parent_uri ON search_docs(parent_uri);
+    CREATE INDEX IF NOT EXISTS idx_search_docs_restore_order ON search_docs(depth ASC, uri ASC);
     CREATE INDEX IF NOT EXISTS idx_search_docs_mime ON search_docs(mime);
     CREATE INDEX IF NOT EXISTS idx_search_doc_tags_tag ON search_doc_tags(tag);
     CREATE INDEX IF NOT EXISTS idx_om_records_updated_at ON om_records(updated_at);
@@ -253,72 +285,67 @@ impl SqliteStateStore {
             .conn
             .lock()
             .map_err(|_| AxiomError::mutex_poisoned("sqlite"))?;
+        let needs_fts_rebuild = drop_legacy_search_docs_fts_if_needed(&conn)?;
         conn.execute_batch(MIGRATION_SCHEMA_SQL)?;
-        ensure_required_column(
+        ensure_required_columns(
             &conn,
             "outbox",
-            "next_attempt_at",
-            "unsupported outbox schema: next_attempt_at is missing; reset workspace state database",
+            &[
+                (
+                    "next_attempt_at",
+                    "unsupported outbox schema: next_attempt_at is missing; reset workspace state database",
+                ),
+                (
+                    "lane",
+                    "unsupported outbox schema: lane is missing; reset workspace state database",
+                ),
+            ],
         )?;
-        ensure_required_column(
-            &conn,
-            "outbox",
-            "lane",
-            "unsupported outbox schema: lane is missing; reset workspace state database",
-        )?;
-        ensure_required_column(
-            &conn,
-            "om_records",
-            "last_activated_message_ids_json",
-            "unsupported om_records schema: last_activated_message_ids_json is missing; reset workspace state database",
-        )?;
-        ensure_required_column(
+        ensure_required_columns(
             &conn,
             "om_records",
-            "current_task",
-            "unsupported om_records schema: current_task is missing; reset workspace state database",
+            &[
+                (
+                    "last_activated_message_ids_json",
+                    "unsupported om_records schema: last_activated_message_ids_json is missing; reset workspace state database",
+                ),
+                (
+                    "current_task",
+                    "unsupported om_records schema: current_task is missing; reset workspace state database",
+                ),
+                (
+                    "suggested_response",
+                    "unsupported om_records schema: suggested_response is missing; reset workspace state database",
+                ),
+                (
+                    "observer_trigger_count_total",
+                    "unsupported om_records schema: observer_trigger_count_total is missing; reset workspace state database",
+                ),
+                (
+                    "reflector_trigger_count_total",
+                    "unsupported om_records schema: reflector_trigger_count_total is missing; reset workspace state database",
+                ),
+                (
+                    "buffered_reflection_tokens",
+                    "unsupported om_records schema: buffered_reflection_tokens is missing; reset workspace state database",
+                ),
+                (
+                    "buffered_reflection_input_tokens",
+                    "unsupported om_records schema: buffered_reflection_input_tokens is missing; reset workspace state database",
+                ),
+                (
+                    "reflected_observation_line_count",
+                    "unsupported om_records schema: reflected_observation_line_count is missing; reset workspace state database",
+                ),
+            ],
         )?;
-        ensure_required_column(
-            &conn,
-            "om_records",
-            "suggested_response",
-            "unsupported om_records schema: suggested_response is missing; reset workspace state database",
-        )?;
-        ensure_required_column(
-            &conn,
-            "om_records",
-            "observer_trigger_count_total",
-            "unsupported om_records schema: observer_trigger_count_total is missing; reset workspace state database",
-        )?;
-        ensure_required_column(
-            &conn,
-            "om_records",
-            "reflector_trigger_count_total",
-            "unsupported om_records schema: reflector_trigger_count_total is missing; reset workspace state database",
-        )?;
-        ensure_required_column(
-            &conn,
-            "om_records",
-            "buffered_reflection_tokens",
-            "unsupported om_records schema: buffered_reflection_tokens is missing; reset workspace state database",
-        )?;
-        ensure_required_column(
-            &conn,
-            "om_records",
-            "buffered_reflection_input_tokens",
-            "unsupported om_records schema: buffered_reflection_input_tokens is missing; reset workspace state database",
-        )?;
-        ensure_required_column(
-            &conn,
-            "om_records",
-            "reflected_observation_line_count",
-            "unsupported om_records schema: reflected_observation_line_count is missing; reset workspace state database",
-        )?;
-        ensure_required_column(
+        ensure_required_columns(
             &conn,
             "reconcile_runs",
-            "status",
-            "unsupported reconcile_runs schema: status is missing; reset workspace state database",
+            &[(
+                "status",
+                "unsupported reconcile_runs schema: status is missing; reset workspace state database",
+            )],
         )?;
         normalize_status_column(&conn, "outbox", "status")?;
         validate_status_domain(
@@ -336,7 +363,11 @@ impl SqliteStateStore {
             &reconcile_run_status_domain_values(),
             "unsupported reconcile_runs schema",
         )?;
-        conn.execute("DROP TABLE IF EXISTS search_docs_fts", [])?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outbox_status_next_attempt_id ON outbox(status, next_attempt_at, id)",
+            [],
+        )?;
+        ensure_search_docs_fts_bootstrapped(&conn, needs_fts_rebuild)?;
         drop(conn);
         Ok(())
     }
@@ -701,5 +732,75 @@ fn ensure_required_column(
         Ok(())
     } else {
         Err(AxiomError::Validation(error_message.to_string()))
+    }
+}
+
+fn ensure_required_columns(
+    conn: &Connection,
+    table: &str,
+    required: &[(&str, &'static str)],
+) -> Result<()> {
+    for (column, error_message) in required {
+        ensure_required_column(conn, table, column, error_message)?;
+    }
+    Ok(())
+}
+
+fn ensure_search_docs_fts_bootstrapped(conn: &Connection, force_rebuild: bool) -> Result<()> {
+    let marker = conn
+        .query_row(
+            "SELECT value FROM system_kv WHERE key = ?1",
+            params![SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    if !force_rebuild && marker.as_deref() == Some(SEARCH_DOCS_FTS_SCHEMA_VERSION) {
+        return Ok(());
+    }
+
+    conn.execute(
+        "INSERT INTO search_docs_fts(search_docs_fts) VALUES ('rebuild')",
+        [],
+    )?;
+    conn.execute(
+        r"
+        INSERT INTO system_kv(key, value, updated_at)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT(key) DO UPDATE SET
+          value = excluded.value,
+          updated_at = excluded.updated_at
+        ",
+        params![
+            SEARCH_DOCS_FTS_SCHEMA_VERSION_KEY,
+            SEARCH_DOCS_FTS_SCHEMA_VERSION,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Returns `true` if the FTS index needs a full rebuild after migration:
+/// - The table did not exist yet (will be created fresh, may have existing `search_docs` rows).
+/// - A legacy regular table was found and dropped (content is now stale).
+///
+/// Returns `false` when the virtual table already exists. Bootstrap completeness is tracked
+/// separately through `system_kv` so interrupted migrations can retry safely.
+fn drop_legacy_search_docs_fts_if_needed(conn: &Connection) -> Result<bool> {
+    let existing_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE name = 'search_docs_fts' LIMIT 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+
+    match existing_sql.as_deref() {
+        None => Ok(true),
+        Some(sql) if sql.to_ascii_uppercase().starts_with("CREATE VIRTUAL TABLE") => Ok(false),
+        Some(_) => {
+            conn.execute("DROP TABLE IF EXISTS search_docs_fts", [])?;
+            Ok(true)
+        }
     }
 }

@@ -88,36 +88,25 @@ impl HitBuckets {
 impl FindResult {
     pub fn rebuild_hit_buckets(&mut self) {
         self.hit_buckets = classify_hit_buckets(&self.query_results);
-        self.rebuild_legacy_views();
+        self.sync_compat_views();
     }
 
-    pub fn rebuild_legacy_views(&mut self) {
-        let (memories, resources, skills) =
-            collect_legacy_hit_views(&self.query_results, &self.hit_buckets);
-        self.memories = memories;
-        self.resources = resources;
-        self.skills = skills;
+    pub fn sync_compat_views(&mut self) {
+        self.memories = collect_bucket_hits(&self.query_results, &self.hit_buckets.memories);
+        self.resources = collect_bucket_hits(&self.query_results, &self.hit_buckets.resources);
+        self.skills = collect_bucket_hits(&self.query_results, &self.hit_buckets.skills);
     }
 
     pub fn memories(&self) -> impl Iterator<Item = &ContextHit> {
-        self.hit_buckets
-            .memories
-            .iter()
-            .filter_map(|&index| self.query_results.get(index))
+        bucket_hits(&self.query_results, &self.hit_buckets.memories)
     }
 
     pub fn resources(&self) -> impl Iterator<Item = &ContextHit> {
-        self.hit_buckets
-            .resources
-            .iter()
-            .filter_map(|&index| self.query_results.get(index))
+        bucket_hits(&self.query_results, &self.hit_buckets.resources)
     }
 
     pub fn skills(&self) -> impl Iterator<Item = &ContextHit> {
-        self.hit_buckets
-            .skills
-            .iter()
-            .filter_map(|&index| self.query_results.get(index))
+        bucket_hits(&self.query_results, &self.hit_buckets.skills)
     }
 }
 
@@ -137,26 +126,15 @@ pub fn classify_hit_buckets(hits: &[ContextHit]) -> HitBuckets {
     buckets
 }
 
-fn collect_legacy_hit_views(
-    hits: &[ContextHit],
-    buckets: &HitBuckets,
-) -> (Vec<ContextHit>, Vec<ContextHit>, Vec<ContextHit>) {
-    let memories = buckets
-        .memories
-        .iter()
-        .filter_map(|&index| hits.get(index).cloned())
-        .collect::<Vec<_>>();
-    let resources = buckets
-        .resources
-        .iter()
-        .filter_map(|&index| hits.get(index).cloned())
-        .collect::<Vec<_>>();
-    let skills = buckets
-        .skills
-        .iter()
-        .filter_map(|&index| hits.get(index).cloned())
-        .collect::<Vec<_>>();
-    (memories, resources, skills)
+fn bucket_hits<'a>(
+    hits: &'a [ContextHit],
+    bucket: &'a [usize],
+) -> impl Iterator<Item = &'a ContextHit> + 'a {
+    bucket.iter().filter_map(|&index| hits.get(index))
+}
+
+fn collect_bucket_hits(hits: &[ContextHit], bucket: &[usize]) -> Vec<ContextHit> {
+    bucket_hits(hits, bucket).cloned().collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -434,7 +412,7 @@ mod tests {
             trace: None,
             trace_uri: None,
         };
-        result.rebuild_legacy_views();
+        result.sync_compat_views();
         let memories = result
             .memories()
             .map(|item| item.uri.clone())
@@ -456,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn find_result_legacy_views_are_derived_from_hit_buckets() {
+    fn find_result_compat_views_are_derived_from_hit_buckets() {
         let query_results = vec![
             hit("axiom://resources/docs/a.md"),
             hit("axiom://user/memories/preferences/pref.md"),
@@ -474,7 +452,7 @@ mod tests {
             trace_uri: None,
         };
 
-        result.rebuild_legacy_views();
+        result.sync_compat_views();
         assert_eq!(result.memories.len(), 1);
         assert_eq!(result.resources.len(), 1);
         assert_eq!(result.skills.len(), 1);

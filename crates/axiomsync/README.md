@@ -7,6 +7,7 @@
 - rooted local filesystem abstraction
 - SQLite persistence in `context.db`
 - persisted search state plus restored in-memory retrieval index
+- `search_docs` canonical projection, `search_doc_tags` tag projection, and `search_docs_fts` lexical acceleration layer
 - ingest, replay, reindex, trace, eval, benchmark, and release evidence services
 - vendored OM contract and transform engine under `src/om/engine`
 - operator CLI entrypoint under `src/main.rs`, `src/cli/*`, `src/commands/*`
@@ -20,7 +21,10 @@
 ## Important Invariants
 - Runtime startup is a hard cutover to `context.db`.
 - Legacy DB discovery and migration are not supported.
+- Known compatibility repair is limited to in-place schema/bootstrap cleanup inside `context.db`.
 - Retrieval backend is `memory_only`.
+- FTS bootstrap completeness is tracked with a `system_kv` marker so interrupted rebuild can retry on next open.
+- `FindResult.query_results` and `hit_buckets` are canonical retrieval outputs; `memories/resources/skills` remain derived compatibility views.
 - `queue` scope is system-owned for writes.
 - Filesystem operations enforce rooted path boundaries.
 - Runtime DB permissions are hardened to owner-only on Unix.
@@ -49,3 +53,8 @@ cargo test -p axiomsync
 
 ## Test Intent
 - [`TEST_INTENT.md`](./TEST_INTENT.md)
+
+## Related Docs
+- [`../../docs/RETRIEVAL_STACK.md`](../../docs/RETRIEVAL_STACK.md)
+- [`../../docs/API_CONTRACT.md`](../../docs/API_CONTRACT.md)
+- [`../../docs/OWNERSHIP_MAP.md`](../../docs/OWNERSHIP_MAP.md)

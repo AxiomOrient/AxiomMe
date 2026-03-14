@@ -1,4 +1,5 @@
 use chrono::{Duration, Utc};
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 use crate::models::{IndexRecord, OmReflectionApplyMetrics, QueueEventStatus, ReconcileRunStatus};
@@ -64,6 +65,86 @@ fn open_hardens_state_db_permissions() {
             assert_eq!(mode, 0o600);
         }
     }
+}
+
+#[test]
+fn open_sets_busy_timeout_and_hot_path_indexes() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let store = SqliteStateStore::open(&db_path).expect("open failed");
+
+    store
+        .enqueue(
+            "semantic_scan",
+            "axiom://resources/demo",
+            serde_json::json!({"x": 1}),
+        )
+        .expect("enqueue");
+    store
+        .upsert_search_document(&search_index_record(
+            "doc-1",
+            "axiom://resources/demo/a.md",
+            SearchIndexRecordSpec {
+                parent_uri: Some("axiom://resources/demo"),
+                name: "a.md",
+                abstract_text: "auth overview",
+                content: "auth overview body",
+                tags: &["auth"],
+                depth: 3,
+            },
+        ))
+        .expect("upsert search doc");
+
+    let conn = store.conn.lock().expect("sqlite lock");
+    let busy_timeout_ms = conn
+        .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+        .expect("busy timeout");
+    assert_eq!(busy_timeout_ms, 5_000);
+
+    let outbox_plan = explain_query_plan(
+        &conn,
+        r"
+        EXPLAIN QUERY PLAN
+        SELECT id, event_type, uri, payload_json, status, attempt_count, next_attempt_at
+        FROM outbox
+        WHERE status = 'new'
+          AND next_attempt_at <= '9999-12-31T23:59:59Z'
+        ORDER BY id ASC
+        LIMIT 10
+        ",
+    );
+    assert!(
+        outbox_plan
+            .iter()
+            .any(|detail| detail.contains("idx_outbox_status_next_attempt_id")),
+        "outbox fetch should use composite hot-path index: {outbox_plan:?}"
+    );
+
+    let restore_plan = explain_query_plan(
+        &conn,
+        r"
+        EXPLAIN QUERY PLAN
+        SELECT
+          d.uri,
+          d.parent_uri,
+          d.is_leaf,
+          d.context_type,
+          d.name,
+          d.abstract_text,
+          d.content,
+          d.updated_at,
+          d.depth,
+          d.tags_text
+        FROM search_docs d
+        ORDER BY d.depth ASC, d.uri ASC
+        ",
+    );
+    assert!(
+        restore_plan
+            .iter()
+            .any(|detail| detail.contains("idx_search_docs_restore_order")),
+        "search restore should use ordered restore index: {restore_plan:?}"
+    );
 }
 
 #[test]
@@ -253,18 +334,70 @@ fn migration_drops_legacy_search_docs_fts_table() {
 
     let store = SqliteStateStore::open(&db_path).expect("open failed");
     let conn = store.conn.lock().expect("sqlite lock");
-    let exists_after = conn
+    let sql_after = conn
         .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+            "SELECT sql FROM sqlite_master WHERE name = ?1 LIMIT 1",
             params!["search_docs_fts"],
-            |_| Ok(()),
+            |row| row.get::<_, String>(0),
         )
         .optional()
         .expect("query table after migrate")
-        .is_some();
+        .expect("fts table after migrate");
     assert!(
-        !exists_after,
-        "legacy search_docs_fts table must be dropped"
+        sql_after
+            .to_ascii_uppercase()
+            .starts_with("CREATE VIRTUAL TABLE"),
+        "legacy search_docs_fts table must be replaced by virtual table: {sql_after}"
+    );
+}
+
+#[test]
+fn migration_rebuilds_fts_when_bootstrap_marker_is_missing() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state-fts-bootstrap.db");
+
+    let original = search_index_record(
+        "auth",
+        "axiom://resources/docs/auth.md",
+        SearchIndexRecordSpec {
+            parent_uri: Some("axiom://resources/docs"),
+            name: "auth.md",
+            abstract_text: "oauth authorization",
+            content: "oauth authorization flow and token exchange",
+            tags: &["auth"],
+            depth: 3,
+        },
+    );
+    let store = SqliteStateStore::open(&db_path).expect("open failed");
+    store
+        .upsert_search_document(&original)
+        .expect("upsert original doc");
+    drop(store);
+
+    {
+        let conn = Connection::open(&db_path).expect("open raw db");
+        conn.execute(
+            "DELETE FROM system_kv WHERE key = ?1",
+            params!["search_docs_fts_schema_version"],
+        )
+        .expect("delete bootstrap marker");
+        conn.execute(
+            "INSERT INTO search_docs_fts(search_docs_fts) VALUES ('delete-all')",
+            [],
+        )
+        .expect("clear fts index");
+    }
+
+    let reopened = SqliteStateStore::open(&db_path).expect("reopen failed");
+    let marker = reopened
+        .get_system_value("search_docs_fts_schema_version")
+        .expect("read marker");
+    assert_eq!(marker.as_deref(), Some("fts5-v1"));
+
+    let hits = reopened.search_documents_fts("oauth", 5).expect("fts hits");
+    assert_eq!(
+        hits.first().map(String::as_str),
+        Some(original.uri.as_str())
     );
 }
 
@@ -2267,19 +2400,18 @@ fn list_search_documents_reconstructs_records() {
     let db_path = temp.path().join("state.db");
     let store = SqliteStateStore::open(db_path).expect("open failed");
 
-    let record = IndexRecord {
-        id: "origin".to_string(),
-        uri: "axiom://resources/docs/auth.md".to_string(),
-        parent_uri: Some("axiom://resources/docs".to_string()),
-        is_leaf: true,
-        context_type: "resource".to_string(),
-        name: "auth.md".to_string(),
-        abstract_text: "oauth".to_string(),
-        content: "oauth authorization flow".to_string(),
-        tags: vec!["auth".to_string()],
-        updated_at: Utc::now(),
-        depth: 3,
-    };
+    let record = search_index_record(
+        "origin",
+        "axiom://resources/docs/auth.md",
+        SearchIndexRecordSpec {
+            parent_uri: Some("axiom://resources/docs"),
+            name: "auth.md",
+            abstract_text: "oauth",
+            content: "oauth authorization flow",
+            tags: &["auth"],
+            depth: 3,
+        },
+    );
     store.upsert_search_document(&record).expect("upsert");
 
     let listed = store.list_search_documents().expect("list");
@@ -2290,50 +2422,105 @@ fn list_search_documents_reconstructs_records() {
 }
 
 #[test]
+fn search_documents_fts_tracks_upsert_and_remove() {
+    let temp = tempdir().expect("tempdir");
+    let db_path = temp.path().join("state.db");
+    let store = SqliteStateStore::open(db_path).expect("open failed");
+
+    let auth = search_index_record(
+        "auth",
+        "axiom://resources/docs/auth.md",
+        SearchIndexRecordSpec {
+            parent_uri: Some("axiom://resources/docs"),
+            name: "auth.md",
+            abstract_text: "oauth authorization",
+            content: "oauth authorization flow and token exchange",
+            tags: &["auth"],
+            depth: 3,
+        },
+    );
+    let queue = search_index_record(
+        "queue",
+        "axiom://resources/docs/queue.md",
+        SearchIndexRecordSpec {
+            parent_uri: Some("axiom://resources/docs"),
+            name: "queue.md",
+            abstract_text: "replay queue",
+            content: "queue replay timing and backlog processing",
+            tags: &["queue"],
+            depth: 3,
+        },
+    );
+
+    store.upsert_search_document(&auth).expect("upsert auth");
+    store.upsert_search_document(&queue).expect("upsert queue");
+
+    let auth_hits = store.search_documents_fts("oauth", 5).expect("fts auth");
+    assert_eq!(
+        auth_hits.first().map(String::as_str),
+        Some(auth.uri.as_str())
+    );
+
+    let queue_hits = store.search_documents_fts("backlog", 5).expect("fts queue");
+    assert_eq!(
+        queue_hits.first().map(String::as_str),
+        Some(queue.uri.as_str())
+    );
+
+    store
+        .remove_search_document(&auth.uri)
+        .expect("remove auth");
+    let after_remove = store
+        .search_documents_fts("oauth", 5)
+        .expect("fts after remove");
+    assert!(
+        !after_remove.iter().any(|uri| uri == &auth.uri),
+        "removed document must disappear from fts projection"
+    );
+}
+
+#[test]
 fn remove_search_documents_with_prefix_prunes_descendants() {
     let temp = tempdir().expect("tempdir");
     let db_path = temp.path().join("state.db");
     let store = SqliteStateStore::open(db_path).expect("open failed");
 
-    let first = IndexRecord {
-        id: "a".to_string(),
-        uri: "axiom://resources/docs/a.md".to_string(),
-        parent_uri: Some("axiom://resources/docs".to_string()),
-        is_leaf: true,
-        context_type: "resource".to_string(),
-        name: "a.md".to_string(),
-        abstract_text: "oauth a".to_string(),
-        content: "oauth details".to_string(),
-        tags: vec!["auth".to_string()],
-        updated_at: Utc::now(),
-        depth: 3,
-    };
-    let second = IndexRecord {
-        id: "b".to_string(),
-        uri: "axiom://resources/docs/sub/b.md".to_string(),
-        parent_uri: Some("axiom://resources/docs/sub".to_string()),
-        is_leaf: true,
-        context_type: "resource".to_string(),
-        name: "b.md".to_string(),
-        abstract_text: "oauth b".to_string(),
-        content: "oauth b details".to_string(),
-        tags: vec!["auth".to_string()],
-        updated_at: Utc::now(),
-        depth: 4,
-    };
-    let outside = IndexRecord {
-        id: "c".to_string(),
-        uri: "axiom://resources/other/c.md".to_string(),
-        parent_uri: Some("axiom://resources/other".to_string()),
-        is_leaf: true,
-        context_type: "resource".to_string(),
-        name: "c.md".to_string(),
-        abstract_text: "oauth c".to_string(),
-        content: "oauth c details".to_string(),
-        tags: vec!["auth".to_string()],
-        updated_at: Utc::now(),
-        depth: 3,
-    };
+    let first = search_index_record(
+        "a",
+        "axiom://resources/docs/a.md",
+        SearchIndexRecordSpec {
+            parent_uri: Some("axiom://resources/docs"),
+            name: "a.md",
+            abstract_text: "oauth a",
+            content: "oauth details",
+            tags: &["auth"],
+            depth: 3,
+        },
+    );
+    let second = search_index_record(
+        "b",
+        "axiom://resources/docs/sub/b.md",
+        SearchIndexRecordSpec {
+            parent_uri: Some("axiom://resources/docs/sub"),
+            name: "b.md",
+            abstract_text: "oauth b",
+            content: "oauth b details",
+            tags: &["auth"],
+            depth: 4,
+        },
+    );
+    let outside = search_index_record(
+        "c",
+        "axiom://resources/other/c.md",
+        SearchIndexRecordSpec {
+            parent_uri: Some("axiom://resources/other"),
+            name: "c.md",
+            abstract_text: "oauth c",
+            content: "oauth c details",
+            tags: &["auth"],
+            depth: 3,
+        },
+    );
 
     store.upsert_search_document(&first).expect("upsert first");
     store
@@ -2350,4 +2537,41 @@ fn remove_search_documents_with_prefix_prunes_descendants() {
     let remaining = store.list_search_documents().expect("list remaining");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].uri, "axiom://resources/other/c.md");
+}
+
+fn explain_query_plan(conn: &Connection, sql: &str) -> Vec<String> {
+    let mut stmt = conn.prepare(sql).expect("prepare explain");
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(3))
+        .expect("query explain");
+    let mut details = Vec::new();
+    for row in rows {
+        details.push(row.expect("detail row"));
+    }
+    details
+}
+
+struct SearchIndexRecordSpec<'a> {
+    parent_uri: Option<&'a str>,
+    name: &'a str,
+    abstract_text: &'a str,
+    content: &'a str,
+    tags: &'a [&'a str],
+    depth: usize,
+}
+
+fn search_index_record(id: &str, uri: &str, spec: SearchIndexRecordSpec<'_>) -> IndexRecord {
+    IndexRecord {
+        id: id.to_string(),
+        uri: uri.to_string(),
+        parent_uri: spec.parent_uri.map(str::to_string),
+        is_leaf: true,
+        context_type: "resource".to_string(),
+        name: spec.name.to_string(),
+        abstract_text: spec.abstract_text.to_string(),
+        content: spec.content.to_string(),
+        tags: spec.tags.iter().map(|tag| (*tag).to_string()).collect(),
+        updated_at: Utc::now(),
+        depth: spec.depth,
+    }
 }

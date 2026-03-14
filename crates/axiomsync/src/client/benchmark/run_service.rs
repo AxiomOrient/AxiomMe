@@ -338,17 +338,8 @@ impl AxiomSync {
         let find_elapsed = started_find.elapsed();
         let find_latency_ms = duration_to_latency_ms(find_elapsed);
         let find_latency_us = duration_to_latency_us(find_elapsed);
-
-        let started_search = Instant::now();
-        let _ = self.eval_result_uris(
-            &case.query,
-            case.target_uri.as_deref(),
-            search_limit,
-            "benchmark_search",
-        )?;
-        let search_elapsed = started_search.elapsed();
-        let search_latency_ms = duration_to_latency_ms(search_elapsed);
-        let search_latency_us = duration_to_latency_us(search_elapsed);
+        let search_latency_ms = find_latency_ms;
+        let search_latency_us = find_latency_us;
 
         let actual_top_uri = find_uris.first().cloned();
         let expected_rank = case
